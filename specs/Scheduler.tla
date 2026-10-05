@@ -336,6 +336,17 @@
 \*     when it was emitted; no engine actor sends it
 \*   'fake-clock' [read] -- an operator's read of whether the test clock is set;
 \*     no engine actor sends it
+\*   'stuck-runs' [read] -- an operator's read of the runs and tasks a claim or a
+\*     sweep would take now, by the predicates 'claim' and 'sweep:scan' hold; no
+\*     engine actor sends it
+\*   'queue-status' [read] -- an operator's read of a queue's gauges, each counted
+\*     from rows read in index order up to a cap; no engine actor sends it
+\*   'table-rows' [read] -- an operator's count of a queue's rows of each table, up
+\*     to a cap; no engine actor sends it
+\*   'event-waiters' [read] -- an operator's read of the waits registered on one
+\*     event that are still waiting; no engine actor sends it
+\*   'aged-tasks' [read] -- an operator's read of a queue's live tasks in the order
+\*     they were enqueued, oldest first; no engine actor sends it
 \*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
 \*   'migrate:version' [setup] -- infrastructure, not protocol
 \*   'admin:set-fake-now' [setup] -- infrastructure, not protocol

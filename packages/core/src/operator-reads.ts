@@ -1,4 +1,5 @@
 import { parseChildSpawnKey } from './child-tasks.js'
+import { OPERATOR_GAUGE_CAP, OPERATOR_LIST_CAP, OPERATOR_TABLE_ROWS_CAP } from './contract.js'
 import { type FencedBatch, type FencedResult, readRows } from './fenced-batch.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import {
@@ -10,9 +11,21 @@ import type { OperatorReads } from './ports.js'
 import type { SqlRow } from './primitives.js'
 import { decodeRollbackOutcome } from './sagas.js'
 import type { SqlFragment } from './sql-tree.js'
-import { STORE_TABLE_COLUMNS } from './store-tables.js'
+import { QUEUE_TABLES, type QueueTable, STORE_TABLE_COLUMNS } from './store-tables.js'
 import {
+  type RunInstant,
+  databaseNowRead,
   eventStateRead,
+  eventWaitersRead,
+  liveTaskInstantsRead,
+  liveTasksRead,
+  overdueCancelsRead,
+  overdueRunsRead,
+  overdueRunsWindowRead,
+  overdueTasksWindowRead,
+  runInstantsRead,
+  tableRowsRead,
+  taskDeadlinesRead,
   taskFactsRunsRead,
   taskFactsTaskRead,
   taskFactsWaitsRead,
@@ -20,13 +33,30 @@ import {
 } from './statements/operator.js'
 import { decodeTaskResult } from './task-result.js'
 import type {
+  AgedTasks,
+  AgedTasksOptions,
   AwaitedEventFacts,
+  Capped,
   CorruptInteger,
   EmittedEvent,
   EventState,
+  EventWaiter,
+  EventWaiters,
+  Gauge,
+  LapsedRun,
+  OverdueRun,
+  OverdueTask,
+  QueueStatus,
   RunFacts,
+  StuckRuns,
+  StuckRunsOptions,
+  TableRows,
   TaskFacts,
   TaskOutcomeFacts,
+  UnadmittedRun,
+  UncancelledTask,
+  UnreclaimedRun,
+  Windowed,
   WaitFacts,
 } from './types.js'
 import {
@@ -36,7 +66,9 @@ import {
   PERSISTED_INTEGER_NEVER_NULL,
   type PersistedIntegerBounds,
   decodeBoundedInteger,
+  durationToMs,
   persistedIntegerColumn,
+  requirePositiveInt,
   storageValueKind,
 } from './validate.js'
 
@@ -53,7 +85,7 @@ const {
 
 /**
  * What a dialect supplies to the operator's reads. Each member is a fact of the dialect:
- * its batches and how it runs one, its read of the test clock, and three fragments. The
+ * its batches and how it runs one, its read of the test clock, and its fragments. The
  * statements, the decoding, the order of every list and the check of every string are
  * core's, so a dialect inherits them: what `createOperatorReads` returns is the only value
  * of the held type, which is the type a store's factory hands out.
@@ -73,6 +105,16 @@ export interface OperatorReadsDialect {
     taskIdByKey(): FencedBatch
     /** `event-state`, a batch of one read. */
     eventState(): FencedBatch
+    /** `stuck-runs`, a batch of reads. */
+    stuckRuns(): FencedBatch
+    /** `queue-status`, a batch of reads. */
+    queueStatus(): FencedBatch
+    /** `table-rows`, a batch of reads. */
+    tableRows(): FencedBatch
+    /** `event-waiters`, a batch of one read. */
+    eventWaiters(): FencedBatch
+    /** `aged-tasks`, a batch of reads. */
+    agedTasks(): FencedBatch
   }
   /**
    * `fake-clock`: whether the store's test clock is set, as the integer 1 or 0. It is a
@@ -85,6 +127,57 @@ export interface OperatorReadsDialect {
   /** The two values `decodeRollbackOutcome` reads of the row `tasks`, as `task-result` takes them. */
   readonly rollbackOutcome: SqlFragment
   readonly rollbackError: SqlFragment
+  /** The task `t` owns the run `r`. */
+  readonly taskOwnsRun: SqlFragment
+  /** The run `r` is a live run of the task `t`. */
+  readonly liveRunOfTask: SqlFragment
+  /**
+   * What the engine would take now, each as the predicate the engine's own statement holds,
+   * with the queue bound: over a run `r` and its task `t`, a claim's candidates of one
+   * state and the sweep's expired claims, and over a task `t`, the sweep's due
+   * cancellations. A store hands out the predicate its claim and its sweep are built from,
+   * so a leg of `stuck-runs` cannot mean anything the engine does not.
+   */
+  readonly owed: {
+    pendingRuns(queue: string): SqlFragment
+    sleepingRuns(queue: string): SqlFragment
+    expiredClaims(queue: string): SqlFragment
+    dueCancels(queue: string): SqlFragment
+  }
+  /**
+   * The same rows by their instant alone, with the queue bound, before anything the claim
+   * or the sweep requires of them: over a run `r`, the due runs of one state and the
+   * running runs whose lease has expired, and over a task `t`, the live tasks past their
+   * cancellation deadline, in one leg or several as an index hands them out in the order
+   * of the deadline. `stuck-runs` reads a window of the oldest of each.
+   */
+  readonly overdue: {
+    pendingRuns(queue: string): SqlFragment
+    sleepingRuns(queue: string): SqlFragment
+    lapsedLeases(queue: string): SqlFragment
+    passedDeadlines(queue: string): readonly SqlFragment[]
+  }
+  /**
+   * The rows each leg of `queue-status` counts, with the queue bound: over a run `r`, the
+   * runs of one state whose instant is stored at all, and over a task `t`, the live tasks
+   * whose cancellation deadline is. None holds its instant to bounds.
+   */
+  readonly counted: {
+    pendingRuns(queue: string): SqlFragment
+    sleepingRuns(queue: string): SqlFragment
+    runningRuns(queue: string): SqlFragment
+    /**
+     * One leg or several, each a predicate whose rows an index hands out in the order of
+     * the deadline: a dialect whose index of deadlines leads with the state reads each
+     * live state as a leg of its own.
+     */
+    tasksWithADeadline(queue: string): readonly SqlFragment[]
+    /**
+     * The live tasks, over a task `t`, one leg to a live state: each a predicate whose rows
+     * the index of live tasks hands out in the order they were enqueued.
+     */
+    liveTasks(queue: string): readonly SqlFragment[]
+  }
 }
 
 declare const heldOperatorReads: unique symbol
@@ -107,7 +200,7 @@ const EVENT = PERSISTED_INTEGER_BOUNDS.events
 const FLAG = freeze({ min: 0, max: 1 })
 
 /** The row an integer was read from, as a corrupt entry names it. */
-type RowIdentity = Pick<CorruptInteger, 'runId' | 'stepName' | 'eventName'>
+type RowIdentity = Pick<CorruptInteger, 'taskId' | 'runId' | 'stepName' | 'eventName'>
 
 /** The one persisted integer whose column may hold NULL and whose rows never do, as core names it. */
 const WRITTEN_WITH_EVERY_ROW: PersistedIntegerBounds = PERSISTED_INTEGER_NEVER_NULL
@@ -402,6 +495,7 @@ async function taskFacts(
 /** The order of the corrupt list: by field and then by row, whatever order the rows were read in. */
 const corruptOrder = (left: CorruptInteger, right: CorruptInteger): number =>
   byCodePoints(left.field, right.field) ||
+  byCodePoints(left.taskId ?? '', right.taskId ?? '') ||
   byCodePoints(left.runId ?? '', right.runId ?? '') ||
   byCodePoints(left.stepName ?? '', right.stepName ?? '') ||
   byCodePoints(left.eventName ?? '', right.eventName ?? '')
@@ -431,6 +525,544 @@ async function eventState(
 }
 
 /**
+ * Why the statements of one report may see different clocks, the reason `readTree` asks of
+ * every read of the clock after a batch's first. Each leg holds the engine's own predicate
+ * at the instant of its own statement. The report's time is read by its last statement, so
+ * no leg saw a later clock than the one its rows are dated against.
+ */
+export const OPERATOR_REPORT_DRIFT =
+  'read-only report: each leg holds what the engine would take at the instant of its own statement, and the last statement reads the time the report is dated by'
+
+/** A report's corrupt entries in the one order every list of them has. */
+const inOrder = (corrupt: CorruptInteger[]): CorruptInteger[] => corrupt.sort(corruptOrder)
+
+/** A count that stops at a cap. Past the cap it is the cap, and `atLeast` says more rows exist. */
+const gaugeOf = (counted: number, cap: number): Gauge =>
+  counted > cap ? { count: cap, atLeast: true } : { count: counted, atLeast: false }
+
+/** The most rows a leg may be asked for, refused as a store refuses a number it cannot take. */
+function requireListLimit(limit: number): number {
+  if (requirePositiveInt('limit', limit) > OPERATOR_LIST_CAP) {
+    throw new TrustedRangeError(`limit must be at most ${OPERATOR_LIST_CAP}, got ${limit}`)
+  }
+  return limit
+}
+
+/**
+ * Database time as the last statement of a report read it. A batch that answers no row for
+ * it is a defect of the dialect, never an empty queue.
+ */
+function reportTime(b: FencedBatch, ran: FencedResult, corrupt: CorruptInteger[]): number | null {
+  const row = readRows(b, ran, 'now')[0]
+  if (row === undefined) throw new TypeError('an operator read answered no row for database time')
+  return integersOf(row, corrupt).now('now_ms')
+}
+
+/**
+ * The rows of one list whose instant is at least `agedMs` behind database time, oldest
+ * first, up to the limit, each with how far behind its instant is. A list is read oldest
+ * first and one row past the limit, so the rows `agedMs` admits are the first of what was
+ * read, and `atLeast` says exactly whether more exist. A row whose instant is not readable
+ * is listed whatever `agedMs` is, and so is every row when database time is not: nothing
+ * says such a row is newer than that.
+ */
+/**
+ * Whether an instant is at least `agedMs` behind database time. One that is not readable
+ * is taken to be, and so is every instant when database time is not: nothing says such a
+ * row is newer than that.
+ */
+const agedAt = (at: number | null, nowMs: number | null, agedMs: number): boolean =>
+  at === null || nowMs === null || at <= nowMs - agedMs
+
+function agedBy<Row>(
+  read: readonly Row[],
+  instantOf: (row: Row) => number | null,
+  idOf: (row: Row) => string,
+  nowMs: number | null,
+  agedMs: number,
+  limit: number,
+): Capped<{ readonly row: Row; readonly byMs: number | null }> {
+  const aged = read
+    .map((row) => ({ row, at: instantOf(row) }))
+    .filter((one) => agedAt(one.at, nowMs, agedMs))
+    .sort(
+      (left, right) =>
+        absentLast(left.at, right.at) || byCodePoints(idOf(left.row), idOf(right.row)),
+    )
+    .map(({ row, at }) => ({ row, byMs: at === null || nowMs === null ? null : nowMs - at }))
+  return { rows: aged.slice(0, limit), atLeast: aged.length > limit }
+}
+
+/**
+ * The rows of one leg whose move has been owed for at least the grace, oldest first, up to
+ * the limit, each with how late its move is (`agedBy`).
+ */
+function owedFor<Row extends { readonly dueAtMs: number | null }>(
+  read: readonly Row[],
+  idOf: (row: Row) => string,
+  nowMs: number | null,
+  graceMs: number,
+  limit: number,
+): Capped<Row & { readonly lateByMs: number | null }> {
+  const owed = agedBy(read, (row) => row.dueAtMs, idOf, nowMs, graceMs, limit)
+  return {
+    rows: owed.rows.map(({ row, byMs }) => ({ ...row, lateByMs: byMs })),
+    atLeast: owed.atLeast,
+  }
+}
+
+/**
+ * The legs of a queue's live tasks, one read to a live state, each oldest first, under the
+ * names answered. `read` is the statement of a leg: the one that lists a task, or the one
+ * that selects only what a gauge counts.
+ */
+function liveTaskLegs(
+  b: FencedBatch,
+  legs: readonly SqlFragment[],
+  limit: number,
+  read: typeof liveTasksRead | typeof liveTaskInstantsRead,
+): string[] {
+  return legs.map((rows, leg) => {
+    b.readTree(`live-${leg}`, read({ limit, rows }))
+    return `live-${leg}`
+  })
+}
+
+/** The live tasks the legs of `aged-tasks` read, each with its enqueue instant, null where the stored one is not readable. */
+function liveTasksOf(
+  b: FencedBatch,
+  ran: FencedResult,
+  legs: readonly string[],
+  corrupt: CorruptInteger[],
+) {
+  return legs.flatMap((leg) =>
+    readRows(b, ran, leg).map((row) => {
+      const taskId = stringFrom(row.task_id)
+      return {
+        taskId,
+        taskName: stringFrom(row.task_name),
+        state: stringFrom(row.state),
+        enqueueAtMs: integersOf(row, corrupt, { taskId })(TASK.enqueue_at_ms),
+      }
+    }),
+  )
+}
+
+async function agedTasks(
+  dialect: OperatorReadsDialect,
+  queue: string,
+  options: AgedTasksOptions,
+): Promise<AgedTasks> {
+  const olderThanMs = durationToMs('olderThanSeconds', options.olderThanSeconds)
+  const limit = requireListLimit(options.limit)
+  const b = dialect.open.agedTasks()
+  // Each leg is read one row past the limit, so the oldest of them all are among the rows
+  // read, and the list says whether it holds more than it lists.
+  const legs = liveTaskLegs(b, dialect.counted.liveTasks(queue), limit + 1, liveTasksRead)
+  b.readTree('now', databaseNowRead({}))
+  const ran = await dialect.run(b)
+  const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
+
+  const corrupt: CorruptInteger[] = []
+  const nowMs = reportTime(b, ran, corrupt)
+  const aged = agedBy(
+    liveTasksOf(b, ran, legs, corrupt),
+    (task) => task.enqueueAtMs,
+    (task) => task.taskId,
+    nowMs,
+    olderThanMs,
+    limit,
+  )
+  return {
+    nowMs,
+    fakeClock,
+    tasks: {
+      rows: aged.rows.map(({ row, byMs }) => ({ ...row, ageMs: byMs })),
+      atLeast: aged.atLeast,
+    },
+    corrupt: inOrder(corrupt),
+  }
+}
+
+/** A row's place in the order every leg is read in: its instant, and then its id. */
+interface Placed {
+  readonly id: string
+  readonly at: number | null
+}
+
+const sortsBefore = (row: Placed, other: Placed): boolean =>
+  (absentLast(row.at, other.at) || byCodePoints(row.id, other.id)) < 0
+
+/**
+ * One kind of row a leg lists, a run or a task: the column of a row read that holds its id,
+ * the id of a row decoded, and the decoder, held together, so that a leg cannot be wired to
+ * read the ids of one column and compare the places of another.
+ */
+interface OwedKind<Id, Row extends Id & { readonly dueAtMs: number | null }> {
+  readonly idColumn: 'run_id' | 'task_id'
+  idOf(row: Id): string
+  decode(row: SqlRow, corrupt: CorruptInteger[]): Row
+}
+
+/**
+ * The rows of a window that the engine does not take. `read` is the oldest rows by a leg's
+ * instant alone, as many as the limit and two more. `taken` is what the engine's own
+ * statement answered for the same instant, oldest first and one row past the limit. A row
+ * read that `taken` does not hold is one the engine refuses when `taken` holds every row
+ * the engine would take, or when the row sorts before the last row of `taken`: had the
+ * engine admitted it, its statement would have answered it ahead of that one. A row that
+ * sorts after the last of a full `taken` is not settled, and neither are rows past a read
+ * that came back full. `unexamined` says that such a row could be one the leg lists:
+ * `aged` is the leg's own test of the grace, and rows past a full read sort after its last
+ * row, so they are old enough only when that row is. A row that is not settled is not
+ * decoded into `corrupt`: the leg does not list it.
+ */
+function notTaken<Id, Row extends Id & { readonly dueAtMs: number | null }>(
+  read: readonly SqlRow[],
+  kind: OwedKind<Id, Row>,
+  taken: readonly (Id & { readonly dueAtMs: number | null })[],
+  corrupt: CorruptInteger[],
+  limit: number,
+  aged: (at: number | null) => boolean,
+): { readonly rows: Row[]; readonly unexamined: boolean } {
+  const placeOf = (row: Id & { readonly dueAtMs: number | null }): Placed => ({
+    id: kind.idOf(row),
+    at: row.dueAtMs,
+  })
+  const held = new Map(taken.map((row) => [kind.idOf(row), row.dueAtMs]))
+  const lastTaken = taken[taken.length - 1]
+  const last = taken.length > limit && lastTaken !== undefined ? placeOf(lastTaken) : undefined
+  const rows: Row[] = []
+  let unsettled = false
+  let endsAt: number | null = null
+  for (const raw of read) {
+    const id = stringFrom(raw[kind.idColumn])
+    if (held.has(id)) {
+      endsAt = held.get(id) ?? null
+      continue
+    }
+    const its: CorruptInteger[] = []
+    const row = kind.decode(raw, its)
+    endsAt = row.dueAtMs
+    if (last === undefined || sortsBefore(placeOf(row), last)) {
+      rows.push(row)
+      corrupt.push(...its)
+    } else if (aged(row.dueAtMs)) {
+      unsettled = true
+    }
+  }
+  const past = read.length > limit + 1 && aged(endsAt)
+  return { rows, unexamined: unsettled || past }
+}
+
+async function stuckRuns(
+  dialect: OperatorReadsDialect,
+  queue: string,
+  options: StuckRunsOptions,
+): Promise<StuckRuns> {
+  const graceMs = durationToMs('graceSeconds', options.graceSeconds)
+  const limit = requireListLimit(options.limit)
+  const { owed, overdue, taskOwnsRun, liveRunOfTask } = dialect
+  const b = dialect.open.stuckRuns()
+  // The windows first, and the engine's own legs after them. Each statement holds its
+  // instant to the clock as it reads it, so a row a window read as owed is owed when the
+  // engine's leg is read, and a row the leg does not answer was not left out for its time.
+  const window = (rows: SqlFragment, dueAt: RunInstant) =>
+    overdueRunsWindowRead({ limit: limit + 2, rows, dueAt })
+  b.readTree('window-pending', window(overdue.pendingRuns(queue), 'available_at_ms'))
+  b.readTree(
+    'window-sleeping',
+    window(overdue.sleepingRuns(queue), 'available_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
+  b.readTree(
+    'window-lapsed',
+    window(overdue.lapsedLeases(queue), 'claim_expires_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
+  const deadlineWindows = overdue.passedDeadlines(queue).map((rows, leg) => {
+    b.readTree(
+      `window-deadlines-${leg}`,
+      overdueTasksWindowRead({ limit: limit + 2, rows }),
+      OPERATOR_REPORT_DRIFT,
+    )
+    return `window-deadlines-${leg}`
+  })
+  // Each leg is read one row past the limit, so it says whether it holds more than it lists.
+  const runs = (admitted: SqlFragment, dueAt: RunInstant) =>
+    overdueRunsRead({ limit: limit + 1, taskOwnsRun, admitted, dueAt })
+  b.readTree('pending', runs(owed.pendingRuns(queue), 'available_at_ms'), OPERATOR_REPORT_DRIFT)
+  b.readTree('sleeping', runs(owed.sleepingRuns(queue), 'available_at_ms'), OPERATOR_REPORT_DRIFT)
+  b.readTree(
+    'lapsed',
+    runs(owed.expiredClaims(queue), 'claim_expires_at_ms'),
+    OPERATOR_REPORT_DRIFT,
+  )
+  b.readTree(
+    'cancels',
+    overdueCancelsRead({ limit: limit + 1, due: owed.dueCancels(queue), liveRunOfTask }),
+    OPERATOR_REPORT_DRIFT,
+  )
+  b.readTree('now', databaseNowRead({}), OPERATOR_REPORT_DRIFT)
+  const ran = await dialect.run(b)
+  const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
+
+  const corrupt: CorruptInteger[] = []
+  const nowMs = reportTime(b, ran, corrupt)
+  /** The runs of one of the engine's legs, each with the instant its move came due at. */
+  const runsOf = (leg: string, dueAt: PersistedIntegerBounds) =>
+    readRows(b, ran, leg).map((row) => {
+      const runId = stringFrom(row.run_id)
+      const int = integersOf(row, corrupt, { runId })
+      const ordinal = int(RUN.attempt)
+      const run = {
+        runId,
+        taskId: stringFrom(row.task_id),
+        taskName: stringFrom(row.task_name),
+        attempt: ordinal,
+        dueAtMs: int(dueAt),
+      }
+      return { run, int }
+    })
+  const pending = runsOf('pending', RUN.available_at_ms).map(({ run }) => run)
+  const sleeping = runsOf('sleeping', RUN.available_at_ms).map(({ run }) => run)
+  const lapsed = runsOf('lapsed', RUN.claim_expires_at_ms).map(({ run, int }) => {
+    const claims = int(RUN.claim_gen)
+    const activations = int(RUN.activated_gen)
+    return {
+      ...run,
+      activated: claims === null || activations === null ? null : activations === claims,
+    }
+  })
+  const cancels = readRows(b, ran, 'cancels').map((row) => {
+    const taskId = stringFrom(row.task_id)
+    return {
+      taskId,
+      taskName: stringFrom(row.task_name),
+      state: stringFrom(row.state),
+      runId: textOf(row.run_id),
+      dueAtMs: integersOf(row, corrupt, { taskId })(TASK.cancel_at_ms),
+    }
+  })
+  const byRun = (run: { readonly runId: string }): string => run.runId
+  const byTask = (task: { readonly taskId: string }): string => task.taskId
+  /** A run of a window, from the run's own row: the instant is the one its leg is read by. */
+  const runsOwed = (dueAt: PersistedIntegerBounds) => ({
+    idColumn: 'run_id' as const,
+    idOf: byRun,
+    decode: (row: SqlRow, into: CorruptInteger[]) => {
+      const runId = stringFrom(row.run_id)
+      const int = integersOf(row, into, { runId })
+      const ordinal = int(RUN.attempt)
+      return { runId, taskId: stringFrom(row.task_id), attempt: ordinal, dueAtMs: int(dueAt) }
+    },
+  })
+  /** A task of a window of deadlines. */
+  const tasksOwed = {
+    idColumn: 'task_id' as const,
+    idOf: byTask,
+    decode: (row: SqlRow, into: CorruptInteger[]) => {
+      const taskId = stringFrom(row.task_id)
+      return {
+        taskId,
+        taskName: stringFrom(row.task_name),
+        state: stringFrom(row.state),
+        dueAtMs: integersOf(row, into, { taskId })(TASK.cancel_at_ms),
+      }
+    },
+  }
+  const dueRuns = runsOwed(RUN.available_at_ms)
+  /** The leg's own test of the grace, which a row a window left unsettled is held to as well. */
+  const aged = (at: number | null): boolean => agedAt(at, nowMs, graceMs)
+  const pendingNotAdmitted = notTaken(
+    readRows(b, ran, 'window-pending'),
+    dueRuns,
+    pending,
+    corrupt,
+    limit,
+    aged,
+  )
+  const sleepingNotAdmitted = notTaken(
+    readRows(b, ran, 'window-sleeping'),
+    dueRuns,
+    sleeping,
+    corrupt,
+    limit,
+    aged,
+  )
+  const notReclaimed = notTaken(
+    readRows(b, ran, 'window-lapsed'),
+    runsOwed(RUN.claim_expires_at_ms),
+    lapsed,
+    corrupt,
+    limit,
+    aged,
+  )
+  const notCancelled = deadlineWindows.map((leg) =>
+    notTaken(readRows(b, ran, leg), tasksOwed, cancels, corrupt, limit, aged),
+  )
+  /** One leg of what the engine does not take, from the windows that hold it, under the grace and the limit. */
+  const windowed = <Row extends { readonly dueAtMs: number | null }>(
+    windows: readonly { readonly rows: readonly Row[]; readonly unexamined: boolean }[],
+    idOf: (row: Row) => string,
+  ): Windowed<Row & { readonly lateByMs: number | null }> => ({
+    ...owedFor(
+      windows.flatMap((one) => one.rows),
+      idOf,
+      nowMs,
+      graceMs,
+      limit,
+    ),
+    unexamined: windows.some((one) => one.unexamined),
+  })
+  const inState = (
+    found: typeof pendingNotAdmitted,
+    state: UnadmittedRun['state'],
+  ): typeof found & { readonly rows: Omit<UnadmittedRun, 'lateByMs'>[] } => ({
+    rows: found.rows.map((run) => ({ ...run, state })),
+    unexamined: found.unexamined,
+  })
+  const dueUnclaimed: Capped<OverdueRun> = owedFor(pending, byRun, nowMs, graceMs, limit)
+  const sleepingPastWake: Capped<OverdueRun> = owedFor(sleeping, byRun, nowMs, graceMs, limit)
+  const dueNotAdmitted: Windowed<UnadmittedRun> = windowed(
+    [inState(pendingNotAdmitted, 'pending'), inState(sleepingNotAdmitted, 'sleeping')],
+    byRun,
+  )
+  const leaseLapsed: Capped<LapsedRun> = owedFor(lapsed, byRun, nowMs, graceMs, limit)
+  const lapsedNotReclaimed: Windowed<UnreclaimedRun> = windowed([notReclaimed], byRun)
+  const cancelOverdue: Capped<OverdueTask> = owedFor(cancels, byTask, nowMs, graceMs, limit)
+  const deadlineNotCancelled: Windowed<UncancelledTask> = windowed(notCancelled, byTask)
+  return {
+    nowMs,
+    fakeClock,
+    dueUnclaimed,
+    sleepingPastWake,
+    dueNotAdmitted,
+    leaseLapsed,
+    lapsedNotReclaimed,
+    cancelOverdue,
+    deadlineNotCancelled,
+    corrupt: inOrder(corrupt),
+  }
+}
+
+async function queueStatus(dialect: OperatorReadsDialect, queue: string): Promise<QueueStatus> {
+  const { counted } = dialect
+  const limit = OPERATOR_GAUGE_CAP + 1
+  const b = dialect.open.queueStatus()
+  const runs = (rows: SqlFragment, instant: RunInstant) => runInstantsRead({ limit, rows, instant })
+  b.readTree('pending', runs(counted.pendingRuns(queue), 'available_at_ms'))
+  b.readTree('sleeping', runs(counted.sleepingRuns(queue), 'available_at_ms'))
+  b.readTree('running', runs(counted.runningRuns(queue), 'claim_expires_at_ms'))
+  const deadlineLegs = counted.tasksWithADeadline(queue).map((rows, leg) => {
+    b.readTree(`deadlines-${leg}`, taskDeadlinesRead({ limit, rows }))
+    return `deadlines-${leg}`
+  })
+  // No leg reads the clock, so this is the batch's one read of it.
+  b.readTree('now', databaseNowRead({}))
+  const liveLegs = liveTaskLegs(b, counted.liveTasks(queue), limit, liveTaskInstantsRead)
+  const ran = await dialect.run(b)
+  const fakeClock = flagOf('fake-clock', await dialect.fakeClock())
+
+  const corrupt: CorruptInteger[] = []
+  const nowMs = reportTime(b, ran, corrupt)
+  /** The instant of every row of one leg, null where the stored one is not readable. */
+  const instantsOf = (leg: string, key: 'run_id' | 'task_id', bounds: PersistedIntegerBounds) =>
+    readRows(b, ran, leg).map((row) => {
+      const id = stringFrom(row[key])
+      return integersOf(row, corrupt, key === 'run_id' ? { runId: id } : { taskId: id })(bounds)
+    })
+  const pending = instantsOf('pending', 'run_id', RUN.available_at_ms)
+  const sleeping = instantsOf('sleeping', 'run_id', RUN.available_at_ms)
+  const running = instantsOf('running', 'run_id', RUN.claim_expires_at_ms)
+  const deadlines = deadlineLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.cancel_at_ms))
+  const enqueued = liveLegs.flatMap((leg) => instantsOf(leg, 'task_id', TASK.enqueue_at_ms))
+
+  const readable = (instants: readonly (number | null)[]): number[] =>
+    instants.filter((at): at is number => at !== null)
+  /** The instants of a leg that are at or before database time. */
+  const cameDue = (instants: readonly (number | null)[]): number[] =>
+    nowMs === null ? [] : readable(instants).filter((at) => at <= nowMs)
+  const earliest = (instants: readonly number[]): number | null =>
+    instants.length === 0 ? null : Math.min(...instants)
+  const gauge = (rows: readonly unknown[]): Gauge => gaugeOf(rows.length, OPERATOR_GAUGE_CAP)
+
+  const headOfTheQueue = earliest([...cameDue(pending), ...cameDue(sleeping)])
+  const firstExpiry = earliest(readable(running))
+  const firstEnqueued = earliest(readable(enqueued))
+  return {
+    nowMs,
+    fakeClock,
+    gauges: {
+      pendingRuns: gauge(pending),
+      pendingRunsDue: gauge(cameDue(pending)),
+      sleepingRuns: gauge(sleeping),
+      sleepingRunsDue: gauge(cameDue(sleeping)),
+      runningRuns: gauge(running),
+      runningRunsLapsed: gauge(cameDue(running)),
+      tasksWithADeadline: gauge(deadlines),
+      tasksPastTheirDeadline: gauge(cameDue(deadlines)),
+      liveTasks: gauge(enqueued),
+    },
+    claimLagMs: nowMs === null || headOfTheQueue === null ? null : nowMs - headOfTheQueue,
+    leaseHeadroomMs: nowMs === null || firstExpiry === null ? null : firstExpiry - nowMs,
+    nextWakeAtMs: earliest(readable([...pending, ...sleeping, ...running, ...deadlines])),
+    oldestLiveTaskAgeMs: nowMs === null || firstEnqueued === null ? null : nowMs - firstEnqueued,
+    corrupt: inOrder(corrupt),
+  }
+}
+
+/** One row past the cap is the most a count of `table-rows` may answer. */
+const COUNTED_ROWS = freeze({ min: 0, max: OPERATOR_TABLE_ROWS_CAP + 1 })
+
+async function tableRows(dialect: OperatorReadsDialect, queue: string): Promise<TableRows> {
+  const b = dialect.open.tableRows()
+  for (const table of QUEUE_TABLES) {
+    b.readTree(table, tableRowsRead({ table, queue, cap: OPERATOR_TABLE_ROWS_CAP }))
+  }
+  const ran = await dialect.run(b)
+  const tables = createObject(null) as Record<QueueTable, Gauge>
+  for (const table of QUEUE_TABLES) {
+    // A count is the statement's own answer, never a stored value: a dialect that hands it
+    // back as anything but an integer in the statement's range is refused.
+    const counted = decodeBoundedInteger(readRows(b, ran, table)[0]?.row_count, COUNTED_ROWS)
+    if (!counted.ok) {
+      throw new TrustedRangeError(
+        `table-rows ${table} must count an integer from 0 to ${COUNTED_ROWS.max}`,
+      )
+    }
+    tables[table] = gaugeOf(counted.value, OPERATOR_TABLE_ROWS_CAP)
+  }
+  return { cap: OPERATOR_TABLE_ROWS_CAP, tables: freeze(tables) }
+}
+
+async function eventWaiters(
+  dialect: OperatorReadsDialect,
+  queue: string,
+  eventName: string,
+): Promise<EventWaiters> {
+  const b = dialect.open.eventWaiters()
+  b.readTree('waiters', eventWaitersRead({ queue, eventName, limit: OPERATOR_GAUGE_CAP + 1 }))
+  const corrupt: CorruptInteger[] = []
+  // The statement answers the waits in the order of run and then step, one row past the
+  // cap, and the list keeps that order. Nothing here sorts them: a list cut in one order
+  // and printed in another leaves out a wait that comes before one it lists.
+  const read = readRows(b, await dialect.run(b), 'waiters').map((row): EventWaiter => {
+    const runId = stringFrom(row.run_id)
+    const stepName = stringFrom(row.step_name)
+    const timesOutAt = integersOf(row, corrupt, { runId, stepName })(WAIT.timeout_at_ms)
+    return { taskId: stringFrom(row.task_id), runId, stepName, timeoutAtMs: timesOutAt }
+  })
+  return {
+    waiters: {
+      rows: read.slice(0, OPERATOR_GAUGE_CAP),
+      atLeast: read.length > OPERATOR_GAUGE_CAP,
+    },
+    corrupt: inOrder(corrupt),
+  }
+}
+
+/**
  * The operator's read port over one dialect, and the only implementation of it. Every
  * method the string table names is reached through `requireOperatorReadStrings`, put in
  * front of it here in one loop, so no method can leave the check out, and a method the
@@ -442,6 +1074,11 @@ export function createOperatorReads(dialect: OperatorReadsDialect): HeldOperator
     taskFacts: (queue, taskId) => taskFacts(dialect, queue, taskId),
     taskIdByKey: (queue, idempotencyKey) => taskIdByKey(dialect, queue, idempotencyKey),
     eventState: (queue, eventName) => eventState(dialect, queue, eventName),
+    stuckRuns: (queue, options) => stuckRuns(dialect, queue, options),
+    agedTasks: (queue, options) => agedTasks(dialect, queue, options),
+    queueStatus: (queue) => queueStatus(dialect, queue),
+    tableRows: (queue) => tableRows(dialect, queue),
+    eventWaiters: (queue, eventName) => eventWaiters(dialect, queue, eventName),
   }
   const held: Partial<Record<OperatorReadMethod, unknown>> = {}
   for (let index = 0; index < OPERATOR_READ_METHODS.length; index++) {

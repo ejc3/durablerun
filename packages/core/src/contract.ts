@@ -234,3 +234,16 @@ export type PreservedFenceTable = keyof typeof PRESERVED_FENCE_INSTANTS
  * (DESIGN.md §3.4).
  */
 export const IDENTIFIER_CHARACTERS = 255
+
+/**
+ * The cap of every gauge an operator's read of a queue answers, and of its list of an
+ * event's waiters. A gauge is counted from rows read in index order and stops one row past
+ * this, so what it costs is bounded by the cap and never by the queue.
+ */
+export const OPERATOR_GAUGE_CAP = 1_000
+
+/** The most rows an operator's read lists in one leg, which is the most a caller may ask for. */
+export const OPERATOR_LIST_CAP = 1_000
+
+/** The cap of every count of a queue's rows of one table. */
+export const OPERATOR_TABLE_ROWS_CAP = 1_000_000

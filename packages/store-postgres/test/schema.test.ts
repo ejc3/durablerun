@@ -28,8 +28,8 @@ function columnDeclaration(table: string, column: string): string | undefined {
 
 describe('PostgreSQL schema', () => {
   it('tracks every logical migration version without rewriting history', () => {
-    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-    expect(CURRENT_SCHEMA_VERSION).toBe(10)
+    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    expect(CURRENT_SCHEMA_VERSION).toBe(11)
   })
 
   it('stores every durable numeric contract field as BIGINT with exact nullability', () => {
@@ -110,6 +110,7 @@ describe('PostgreSQL migrations are append-only', () => {
     8: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     9: '7ce46ae684da2e4f59662a04a7d9092194bfb03fe3f66fa79c1d99388dba3233',
     10: '545d2028020248d3e5b9816974e23a50cf567f5884c104b877c9661049a8931f',
+    11: 'c48d31dc989c6fdde60fb646682a2541a22c4fa08c00222307be6d9cb8388bb9',
   }
 
   it('matches every migration to an independently frozen content hash', () => {

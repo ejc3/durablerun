@@ -561,16 +561,22 @@ export async function plantNullPayload(db: CliDb): Promise<void> {
 
 /**
  * The command lines whose answers must match on every dialect, for one seeded database. The
- * command table says which reads there are: each read that names a task runs for every
- * seeded task and for one the queue does not hold, and each that takes an idempotency key
- * in place of the id runs by the key as well. So a read joins the comparison by joining
- * the table.
+ * command table says which reads there are: each read that takes no argument runs once,
+ * each read that names a task runs for every seeded task and for one the queue does not
+ * hold, and each that takes an idempotency key in place of the id runs by the key as well.
+ * So a read joins the comparison by joining the table.
  */
 export function comparedLines(
   seeded: SeededTasks & Partial<SeededSagas> & { readonly refused?: string },
 ): string[][] {
   const reads = STORE_COMMANDS.filter((spec) => !spec.writes)
-  const lines: string[][] = [['doctor', '--queue', QUEUE, '--json']]
+  const lines: string[][] = reads
+    .filter((spec) => spec.positionals.length === 0)
+    .map(({ verb }) => [verb, '--queue', QUEUE, '--json'])
+  // What a claim or a sweep would take this instant, one row to a leg.
+  lines.push(['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--limit', '1'])
+  // And every live task, by its age.
+  lines.push(['stuck', '--queue', QUEUE, '--json', '--older-than', '0s'])
   for (const taskId of [...Object.values(seeded), 'no-such-task']) {
     for (const { verb } of reads.filter((spec) => spec.positionals.includes('taskId'))) {
       lines.push([verb, taskId, '--queue', QUEUE, '--json'])

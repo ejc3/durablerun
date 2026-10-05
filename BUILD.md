@@ -88,9 +88,8 @@ accepts it.
     5 to the build's, and `result` reads what alpha.1 wrote exactly as alpha.1's
     own getTaskResult does. Red: a planted migration that adds a NOT NULL column
     with no default fails the alpha.1 cycle by name. This is met.
-    `packages/cli/test/cli-dialects.test.ts`, on each dialect: "doctor, result,
-    checkpoints, inspect and explain print the JSON libSQL prints, apart from the
-    fields under dialect", through `main` with a seeded IdSource; "a read command sends only
+    `packages/cli/test/cli-dialects.test.ts`, on each dialect: "every read
+    prints the JSON libSQL prints, apart from the fields under dialect", through `main` with a seeded IdSource; "a read command sends only
     read batches, each with a label the command table declares"; "every store
     command exits 5 on a database a newer build migrated, and changes no table";
     "migrate without --yes changes nothing, and with --yes prints each version
@@ -105,7 +104,7 @@ accepts it.
     a command may make, and no executor"; only the opener reads a URL's scheme.
     `scripts/alpha1-compat.sh`, which `verify:packages` runs and CI's verify job
     requires (DURABLERUN_ALPHA1_REQUIRED=1), runs the cycle at every version
-    from 5 to 10: `migrate --yes` reaches the build's version through the bin,
+    from 5 to 11: `migrate --yes` reaches the build's version through the bin,
     and leaves each version below it when its store fails at the next version's
     batch. Its planted control takes the form version 10 gives NOT NULL on
     libSQL, a trigger that refuses the write, because SQLite refuses to add a
@@ -113,7 +112,14 @@ accepts it.
     `tasks.planted`. PR5.3b2's `explain` is in each of those cases but the alpha.1
     cycle: its answers are among the lines compared on every dialect and at
     version 5, it is one of the store commands held to read batches and to exit 5
-    outside the window, and the bin runs it.
+    outside the window, and the bin runs it. PR5.3c's `stuck`, `stats` and `sizes` are in
+    each of those cases but the alpha.1 cycle too. Their answers are among the lines
+    compared on every dialect, in the case now named for every read, and among the lines
+    compared at version 5, where the index of version 11 does not exist. Each is one of the
+    store commands held to read batches and to exit 5 outside the window. The bin runs each,
+    and runs `stuck --fail-if-any` to exit 9. On each dialect "stuck, stats and sizes print
+    the JSON libSQL prints, and exit as it exits, for a queue with a move owed in every leg"
+    compares them on a queue with a row to list in every leg.
 33. PR5.3a (extended by every later PR that adds a command): nothing
     user-authored and no store credential prints without `--reveal`. A sentinel
     planted in a task's params and headers, a checkpoint's state, an event
@@ -146,7 +152,11 @@ accepts it.
     --reveal" holds it with the key among its command lines, a key no task has
     and a refused line that carries one included. PR5.3b2's `explain` prints an ended task's outcome as `result`
     prints it, and "explain prints no value a user wrote without --reveal" holds
-    it over the same kinds of command line. Redaction removed from the result renderer fails
+    it over the same kinds of command line. PR5.3c's `stuck`, `stats` and `sizes` print ids,
+    task names, states, instants and counts, and no value a user wrote. Each has its
+    sentinel case in the walk of the command table, with the refusals of a grace, an age and
+    a limit that hold the sentinel among `stuck`'s lines, and each has its line in the
+    credential sweep. Redaction removed from the result renderer fails
     "result prints no value a user wrote without --reveal". "result prints a
     failed rollback's error as its length and sha256" redacts errors named
     `$SagaStateCorrupt`, `$RollbackNotRegistered` and a name that is neither,
@@ -207,9 +217,14 @@ accepts it.
     then every batch a read by a task id sends, so each batch it declares
     (`task-id-by-key`, `task-facts` and `fake-clock`) meets every fault. PR5.3b2
     adds `explain` from two starting states: by the key of a run asleep on a
-    timer, which sends each batch it declares (`task-id-by-key`, `task-facts`,
-    `fake-clock` and `get-checkpoints`), and of a parent parked on its child,
-    where a fault also meets the child's reads.
+    timer, which sends `task-id-by-key`, `task-facts`, `fake-clock` and
+    `get-checkpoints`, and of a parent parked on its child, where a fault also
+    meets the child's reads. PR5.3c adds `event-waiters` to what `explain`
+    declares, which the second of those states sends. It adds `stuck` with
+    `--older-than`, which sends each batch it declares (`stuck-runs`,
+    `aged-tasks` and `fake-clock`), `stats` (`queue-status` and `fake-clock`)
+    and `sizes` (`table-rows`), each from the current version and each after
+    the read of the schema version that every read sends.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -384,16 +399,113 @@ accepts it.
     `stats` gauges and `sizes --queue` equal counts computed in TypeScript from
     the full-table dump the invariant snapshot binds, on the three dialects.
     Every gauge is capped at 1,000 and reports `atLeast`, and `stats` prints
-    `quiet`, never `ok`, when every gauge is zero. Each new leg is registered in
-    the plan test's `DRIVEN_BY_A_DUE_RANGE` table with `boundedBy: 'LIMIT'`,
+    `quiet`, never `ok`, when every gauge is zero. Each new leg is registered in one of the
+    plan test's two tables of due ranges, `DRIVEN_BY_A_DUE_RANGE` for a range that
+    drives another step and `A_DUE_RANGE_ALONE` for one that drives none, with
+    `boundedBy: 'LIMIT'`,
     passes the libSQL plan reader, and states its growth-oracle verdict: it
     grows with the backlog by design and is bounded by its LIMIT. `sizes` is the
     named exception, a count over one queue, registered as a text statement if
     the tree grammar refuses it. Line 32's alpha.1 harness runs at schema
-    version 11. Red: `<` for `<=` on `claim_expires_at_ms` in one leg fails the
-    claim-and-sweep differential by name, a dropped LIMIT fails the
-    `DRIVEN_BY_A_DUE_RANGE` check, and a waiters read that answers only the task
-    asked about fails the three-waiter seed by name. NOT MET.
+    version 11. Red: `<` for `<=` in the comparison a leg's instant is held to
+    fails the claim-and-sweep differential by name, at a lease that expires that
+    millisecond, a dropped LIMIT fails the `DRIVEN_BY_A_DUE_RANGE` check, and a
+    waiters read that answers only the task asked about fails the three-waiter
+    seed by name. This is met.
+    `packages/conformance/src/operator-queue-reads.ts` holds the reads of a queue
+    in the `operator-reads` surface, on each dialect. "agrees with the engine,
+    and with a count of the dump, on every state a walk of the engine leaves"
+    runs twelve fuzz walks of 100 steps and reads each at five instants. At each,
+    with no grace, a claim with room for every run takes exactly the runs the two
+    claim legs list, and the sweep that follows cancels and reclaims exactly what
+    the other two list. A run in both of those legs is held to being taken by an
+    arm. Every row the dump shows a move is owed to, a due run, a lapsed lease or
+    a passed deadline, is in the leg the engine takes or in the leg it does not,
+    once, and what the legs of the second kind list is where it was once the
+    claim and the sweep have run, unless the sweep cancelled its task. The
+    gauges and the row counts equal counts made in TypeScript from the
+    dump of every table that `snapshot` reads, the earliest counted instant
+    equals the store's own next wake, and the list of the oldest live tasks
+    equals a list made from the same dump, for every live task and for those 45
+    seconds old. Floors fail walks that reach too little: 60 due runs, 8 sleeping
+    runs past their wake, 70 lost launches, 10 claim timeouts, 3 cancellations, 1
+    run in both legs, 180 live tasks that old and 10 younger. The walks leave no
+    row that the engine refuses, measured, so the three legs of such rows have no
+    floor, and seeded cases build them. "lists a due run that no claim admits, and
+    neither a claim nor a sweep takes it unless its task is past its deadline"
+    builds three such runs, two by fixture and one by a deadline. "lists a lapsed
+    lease that no sweep reclaims and a passed deadline that no sweep cancels, and
+    the sweep takes neither" builds by fixture one such lease and three such
+    deadlines, of a pending, a running and a sleeping task, so that a store that
+    reads one window of deadlines to a live state has a refused task in each.
+    "does not list a run no claim admits that is younger than its window, and
+    lists it once the runs ahead of it are taken" holds what a window does not
+    see. "lists a move from
+    the instant it comes due, as the engine takes it, and not a millisecond
+    before" holds four moves of a seeded queue at the millisecond each comes due
+    and one millisecond before, and a run due the instant it is spawned. "lists
+    what a claim and a sweep would take from a seeded queue, under each grace and
+    limit, with one canonical answer", "counts a seeded queue's gauges and rows,
+    and lists an event's waiters, with one canonical answer" and "lists the live
+    tasks of a queue enqueued at least so long ago, oldest first, each with its
+    age, and no task that ended" hold answers written out from what the scenario
+    did, the same on every dialect. "counts a row whose instant is outside its
+    bounds, lists it as corrupt, and agrees with the engine about the rest" holds
+    the corrupt rows, and "stops a leg at its limit and a gauge at its cap,
+    beside a thousand and one due runs" and "lists the first thousand of an
+    event's waiters in the order it prints, beside a thousand and two waits,
+    fixture-built" hold the caps.
+    `packages/core/test/operator-reads.test.ts` holds how core decodes a leg, a
+    gauge, a count and a list. `packages/cli/test/queue-verbs.test.ts` holds the
+    three commands on libSQL, in text and in `--json`: "lists a row in each leg
+    once its move has been owed for the grace, and exits 0 for it"; "exits 9 with
+    --fail-if-any when a row is listed and 0 when none is, with the report on
+    stdout either way"; "lists a due run that no claim admits, names it as one,
+    and exits 9 for it with --fail-if-any", and the same for "a run under a lapsed
+    lease that no sweep reclaims" and for "a task past its cancellation deadline
+    that no sweep cancels"; "says more than it lists for one run a claim takes
+    beside thirty it refuses, and that more may lie past its window" and "leaves
+    nothing unexamined for a backlog too young for the grace", which hold what a
+    leg found through a window says beside its rows; "lists no healthy run: one
+    under a live lease past the
+    hung-run bound, and one parked on an event nobody emits", which their age
+    then finds; "exits 10 for a report that names a corrupt row, before it exits
+    9, and still prints the report on stdout"; "refuses a grace or a limit it
+    cannot read with exit 2, and sends nothing"; "a task looping through launch
+    deferral, in the current worker's form and in alpha.1's, is in no leg under
+    the default grace at any instant between ticks, and its age finds it", at
+    eight instants between each of four ticks, where a grace of zero shows the
+    task at the same instants; "lists the live tasks enqueued at least that long
+    ago, oldest first, each with its age, beside the legs"; "reports a live task
+    enqueued past its bound only when its leg reads it, so the exit depends on
+    the limit"; "prints quiet, never
+    ok, when every gauge is zero, and active when one is not"; "exits 10 for a
+    counted row whose instant is not readable, and prints its report on stdout";
+    and "prints the count of one queue's rows of each table, and of no other
+    queue's". `packages/cli/test/cli-dialects.test.ts` holds, on each dialect,
+    the comparison with libSQL named under line 32 and "explain of any of three
+    tasks parked on one event names all three, and no task parked on another".
+    The libSQL plan test names the engine's four legs of `stuck-runs` in
+    `DRIVEN_BY_A_DUE_RANGE`, and its four windows, the four legs of `queue-status` that read runs and
+    deadlines, its three legs of live tasks and the three of `aged-tasks` in
+    `A_DUE_RANGE_ALONE`, each
+    bounded by its LIMIT, and it excuses the five walks of `table-rows` by name.
+    `packages/store-postgres/test/query-plans.test.ts` pins the index each
+    statement reaches its rows through, and
+    `packages/store-mysql/test/query-plans.test.ts` holds the rows each batch
+    walked beside a history and beside a backlog. `scripts/alpha1-compat.sh` runs
+    alpha.1's cycle at each version from 5 to 11. The three reds are registered
+    mutations. `operator-finder-lists-a-move-at-the-instant-it-comes-due` writes
+    `<` for `<=` in the one comparison core holds a leg's instant to, and fails
+    "lists a move from the instant it comes due, as the engine takes it, and not
+    a millisecond before a lease expires", where the finder must list the run the
+    sweep then takes. `plan-a-driving-due-range-is-bounded-as-its-entry-says`
+    drops the LIMIT from the runs a predicate admits, and fails the plan test's
+    check of `DRIVEN_BY_A_DUE_RANGE`, as
+    `plan-a-due-range-alone-is-bounded-as-its-entry-says` does for the read of
+    live tasks and `A_DUE_RANGE_ALONE`.
+    `cli-explain-lists-every-waiter-of-the-event` lists only the task asked
+    about, and fails the three-waiter seed.
 38. PR5.3d: drive verbs are the ports and nothing else. After each of `enqueue`,
     `emit`, `cancel`, `retry` and `sweep`, a dump of every table equals the dump
     the same port call leaves on a twin database with the same seeded IdSource,
@@ -678,18 +790,16 @@ PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
 before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
 PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer decides on the
-two contract changes of DESIGN.md section 3.12, PR5.3c does not merge before the
-maintainer decides on the `enqueue_at_ms` plan-reader gate change, and PR5.2c2
-does not merge before the maintainer decides on the `fence_at_ms` one. A refusal
+two contract changes of DESIGN.md section 3.12, and PR5.2c2 does not merge
+before the maintainer decides on the `fence_at_ms` plan-reader gate change. The
+maintainer approved PR5.3c's `enqueue_at_ms` plan-reader gate change on
+2026-10-04, with its metric definitions and the seven legs of `stuck`, so no
+decision holds PR5.3c. A refusal
 is met by a docs pull request that first rewrites the lines it touches. If a
 contract change is refused, that pull request rewrites lines 40, 42, 43 and 44
 so that purge keeps every unit whose idempotency key may be presented again (the
 first change refused) or whose handle may still be awaited (the second). If the
-`enqueue_at_ms` change is refused, it rewrites lines 37, 39 and 44 and receipt
-M1: `stuck --older-than` leaves line 37, and line 39's script, line 44's run and
-receipt M1 are handed the task ids of the never-started and awaiting causes,
-which no clock leg holds. If the `fence_at_ms` change is refused, it rewrites
-line 42 before PR5.2c2 merges.
+`fence_at_ms` change is refused, it rewrites line 42 before PR5.2c2 merges.
 
 **Non-goals:** the maintainer's live week, which is receipt M1 above; sharding
 and fan-out (PR5.1), dedicated placement (Phase 6) and the WDK wrapper (Phase
@@ -754,16 +864,20 @@ producer's redelivery horizon, the 3,600 second floor and the 5,000 checkpoint
 unit cap. No longer held: the maintainer approved on 2026-10-03 the two contract
 changes PR5.2a writes into DESIGN.md section 3.12, that an idempotency key
 dedupes for the window of its task's terminal state and that a child handle is
-valid until its unit is purged, after which an await is refused loudly. The one
+valid until its unit is purged, after which an await is refused loudly. And on
+2026-10-04 the maintainer approved the three things PR5.3c waited on, each as
+built: the `gate-changes:` entry that adds `enqueue_at_ms` to the libSQL plan
+reader's due columns, the metric definitions, that claim latency is
+`claimLagMs`, the wait of the head of the queue, and a task's start latency,
+with no `claimed_at_ms` column, no histogram and no rate, and `stuck` listing
+seven legs where the plan had four. `sizes` is a statement tree, so the entry it
+would have needed as a text statement was never written. Still held, the one
 released-surface change:
 `FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
 checkpoints and to events, which needs a `changed` entry in
 scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
-before PR5.2c2 adds it. The metric definitions, above all that claim latency is
-the age of the oldest due run plus per-task start latency, with no
-`claimed_at_ms` column. Two `gate-changes:` entries for the libSQL plan reader,
-adding `enqueue_at_ms` to its due columns in PR5.3c and `fence_at_ms` in
-PR5.2c2, and a third if `sizes` falls back to a text statement. Whether
+before PR5.2c2 adds it. One `gate-changes:` entry for the libSQL plan reader,
+adding `fence_at_ms` to its due columns in PR5.2c2. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write that opens a store and loads no `.env`, and the
@@ -6125,7 +6239,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     removes the `fake-clock` batch and its entry in `scripts/text-statements.json`, and
     makes the flag part of the snapshot, where today it is read straight after it. Trigger:
     PR5.3c, whose `stats` reads the flag in its one read batch by design, and `taskFacts`
-    follows it then.
+    follows it then. PR5.3c did not build it, and its entry says why and names the trigger
+    now.
   - Option for `inspect --key`, not built, with its trigger: find the task by its key and
     read its facts in one batch. Today they are two reads, and nothing deletes a task
     between them. Trigger: PR5.2c2, whose purge can, and then a key that found a task
@@ -6141,7 +6256,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - Option for the three store files of the reads, not built, with its trigger: one check
     that holds them equal, or one file. They are the same apart from the class name, shaped
     as a class so that the batch checkers, which read text, see each label inside a
-    member. Trigger: a fourth file of this shape, or batch checkers that read trees.
+    member. PR5.3c adds to what is written three times: the `owed`, `overdue` and
+    `counted` wiring of those files, and in each store's `store.ts` the fragments
+    `dueRuns`, `claimOwed`, `LEASES_LAPSED`, `DEADLINES_PASSED` and `countedRuns` with the
+    constants made from them. The text is the same in the three, but for
+    `DEADLINES_PASSED`, which is one fragment on libSQL and PostgreSQL and one to a live
+    state on MySQL. The registered mutations of those fragments aim at the libSQL copy only,
+    so a change to PostgreSQL's or MySQL's copy is held by the conformance cases on that
+    dialect and by no mutation. Trigger: a fourth file of this shape, batch checkers that
+    read trees, or the next change to one of those fragments.
   - Option for the stream an answer prints on, not built, with its trigger: make it part of
     the answer's type, so that an answer which does not exit 0 cannot be built without
     saying whether it is the snapshot its command exists to print or a refusal. Today a
@@ -6245,7 +6368,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     task's checkpoints, corrupt rows included, in place of `getCheckpoints`, which returns
     every checkpoint's state to be counted and leaves out a row it cannot order. Trigger:
     PR5.3c, which adds reads to `OperatorReads`, or a task whose `explain` is slow because
-    it holds thousands of checkpoints.
+    it holds thousands of checkpoints. PR5.3c added reads and did not build this one, and
+    its entry says why and names the trigger now.
   - Option for the hung-run bound, not built, with its trigger: an instant for the start of
     each claim, so a later pass of a run has a start. A `claimed_at_ms` column is a
     non-goal of this milestone. Trigger: an operator who has to find a hung pass of a run
@@ -6274,6 +6398,181 @@ these three things; nothing else in the system does I/O, time, or randomness.
     well. `diagnose` reads facts that the operator-reads surface already holds equal on the
     three dialects, so the walk runs where the walk is cheapest. Trigger: a state `explain`
     names differently on two dialects.
+- **PR5.3c stuck, stats, sizes and schema version 11**: DONE (#117). Exit test line 37 of
+  the operable alpha milestone. `OperatorReads` gains five reads of one queue, each one
+  core implementation reached through the store factories: `stuckRuns`, `agedTasks`,
+  `queueStatus`, `tableRows`
+  and `eventWaiters`, in the batches `stuck-runs`, `aged-tasks`, `queue-status`,
+  `table-rows` and `event-waiters`, all read-only. The CLI gains `stuck`, `stats` and
+  `sizes`, and `explain` lists the waiters of an await. Schema version 11 is the index
+  `tasks_live`. No statement of this pull request writes, no engine statement changes its
+  SQL, which the corpus holds, and no released declaration changes. DESIGN.md section 3.11
+  holds each read, each gauge's definition and what a gauge is not, the exits, the index
+  with its measured write cost, and the three decisions the maintainer approved. The
+  registry holds 1344 mutations where main held 1259: thirty-three for how core decodes a
+  leg, a gauge, a count and a list, twenty-six for what a dialect decides, held on libSQL
+  against the engine and against a dump, twenty for the three commands and the waiters
+  `explain` lists, and six for what bounds a due range in the libSQL plan test. The base
+  gate's arm is keyed on main's digest and exempts their seventy-six markers. It re-aims one
+  entry of main's registry, whose lines moved out of the libSQL store's `claim` into
+  `claimEligibility`.
+  - What the maintainer approved, on 2026-10-04, each as built. (1) The libSQL plan reader
+    counts a range on `enqueue_at_ms` as a due range, which six statements need. Three
+    commits hold what needs it: the read of the oldest live tasks with `stuck
+    --older-than`, the gauge of live tasks and the age of the oldest, then the reader's
+    change with its plan tables, then the PostgreSQL and MySQL plan cases. (2) The metric
+    definitions: claim latency is `claimLagMs` and a task's start latency, with no
+    `claimed_at_ms` column, no histogram and no rate. (3) `stuck` lists seven legs where
+    the plan had four: three of them list the rows a move is owed to that the engine does
+    not take.
+  - Where the build differs from the plan, and why. (1) The index's predicate has a second
+    term on libSQL and PostgreSQL, `AND enqueue_at_ms IS NOT NULL`. With the planned
+    predicate libSQL planned 25 statements of 14 batches through the index, the claim's
+    among them, and each read every live task of a state. The term leaves no task out and
+    keeps the engine's statements off the index, and a PostgreSQL case holds the same there.
+    (2) What a read must write to use the partial index differs by database, and was
+    measured: SQLite 3.45 needs both terms as the index writes them, and PostgreSQL 17
+    needs a comparison of the instant. So each store's leg of live tasks is its own text.
+    (3) `stuck` is its clock legs in one batch and the oldest live tasks in a batch of
+    their own, `aged-tasks`, where the plan had the oldest live tasks as a fifth leg of
+    the one batch. They are read only when asked for, and they are the part that needs
+    the plan reader's change. (4) The grace
+    and the age are applied once, in core, to rows each leg read oldest first and one row
+    past its limit. So the first red is `<` in that one comparison, where the plan named it
+    on `claim_expires_at_ms` in one leg. Each leg's SQL keeps the engine's own predicate at
+    the engine's own clock. (5) The claim legs hold what a claim requires of a run and its
+    task, with the claim's due predicate, and do not go through the claim's candidate
+    subquery, which locks rows and holds the claim's limit. (6) `sizes` counts five tables
+    and not `drivers`: a statement tree names the tables core lists, and a driver's row is
+    a heartbeat. The grammar took the count over a LIMITed derived table on the three
+    dialects, so it is a tree and no text statement. (7) The plan test's table
+    `DRIVEN_BY_A_DUE_RANGE` holds only a due range that drives another step. The gauges
+    and the oldest live tasks read a due range that drives nothing, so the plan reader
+    reports every due range now and a second table, `A_DUE_RANGE_ALONE`, names each
+    statement that reads one alone, `next-wake` among them, which main passed unnamed. That
+    is a second change to the plan test, and it does two things. It names what main
+    passed unnamed. And it widens what the growth oracle excuses: on main a statement
+    that grew and that the reader passed was excused only by a due range that drives
+    another step, and here it is excused as well by lone due ranges that
+    `A_DUE_RANGE_ALONE` names for that statement, line for line, with their bound in the
+    text that was read. With main's rule put back by hand, five shipped statements fail
+    the oracle in the measured surface: the gauge's legs of pending and of sleeping runs,
+    its legs of pending and of sleeping live tasks, and the leg of pending tasks of the
+    oldest live tasks, which are the ones whose rows the surface's backlog holds. Each of
+    the ten statements of the gauges and of the oldest live tasks grows by design up to
+    its LIMIT. As this pull request was
+    first pushed the oracle excused any statement whose plan read a due range at all,
+    which was wider than that and was declared nowhere, and this entry called the change
+    a tightening. Its one review found both, and the fold narrowed the excuse to what
+    this paragraph says. Every variation of the measured surface passes with it, so
+    nothing wider remains. The five statements of
+    `table-rows` are excused by name, each for its walk. (8) A run under a lapsed lease
+    whose task is also past its deadline is in two legs. On PostgreSQL and MySQL the
+    sweep's reclaim can land before its cancellation, so the differential holds such a run
+    to being taken by an arm. (9) DESIGN.md records version 11's write cost in section
+    3.11, beside the reads that use the index, and not beside version 9. No store exports
+    a note for the version.
+  - The options whose trigger was this pull request. The read of the tasks waiting on an
+    event, with the field `explain` prints: built. The test clock's flag inside the
+    snapshot batch: not built, and its trigger did not fire as it was written. The trigger
+    was that `stats` would read the flag in its one batch. It does not: `queueStatus`,
+    `stuckRuns` and `agedTasks` read it straight after their snapshot, through the
+    `fake-clock` batch `taskFacts` uses, because a statement tree still may not name the
+    test clock's row. Trigger now: a tree that may read that row, or an operator misled by
+    a flag set between the two reads. The read that counts a task's checkpoints: its
+    trigger fired, because this pull request adds reads to `OperatorReads`, and it is not
+    built. A count that includes a row the decoders refuse changes what `explain` exits
+    with for a task whose checkpoint is not readable, which PR5.3b2 merged with its case,
+    and that is a change to review on its own. Trigger now: the next pull request that
+    changes `explain`, or a task whose `explain` is slow because it holds thousands of
+    checkpoints.
+  - Option for the differential, not built, with its trigger: hold a run in both legs of
+    the sweep to the arm that takes it on each dialect. The walks hold such a run to being
+    taken by an arm, and the seeded answers hold what each leg lists. Trigger: a finder
+    defect that only a run in both legs shows.
+  - Option for the claim beside a due backlog, not built, with its trigger: find why, on
+    PostgreSQL, one claim beside 20,000 due pending runs that share one instant took about
+    770 ms. It was seen with the new index dropped, while the first measurement of version
+    11 was set up, and it was not investigated here. The measurement that is recorded uses
+    a backlog that is not due. Trigger: a queue that holds thousands of runs due at one
+    instant.
+  - The one review, and its fold. One review of the head 267779c found no HIGH, one
+    MEDIUM and seven LOW, and six of the eight count. `postmortems/pr5.3c-stuck-stats-review.md`
+    is its postmortem. The fold lists every row a move is owed to that the engine does not
+    take (finding 1, and the same gap in the sweep's two legs, which the postmortem's own
+    audit found), keeps the list of an event's waiters in the order its statement reads
+    (finding 3), gives the gauge of live tasks a statement that selects only its id and
+    its instant (finding 4), narrows what the growth oracle excuses and corrects the word
+    above (finding 6), and makes three statements say what the code does (findings 2, 7
+    and 8). Finding 5 is the option for the three store files, which PR5.3b1's entry holds
+    and now names this pull request's part of.
+  - Where the fold differs from the plan, and why. `stuck` has seven legs where the plan
+    had four. The plan's rule was that a leg holds what the engine's next claim or sweep
+    would take. A row a move is owed to that the engine refuses was then in no leg at any
+    grace, while `stats` counted it and `explain` called its task stuck, so `stuck
+    --fail-if-any` exited 0 for a row no tick will ever move. Three legs list such rows:
+    `dueNotAdmitted`, `lapsedNotReclaimed` and `deadlineNotCancelled`. They hold no
+    predicate of refusal. Each store hands core the rows a move is owed to by their
+    instant alone, the batch reads a window of the oldest of each beside the engine's own
+    leg, and core lists a row of the window that the engine's leg does not hold. The fold
+    first built the leg of due runs from the claim's requirement negated, which read every
+    due run a claim admits and cost the due backlog, and exit test line 37 was given a
+    sentence for that. The windows replaced it and the sentence is taken back. A window
+    is bounded by its LIMIT: on libSQL the window of pending runs took 0.2 ms beside
+    2,000 due runs and beside 20,000, where the negated read had taken 13 ms and 114 ms.
+    An engine's leg is bounded by its LIMIT beside rows the engine takes, and reads past
+    each row the engine refuses that stands ahead of what it answers, as the claim's own
+    candidate read does. Beside 20,000 due runs that a claim refuses and one it admits,
+    the engine's leg of pending runs took 49 ms where the window took 0.2 ms. DESIGN.md
+    section 3.11 gives the four measurements.
+  - What a window does not see. A window is the limit and two rows deep. A row the
+    engine refuses is not settled while as many rows as the limit and two stand ahead of
+    it in its order, or as many rows the engine takes as the limit and one: 22 and 21
+    under the default limit of 20. The leg's `unexamined` is true when such a row could
+    be listed under the grace asked for, so a backlog too young for the grace leaves
+    nothing unexamined. Such a row is never taken, so it reaches the front as the rows
+    ahead of it are taken. A conformance case holds both halves under a limit of two.
+    For these three legs `atLeast` says what the window showed, and `unexamined` is what
+    says more may exist past it.
+  - The re-review of the fold, and the last fold. A narrow re-review of the fold alone,
+    at bd28312, found no HIGH, no MEDIUM and nine LOW, every one of them made by the
+    fold. Six of the nine count, 12 in all, and the same postmortem holds the round. The
+    last fold holds `unexamined` to the grace (R2), examines every row a window read and
+    says what `atLeast` means for a leg found through a window (R1), corrects the
+    sentence that said every read of the batch is bounded by its LIMIT (R6), runs
+    `explain` in the case DESIGN.md says holds its answer for a lapsed lease no sweep
+    reclaims (R7), seeds a refused deadline in every live state with a hold that fails
+    when a window of deadlines is left out (R8), and corrects the doc of `UnadmittedRun`
+    (R9). It wires each leg through one descriptor that holds the id column, the id and
+    the decoder together (R5), and the option for the three store files names the
+    `overdue` wiring and `DEADLINES_PASSED` (R4). No review follows the last fold: each
+    change was checked by running it.
+  - Option for the legs of what the engine does not take, not built, with its trigger
+    (R3): one statement to a leg, a derived table of the oldest rows by the instant alone
+    under a LIMIT, with the engine's predicate selected beside each row as a value. Every
+    row of the window would be settled by the engine's own predicate at one clock. Today
+    refusal is inferred from two reads, each under a LIMIT: the inference rests on the
+    order of the reads and on the rule that a refused row sorts before the last row the
+    engine's leg answered, and it leaves rows of the window unsettled. Trigger: the first
+    wrong answer the inference gives, or a statement tree that can select the engine's
+    predicate as a value.
+  - Option for `explain`, not built, with its trigger: a cause of its own for a due run
+    that no claim admits. `explain` gives such a run the cause and the verdict it gives
+    any due run, and the next command those causes name is a tick, which will not take
+    it. The leg `stuck` lists the run in is what says so today. Trigger: PR5.3d, which
+    adds the drive verbs those causes name, or the first operator who ticks at
+    `explain`'s suggestion for a run no tick takes.
+  - Option for a live task whose enqueue instant is not readable, not built, with its
+    trigger: a bounded read of such tasks beside the legs of `aged-tasks` and of the
+    gauge of live tasks. A leg reads in the order of the stored instant, so a task
+    enqueued past its bound is the last of its state, and a limit or the gauge's cap can
+    stop the leg before it: it is then neither listed nor named, and what `stuck
+    --older-than` exits with depends on `--limit`. DESIGN.md says so and a CLI case holds
+    the three exits. The read would name such a task whatever the limit. It was not
+    closed in the fold: on libSQL the index of live tasks is read by a range of the
+    instant, and a value that is no integer needs a second shape of statement, which is
+    more than the hour the option was given. Trigger: the first report of a corrupt
+    instant hidden behind a limit, or the purge pull request.
 - **PR5.2c1 the terminal stamp and the retention row checks**: DONE (#116). Exit test line
   41 of the operable alpha milestone. No statement, no batch and no schema version is added,
   no released declaration changes, and core, the stores, the SDK and the CLI are unchanged

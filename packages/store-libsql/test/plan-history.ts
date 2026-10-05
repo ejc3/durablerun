@@ -124,6 +124,13 @@ export async function recordHistory(
   const awaitChild = (run: typeof parent) =>
     store.awaitTaskDone('q', run.taskId, run.runId, run.claimToken, 'step', child.taskId, null)
   await awaitChild(parent)
+  // An operator's reads of the queue, here because every table now holds a row of it: what
+  // a claim or a sweep would take now, the gauges, the row counts, and an event's waiters.
+  await operator.stuckRuns('q', { graceSeconds: 0, limit: 20 })
+  await operator.queueStatus('q')
+  await operator.tableRows('q')
+  await operator.eventWaiters('q', 'event')
+  await operator.agedTasks('q', { olderThanSeconds: 0, limit: 20 })
   const childRun = await startedOf(child.taskId)
   await store.complete('q', childRun.runId, childRun.claimToken, '{}')
   const wokenParent = await startedOf(parent.taskId)

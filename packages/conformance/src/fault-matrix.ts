@@ -95,6 +95,11 @@ export const MATRIX_READ_LABELS = [
   'fake-clock',
   'task-id-by-key',
   'event-state',
+  'stuck-runs',
+  'queue-status',
+  'table-rows',
+  'event-waiters',
+  'aged-tasks',
 ] as const
 
 /** Fixture plumbing that runs outside any simulated actor. */
@@ -887,6 +892,13 @@ export async function runFaultMatrixCase(
       if (t2) await go(() => operator.taskFacts(Q, t2.taskId))
       await go(() => operator.taskIdByKey(Q, 'k1'))
       await go(() => operator.eventState(Q, 'go'))
+      // And of the queue: what a claim or a sweep would take now, the gauges, the row
+      // counts, and the waiters of an event.
+      await go(() => operator.stuckRuns(Q, { graceSeconds: 0, limit: 10 }))
+      await go(() => operator.queueStatus(Q))
+      await go(() => operator.tableRows(Q))
+      await go(() => operator.eventWaiters(Q, 'go'))
+      await go(() => operator.agedTasks(Q, { olderThanSeconds: 0, limit: 10 }))
     })
     await world.run()
 

@@ -6,9 +6,9 @@ import {
   nowValue,
   rawSql,
 } from '../sql-tree.js'
-import { treeBuilder } from '../store-tables.js'
+import { type QueueTable, treeBuilder } from '../store-tables.js'
 import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
-import { rollbackSelections } from './reads.js'
+import { admittedRuns, dueCancelRows, rollbackSelections } from './reads.js'
 
 /**
  * The reads of the operator's port (`OperatorReads`), each one SELECT of a batch that only
@@ -148,4 +148,184 @@ export const eventStateRead = defineStatement(
       .select('emitted_at_ms')
       .where('queue', '=', binds.queue)
       .where('event_name', '=', binds.eventName),
+)
+
+/**
+ * `table-rows`: how many rows of one table one queue holds, counted up to a cap. The inner
+ * SELECT stops one row past the cap, so the count is exact up to the cap, and one more than
+ * the cap when the queue holds more than that. The database reads no row past that one.
+ */
+export const tableRowsRead = defineStatement(
+  'table-rows',
+  (binds: { table: QueueTable; queue: string; cap: number }) =>
+    treeBuilder
+      .selectFrom(
+        treeBuilder
+          .selectFrom(binds.table)
+          .select('queue')
+          .where('queue', '=', binds.queue)
+          .limit(binds.cap + 1)
+          .as('counted'),
+      )
+      .select((eb) => eb.fn.countAll<number>().as('row_count')),
+)
+
+/** The instant a leg of runs is ordered by, and the column that holds it. */
+export type RunInstant = 'available_at_ms' | 'claim_expires_at_ms'
+const runInstant = (instant: RunInstant) =>
+  instant === 'available_at_ms' ? 'r.available_at_ms' : 'r.claim_expires_at_ms'
+
+/**
+ * One leg of `stuck-runs` over runs: the runs a store's predicate admits, each with its
+ * task's name, oldest instant first (`admittedRuns`). `admitted` is the predicate the
+ * engine's own statement holds: a claim's candidates of one state, or the sweep's expired
+ * claims. The leg of leases also selects the two generations, which say whether the lost
+ * claim was started.
+ */
+export const overdueRunsRead = defineStatement(
+  'stuck-runs runs',
+  (binds: { limit: number; taskOwnsRun: SqlFragment; admitted: SqlFragment; dueAt: RunInstant }) =>
+    admittedRuns(binds, runInstant(binds.dueAt)).select([
+      'r.run_id',
+      'r.task_id',
+      't.task_name',
+      'r.attempt',
+      runInstant(binds.dueAt),
+      ...(binds.dueAt === 'claim_expires_at_ms'
+        ? (['r.claim_gen', 'r.activated_gen'] as const)
+        : ([] as const)),
+    ]),
+)
+
+/**
+ * The leg of `stuck-runs` over tasks: the tasks the sweep's scan of due cancellations
+ * takes (`dueCancelRows`), each with its name, its state and its deadline.
+ */
+export const overdueCancelsRead = defineStatement(
+  'stuck-runs cancels',
+  (binds: Parameters<typeof dueCancelRows>[0]) =>
+    dueCancelRows(binds).select(['t.task_name', 't.state', 't.cancel_at_ms']),
+)
+
+/**
+ * A window of `stuck-runs` over runs: the runs a store's predicate takes by their instant
+ * alone, oldest first, up to a limit. `rows` names the queue, the state, and that the
+ * instant has come, and requires nothing else of the run or of its task: no task is joined.
+ * The engine's own leg is read beside it, and a run of the window that the engine's leg
+ * does not answer is one the engine does not take.
+ */
+export const overdueRunsWindowRead = defineStatement(
+  'stuck-runs window runs',
+  (binds: { limit: number; rows: SqlFragment; dueAt: RunInstant }) =>
+    treeBuilder
+      .selectFrom('runs as r')
+      .select(['r.run_id', 'r.task_id', 'r.attempt', runInstant(binds.dueAt)])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy(runInstant(binds.dueAt))
+      .orderBy('r.run_id')
+      .limit(binds.limit),
+)
+
+/** A window of `stuck-runs` over tasks: the live tasks past their cancellation deadline, oldest deadline first. */
+export const overdueTasksWindowRead = defineStatement(
+  'stuck-runs window tasks',
+  (binds: { limit: number; rows: SqlFragment }) =>
+    treeBuilder
+      .selectFrom('tasks as t')
+      .select(['t.task_id', 't.task_name', 't.state', 't.cancel_at_ms'])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy('t.cancel_at_ms')
+      .orderBy('t.task_id')
+      .limit(binds.limit),
+)
+
+/**
+ * Database time, as a statement of its own. A report of a queue dates itself with it, last
+ * in its batch, because a queue may hold no row to select the clock beside.
+ */
+export const databaseNowRead = defineStatement('database-now', (_binds: Record<never, never>) =>
+  treeBuilder.selectNoFrom(aliasedAs(nowValue, 'now_ms')),
+)
+
+/**
+ * One leg of `queue-status` over runs: one instant of every run a store's predicate takes,
+ * earliest first, up to a limit. `rows` names the queue, the state, and that the instant
+ * is stored at all, and holds the instant to no bounds: a gauge counts a stored instant
+ * its bounds refuse, and the read that decodes it lists it.
+ */
+export const runInstantsRead = defineStatement(
+  'queue-status runs',
+  (binds: { limit: number; rows: SqlFragment; instant: RunInstant }) =>
+    treeBuilder
+      .selectFrom('runs as r')
+      .select(['r.run_id', runInstant(binds.instant)])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy(runInstant(binds.instant))
+      .orderBy('r.run_id')
+      .limit(binds.limit),
+)
+
+/** The leg of `queue-status` over tasks: the cancellation deadline of every live task that has one. */
+export const taskDeadlinesRead = defineStatement(
+  'queue-status deadlines',
+  (binds: { limit: number; rows: SqlFragment }) =>
+    treeBuilder
+      .selectFrom('tasks as t')
+      .select(['t.task_id', 't.cancel_at_ms'])
+      .where(rawSql<boolean>(binds.rows, 'predicate'))
+      .orderBy('t.cancel_at_ms')
+      .orderBy('t.task_id')
+      .limit(binds.limit),
+)
+
+/**
+ * The live tasks a store's predicate takes, in the order they were enqueued, up to a limit.
+ * `rows` names the queue and one live state and compares the enqueue instant, so the index
+ * of live tasks hands the rows out oldest first, and it holds the instant to no bounds.
+ */
+const liveTaskRows = (binds: { limit: number; rows: SqlFragment }) =>
+  treeBuilder
+    .selectFrom('tasks as t')
+    .where(rawSql<boolean>(binds.rows, 'predicate'))
+    .orderBy('t.enqueue_at_ms')
+    .orderBy('t.task_id')
+    .limit(binds.limit)
+
+/** A leg of `aged-tasks`: those live tasks (`liveTaskRows`), each with its name and its state. */
+export const liveTasksRead = defineStatement(
+  'live-tasks',
+  (binds: Parameters<typeof liveTaskRows>[0]) =>
+    liveTaskRows(binds).select(['t.task_id', 't.task_name', 't.state', 't.enqueue_at_ms']),
+)
+
+/**
+ * A leg of the gauge of live tasks in `queue-status`: the same rows, each with its id and
+ * its enqueue instant and nothing else. A gauge counts rows and dates the oldest, so it
+ * selects no column the index of live tasks does not hold where that index holds the
+ * table's key, and the index then answers the leg with no read of the table.
+ */
+export const liveTaskInstantsRead = defineStatement(
+  'queue-status live-tasks',
+  (binds: Parameters<typeof liveTaskRows>[0]) =>
+    liveTaskRows(binds).select(['t.task_id', 't.enqueue_at_ms']),
+)
+
+/**
+ * `event-waiters`: the waits of a queue registered on one event that are still waiting,
+ * in the order of their key, which is the run and then the step, up to a limit. The list
+ * an operator is answered keeps this order, so the limit cuts where the list does. A wait
+ * holds its task, so the task of each is read from the wait's own row.
+ */
+export const eventWaitersRead = defineStatement(
+  'event-waiters',
+  (binds: { queue: string; eventName: string; limit: number }) =>
+    treeBuilder
+      .selectFrom('waits as w')
+      .select(['w.task_id', 'w.run_id', 'w.step_name', 'w.timeout_at_ms'])
+      .where('w.queue', '=', binds.queue)
+      .where('w.event_name', '=', binds.eventName)
+      .where('w.status', '=', literalValue('waiting'))
+      .orderBy('w.run_id')
+      .orderBy('w.step_name')
+      .limit(binds.limit),
 )

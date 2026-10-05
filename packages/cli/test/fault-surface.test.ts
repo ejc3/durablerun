@@ -113,8 +113,9 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
     },
   ],
   // By the key of a started run parked on a timer, `explain` sends the read by key, the
-  // facts and the checkpoints, which is each batch it declares. Of a parent parked on its
-  // child it reads the facts of both, so a fault also meets the second task's reads.
+  // facts and the checkpoints. Of a parent parked on its child it reads the facts of both
+  // and the waiters of the child's completion, so a fault also meets the second task's
+  // reads, and between the two scenarios each batch it declares is sent.
   explain: [
     {
       name: 'the current version, by the key of a run asleep on a timer',
@@ -131,6 +132,10 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       line: (_db, _seeded, parent) => ['explain', parent ?? '', '--queue', QUEUE, '--json'],
     },
   ],
+  // With --older-than, `stuck` sends each batch it declares.
+  stuck: readAt(() => ['stuck', '--queue', QUEUE, '--json', '--older-than', '1h']),
+  stats: readAt(() => ['stats', '--queue', QUEUE, '--json']),
+  sizes: readAt(() => ['sizes', '--queue', QUEUE, '--json']),
 }
 
 /** The idempotency key of the sleeping task the first `explain` scenario writes. */

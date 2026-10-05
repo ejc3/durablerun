@@ -1,4 +1,5 @@
 import {
+  type EventWaiters,
   type RunFacts,
   type TaskFacts,
   type WaitFacts,
@@ -7,7 +8,7 @@ import {
   taskIdOfDoneEvent,
 } from '@durablerun/core'
 import { COMMANDS, type CommandSpec } from './commands.js'
-import { whatIsNotReadable } from './inspect.js'
+import { rowNamed, whatIsNotReadable } from './inspect.js'
 import { failureReason } from './render.js'
 
 /**
@@ -264,12 +265,15 @@ export interface Evidence {
   /** How many checkpoints the task has committed, or that their rows could not be read. */
   readonly checkpoints?: number | 'unreadable'
   readonly child?: ChildEvidence
+  /** The waits still waiting on the event the task awaits, the task's own among them. */
+  readonly waiters?: EventWaiters
 }
 
 /** Evidence `diagnose` needs before it can answer. */
 export type Needed =
   | { readonly needs: 'checkpoints' }
   | { readonly needs: 'child'; readonly taskId: string }
+  | { readonly needs: 'waiters'; readonly eventName: string }
 
 interface View {
   readonly facts: TaskFacts
@@ -543,6 +547,36 @@ const awaited = (wait: WaitFacts) => ({
   step: wait.stepName,
 })
 
+/**
+ * An await's cause with every wait still waiting on its event: the task asked about and
+ * each other task parked on the same event, so an operator who emits it knows what wakes.
+ * The cause asks for the list, and answers once it has it. The list is read after the
+ * task's facts, in a snapshot of its own, so a task woken between the two reads is not in
+ * the list its own answer prints, and asking again answers it. A wait of the list whose
+ * timeout is not readable makes the answer `unreadable` and names that wait, as a row of
+ * the task's own does.
+ */
+function withWaiters({ evidence }: View, wait: WaitFacts, found: Found): Found | Needed {
+  const read = evidence.waiters
+  if (read === undefined) return { needs: 'waiters', eventName: wait.eventName }
+  if (read.corrupt.length > 0) {
+    return { cause: 'unreadable', facts: { notReadable: read.corrupt.map(rowNamed) } }
+  }
+  return {
+    ...found,
+    facts: {
+      ...found.facts,
+      waiters: read.waiters.rows.map((one) => ({
+        taskId: one.taskId,
+        runId: one.runId,
+        step: one.stepName,
+        timeoutAtMs: one.timeoutAtMs,
+      })),
+      moreWaiters: read.waiters.atLeast,
+    },
+  }
+}
+
 const waitOutlivesItsEventArm: RunArm = (view, run) => {
   const wait = registeredWait(view, run)
   const event = view.facts.events.find((one) => one.eventName === wait?.eventName)
@@ -600,7 +634,7 @@ const awaitingAChildArm: RunArm = (view, run) => {
   const childTaskId = wait === undefined ? null : taskIdOfDoneEvent(wait.eventName)
   if (wait === undefined || childTaskId === null) return null
   if (evidence.child === undefined) return { needs: 'child', taskId: childTaskId }
-  return {
+  return withWaiters(view, wait, {
     cause: 'awaiting-a-child',
     at: wait.timeoutAtMs,
     facts: {
@@ -608,20 +642,24 @@ const awaitingAChildArm: RunArm = (view, run) => {
       childTaskId,
       ...followedTo(evidence.child),
     },
-  }
+  })
 }
 
 const awaitingATimedEventArm: RunArm = (view, run) => {
   const wait = registeredWait(view, run)
   return wait !== undefined && isAhead(view, wait.timeoutAtMs)
-    ? { cause: 'awaiting-a-timed-event', at: wait.timeoutAtMs, facts: awaited(wait) }
+    ? withWaiters(view, wait, {
+        cause: 'awaiting-a-timed-event',
+        at: wait.timeoutAtMs,
+        facts: awaited(wait),
+      })
     : null
 }
 
 const awaitingAnUntimedEventArm: RunArm = (view, run) => {
   const wait = registeredWait(view, run)
   return wait !== undefined && wait.timeoutAtMs === null
-    ? { cause: 'awaiting-an-untimed-event', facts: awaited(wait) }
+    ? withWaiters(view, wait, { cause: 'awaiting-an-untimed-event', facts: awaited(wait) })
     : null
 }
 

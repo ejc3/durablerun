@@ -62,7 +62,15 @@ describe('the store opener', () => {
         ])
         expect(Object.keys(store.admin).sort()).toEqual(['migrate', 'nowEpochMs', 'schemaVersion'])
         expect(Object.keys(store.scheduler).sort()).toEqual(['getCheckpoints', 'getTaskResult'])
-        expect(Object.keys(store.operator).sort()).toEqual(['taskFacts', 'taskIdByKey'])
+        expect(Object.keys(store.operator).sort()).toEqual([
+          'agedTasks',
+          'eventWaiters',
+          'queueStatus',
+          'stuckRuns',
+          'tableRows',
+          'taskFacts',
+          'taskIdByKey',
+        ])
         // @ts-expect-error no command reads an event's state yet, so the opener hands none
         expect(store.operator.eventState).toBeUndefined()
         // @ts-expect-error the fake clock's setter cannot be written through the CLI's admin

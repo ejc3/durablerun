@@ -1672,7 +1672,10 @@ One invocation executes one claimed run to its next suspension point:
     bounded as the claim was. `key` is the primary key of `meta`, whose rows are
     the clock and the schema's versions. It is a due range when it has a range
     on a column an index hands work out in the order of (`available_at_ms`,
-    `claim_expires_at_ms`, `cancel_at_ms`). It is a walk otherwise: a SCAN of a
+    `claim_expires_at_ms`, `cancel_at_ms`, and `enqueue_at_ms`, which an
+    operator's read of a queue's oldest live tasks reads in order and no
+    statement of the engine ranges over: the maintainer approved that fourth
+    column on 2026-10-04, section 3.11). It is a walk otherwise: a SCAN of a
     table, with an index or without one, a SEARCH through an automatic index,
     and a SEARCH whose constraint list holds neither. The rows of a VALUES are
     no table's, and a SCAN of them is no walk. The rule is three lines. Over
@@ -1774,9 +1777,12 @@ One invocation executes one claimed run to its next suspension point:
     - A due range that stands alone, which drives nothing and which nothing
       drives. `select run_id from runs where queue = ? and state = 'pending' and
       available_at_ms > ?` reads every run that is NOT due, and under no LIMIT a
-      range that points the right way reads everything due at once. It is one
-      step and a due range, so it is no walk, and the list of names holds only a
-      due range that drives another step. Among the steps of an UPDATE's or a
+      range that points the right way reads everything due at once. It is
+      one step and a due range, so it is no walk. The reader reports every due
+      range, and the test holds each shipped statement that reads one alone to a
+      second list of names, with what bounds it: its own LIMIT, or that the
+      range is read for its first row by a minimum. A statement nobody ships is
+      held by neither list. Among the steps of an UPDATE's or a
       DELETE's own select, over the table it writes, such a range is refused,
       and anywhere else it passes: `update runs set attempt = (select count(*)
       from runs where queue = ? and state = 'running' and claim_expires_at_ms <
@@ -1877,8 +1883,8 @@ One invocation executes one claimed run to its next suspension point:
     whatever the table holds. The surface is the statements the store ships
     and three variations of each: the database without one index it may use,
     each write without its WHERE, and each statement in the spellings a write
-    can take. Four properties hold. A statement that grew is not passed unless a
-    due range drives it, which the reader reports. In the shipped database the
+    can take. Four properties hold. A statement that grew is not passed unless it reads a
+    due range, which the reader reports. In the shipped database the
     reader refuses exactly the statements that grew and none other. A spelling
     is judged as the statement is, and a comment first is refused and never
     turns a refusal into a pass. And the surface reaches every kind of plan line
@@ -3338,8 +3344,9 @@ are load-bearing):
    A process of an older build runs against the new schema unchanged, because
    its statements are the same statements, and a newer build on a database
    still at version 6 behaves as every build did before it. That is true of
-   version 7, which changes no statement the engine sends, and of version 9,
-   whose index serves statements that are valid without it. It is not true of
+   version 7, which changes no statement the engine sends, of version 9,
+   whose index serves statements that are valid without it, and of version 11,
+   whose index only an operator's read uses (section 3.11). It is not true of
    MySQL's version 8: a newer build's keyed deletes name the index that
    version adds, so there the database is migrated first, as the note on
    version 8 among the MySQL notes says. An older build
@@ -3985,8 +3992,9 @@ not depend on careful reading:
   sources, direct copy/compare consumers, fake-clock inputs, terminal-arm
   controls, rounded-duration parity, and driver-cleanup atomicity pin the
   contract independently of the global invariant.
-- *The operator-reads surface* (`conformance/src/operator-reads.ts`): the operator's reads
-  (§3.11) on each dialect. Core holds their one implementation, so the surface holds what a
+- *The operator-reads surface* (`conformance/src/operator-reads.ts`, and
+  `operator-queue-reads.ts` for the reads of a queue): the operator's reads (§3.11) on each
+  dialect. Core holds their one implementation, so the surface holds what a
   dialect can still get wrong: the rows its statements answer with, the kind of value its
   driver hands back for a count or an instant, and what its schema lets a column hold.
   Every seeded state is built by driving the engine under the test clock, and its expected
@@ -5603,7 +5611,8 @@ label that call can send, the exit codes it gives, and the exit a fault at each 
 batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
 table. A command may name one argument that a flag stands in for, and it then takes one of
 the two and never both: `inspect` and `explain` each take a task id or `--key`. The commands so
-far are `help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect` and `explain`.
+far are `help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect`, `explain`, `stuck`,
+`stats` and `sizes`.
 
 **Transport.** Every command but `help` opens a store directly, from
 `DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
@@ -5664,7 +5673,8 @@ fails partway, the versions it applied and the version now recorded. `--queue` a
 
 **The operator's reads.** `inspect (<taskId> | --key <idempotencyKey>) --queue Q` reads
 through `OperatorReads` (core's `ports.ts`), a read port apart from `SchedulerStore`: no
-engine actor calls it, and nothing in it writes. It has three methods.
+engine actor calls it, and nothing in it writes. It has eight methods. Three read one task
+or one name.
 
 - `taskFacts(queue, taskId)` answers one snapshot of a task, or null when the queue holds no
   such task: database time, and whether the test clock is set; the task's row (name, state,
@@ -5680,7 +5690,11 @@ engine actor calls it, and nothing in it writes. It has three methods.
 - `eventState(queue, name)` answers whether an event exists and when it was emitted, a
   completion event included, and nothing derived from its payload. The payload digest that
   `emit` prints for an event that already exists belongs to PR5.3d, which adds it there.
-  No command calls `eventState` yet, so the CLI's opener hands out the other two alone.
+  No command calls `eventState` yet, so the CLI's opener hands out every method but that
+  one.
+
+Five read one queue: `stuckRuns`, `agedTasks`, `queueStatus`, `tableRows` and
+`eventWaiters`. What each answers is said below, with the command that prints it.
 
 Core holds the one implementation (`createOperatorReads`). Its statements are shared trees
 (`statements/operator.ts`) over each store's own fragments, and each store package exports
@@ -5768,11 +5782,12 @@ the facts `inspect` reads and hands them to `diagnose` (`src/explain.ts`), which
 cause from a closed table, a verdict, the facts behind the cause, and, for a `waiting`
 verdict, `nextTransitionAtMs`. `diagnose` is pure: it reads no clock and no store, and
 database time is one of the facts. What the facts of one task do not hold it asks for by
-name, and `explain` reads that and asks again. It asks for two things: how many checkpoints
+name, and `explain` reads that and asks again. It asks for three things: how many checkpoints
 the task has committed, for a started run parked on a timer and no event, which
-`getCheckpoints` answers, and the diagnosis of the child, for a run parked on a child's
-completion. So `explain` sends the batches `inspect` sends and, for that one shape of run,
-`get-checkpoints`. It adds no statement and no batch.
+`getCheckpoints` answers, the diagnosis of the child, for a run parked on a child's
+completion, and the waits on the event an await names, which `eventWaiters` answers. So
+`explain` sends the batches `inspect` sends, `get-checkpoints` for that one shape of run,
+and `event-waiters` for a run parked on an await.
 
 A verdict says whether a move is owed to the task, never whether the task did well. A task
 that failed for good is `ok`: nothing will move it and nothing should.
@@ -5903,7 +5918,8 @@ event `$task-done:<id>`, `explain` reads that task's facts and diagnoses it the 
 and so on for `CHILD_HOPS`, 8 awaits, from the task it was asked about. The answer nests
 each diagnosis under `awaits` and, when a child was followed, names the last under
 `deepest`. The next command is the one for that last task. A task 8 awaits away has its own
-child left unread, so a chain of awaits costs at most nine reads of facts. A task takes the
+child left unread, so a chain of awaits costs at most nine reads of facts and nine of an
+event's waiters. A task takes the
 verdict of what it waits for: `waiting`, `stuck`, `inconsistent` and `unexplained` pass up
 as they are, and a child that is `ok` and has not ended makes its parent `waiting`: that is
 a child whose run is claimed under a live lease, however long it has run.
@@ -5921,10 +5937,22 @@ before the child ended, and asking again answers it, or it waits on a task that 
 older than child tasks ended with no completion event. An await under a timeout that has
 passed is `sleeping-past-its-wake`, and its child is not followed.
 
-For an await, the facts name the run, the event and the step. They list no waiting tasks.
-No read lists the tasks that wait on an event, and a list that held only the task `explain`
-read would say that one task waits when many may. PR5.3c adds that read, and the field with
-it.
+For an await, the facts name the run, the event and the step, and they list every wait
+still waiting on that event under `waiters`: the task, the run and the step of each, and
+when its wait times out. The task asked about is one of them. `eventWaiters(queue,
+eventName)` answers the list: the first 1,000 waits in the order of run and then step, and
+`moreWaiters` says when the event holds more. That is the order of the key of `waits`, the
+order the statement reads them in, and the order they print in. Core does not sort them
+again, so the cap cuts where the list does and no wait it leaves out comes before one it
+lists. An await of a child lists the waits on the
+child's completion the same way. A list that held only the task `explain` was asked about
+would say that one task waits when many may, so a seed of three tasks parked on one event
+requires `explain` of any of them to name all three, on every dialect, and no task parked on
+another event. The list is read after the task's facts, in a batch of its own,
+`event-waiters`. So a task that an emit woke between the two reads is not in the list its
+own answer prints, and asking again answers it. A wait of the list whose timeout is outside
+its bounds makes the answer `unreadable`, with exit 10, and names that wait, as a row of the
+task's own does.
 
 The next command is built from the command table: the verb the cause names, each of that
 command's arguments, and each flag it requires, filled from the queue `explain` was given
@@ -5949,6 +5977,347 @@ of a child it followed, or when the decoders refuse a checkpoint row it asked fo
 the key. Its answer is the report the command exists to print, so it prints on stdout
 whatever the exit.
 
+**What the driver owes a queue.** `stuck --queue Q [--grace D] [--limit N] [--older-than D]
+[--fail-if-any]` lists the runs and tasks of one queue that a move of the driver is owed to,
+and has been for at least the grace. `stuck` the command and `stuck` the verdict are two
+things. The verdict is `explain`'s reading of one task. The command lists rows of a queue in
+seven legs. A row of four of them is a row the engine's next claim or sweep would take, and
+a row of the other three is a row a move is owed to that the engine will not take. How the
+two relate is said below.
+
+`stuckRuns(queue, { graceSeconds, limit })` answers seven legs, each oldest first.
+
+- `dueUnclaimed`: the pending runs a claim would take.
+- `sleepingPastWake`: the sleeping runs a claim would take, whose timer, backoff or await's
+  timeout has passed.
+- `dueNotAdmitted`: the pending and the sleeping runs that are due and that no claim
+  admits, each with its state. No claim takes such a run, however long it has been due.
+- `leaseLapsed`: the running runs whose lease has expired, which the sweep takes back. Each
+  says whether a worker started it under its newest claim, as `activated`: the sweep fails a
+  run that was started, and reopens a launch that was lost.
+- `lapsedNotReclaimed`: the running runs whose lease has expired and that the sweep's scan
+  does not answer, so no sweep takes them back.
+- `cancelOverdue`: the live tasks past their cancellation deadline, which the sweep cancels,
+  each with its newest live run.
+- `deadlineNotCancelled`: the live tasks past their cancellation deadline that the sweep's
+  scan does not answer, so no sweep cancels them.
+
+A leg means what the engine means, because it holds the engine's own predicate. Each store
+hands core what its `claim` requires of a run and its task before it takes the run
+(`claimEligibility`, which the store's `claim` is built from) with the claim's due
+predicate, and the fragments its sweep's scan is built from. Core's statements for the two
+sweep legs are built on the same two bases as the sweep's own two reads. So a run that is
+due and that a claim would refuse, as one whose task is past its deadline is, is in neither
+claim leg however long it has been due. The legs do not go through the claim's candidate
+subquery, which locks rows and holds the claim's limit: they read the rows it reads without
+it.
+
+Such a run is in `dueNotAdmitted`, and the sweep has two legs of the same kind. A leg of
+what the engine does not take holds no predicate of refusal. It is found by reading the same
+rows twice. Each store hands core the rows a move is owed to by their instant alone: the
+due runs of a state, the running runs whose lease has expired, and the live tasks past
+their cancellation deadline, with nothing of what a claim or the sweep requires. The batch
+reads a window of the oldest of each, the limit and two rows more, from the row's own table
+with nothing joined, and after it the engine's own leg, the limit and one row more. Core
+lists a row of the window that the engine's leg does not hold, in two cases: the leg is not
+full, so it holds every row the engine takes, or the row sorts before the leg's last row,
+so the engine's statement would have answered it ahead of that one had it admitted it. So a
+row a move is owed to that the window settles is in the leg the engine takes or in the leg
+it does not, and in one only.
+
+The run of a task past its cancellation deadline is in `dueNotAdmitted`, and the sweep
+cancels that task. A claim also refuses a run or a task that holds a row it cannot run
+safely, such as a stored retry strategy that is not JSON. The sweep's scan refuses a run
+whose stored generations or counts it cannot act on, and a task that does not own every run
+of its id. No engine path writes any of those. No move of the engine comes to such a row:
+the claim or the sweep passes it over at every tick, and it stays in its leg for as long as
+the row stays as it is. A row of these three legs is read from its own table, so a run
+prints there with its task's id and no task name, and a run whose task is not in its queue
+is listed like any other.
+
+What a window does not see, the leg says. The window is the limit and two rows deep. A row
+past it is not settled, and neither is a row of it that sorts after the last row of a full
+leg of the engine's. So a row the engine refuses is not settled while as many rows as the
+limit and two stand ahead of it in its order, or as many rows the engine takes as the limit
+and one. The leg's `unexamined` is true when such a row could be one the leg lists under
+the grace it was asked with: a row of the window that was not settled and is old enough for
+the grace, or a window that came back full whose last row is old enough, since no row past
+it is older. A backlog too young for the grace leaves nothing unexamined. Twenty-two
+healthy runs due for one second print `unexamined` false under the default grace, and a CLI
+case holds that. A row the engine refuses is never taken, so it moves to the front of its
+order as the rows ahead of it are taken, and the window reaches it then. A conformance case
+holds both halves: under a limit of two, a run no claim admits that stands behind three
+runs a claim takes is not listed and `unexamined` is true, and once a claim has taken the
+three the same read lists it.
+
+`atLeast` says less for these three legs than for the other four. The window is all such a
+leg reads. True says the window showed more rows the engine does not take than the leg
+lists. False says only that the window showed no more. How many lie past the window the leg
+cannot know, and `unexamined` is what says more may exist. One run a claim takes beside
+thirty it refuses, an hour on and with no grace, prints the limit of twenty rows with
+`atLeast` true and `unexamined` true, and a CLI case holds that.
+
+One batch, `stuck-runs`, holds the windows, then the engine's four legs, then a read of
+the clock, in one read-only snapshot. The windows are four statements on libSQL and
+PostgreSQL: of pending runs, of sleeping runs, of lapsed leases and of passed deadlines. On
+MySQL they are six, because its index of deadlines leads with the state, so its window of
+deadlines is one statement to a live state. The windows are read first. Each statement
+holds its instant to the clock as it reads it, so a row a window read as owed is still owed
+when the engine's leg is read after it, and a row the leg does not hold was not left out
+for its time. Each read compares with the clock in SQL, as the engine's statement does. The
+report is dated by the batch's last statement, so no leg saw a later clock than the one its
+rows are dated against. Whether the test clock is set follows in `fake-clock`, as it does
+for `taskFacts`.
+
+A window is bounded by its LIMIT. It reads the oldest rows of one range of an index and
+stops, whatever the engine would make of them. An engine's leg is bounded by its LIMIT
+beside rows the engine takes. It reads past each row the engine refuses that stands ahead
+of what it answers, as the claim's own candidate read does, so beside such rows it costs
+what a claim costs there. Measured on libSQL: beside 2,001 due pending runs that a claim
+admits and beside 20,001, the window of pending runs took 0.29 ms and 0.23 ms and the
+engine's leg of pending runs 0.89 ms and 0.92 ms. Beside 2,000 due pending runs that a
+claim refuses and one it admits, the window took 0.21 ms and the engine's leg 4.83 ms, and
+beside 20,000 it refuses and one it admits, 0.19 ms and 49.07 ms. The libSQL plan test
+names the four windows as due ranges that stand alone, each bounded by its LIMIT.
+
+The grace is applied in core, once, to every leg: a row is listed when the instant its move
+came due is at or before database time less the grace. With a grace of zero four legs are
+what a claim and a sweep at that instant take, and the other three are what their windows
+found that neither takes. A row is listed from the millisecond its
+grace has run. `explain` calls the same move `stuck` one millisecond later, because its rule
+is a move more than the grace in the past: at exactly the grace the command lists the row
+and the verdict is still `waiting`. A leg of what the engine takes is read one row past its
+limit, so its `atLeast` says exactly whether more rows are owed than the leg lists. The
+limit is from 1 to 1,000 (`OPERATOR_LIST_CAP`). Rows of one instant are listed in the order
+of their ids.
+
+A run under a lapsed lease whose task is also past its deadline is in two legs,
+`leaseLapsed` and `cancelOverdue`. The sweep finds it twice, and sends a batch for each
+finding, side by side, the cancellations first. Over a libSQL file, which runs one batch at
+a time, the cancellation took such a run in every walk of the conformance cases. On
+PostgreSQL and MySQL either the cancellation or the reclaim lands first. The row is owed a
+sweep either way. A due run whose task is past its deadline is listed twice as well: the
+run in `dueNotAdmitted`, and its task in `cancelOverdue` with its newest live run.
+
+Every integer a leg selects is decoded under the bounds core gives its field, and one that
+fails is listed in `corrupt` with the run or the task that holds it. Such a row is listed
+whatever the grace, because nothing says it is inside the grace. Through a store an instant
+outside its bounds does not reach a leg: each leg's predicate holds its instant to its
+bounds as the engine's does, so the engine takes no such row and the legs list none. The
+gauges below count it. A claim refuses the run of a task whose cancellation deadline is
+outside its bounds, so that run, when it is due, is in `dueNotAdmitted`. The leg does not
+select the deadline, and `stats` is what names it.
+
+`agedTasks(queue, { olderThanSeconds, limit })` lists the live tasks of a queue that were
+enqueued at least so long ago, oldest first, each with its age. An age is not a defect:
+nothing says how long a task's work may take. The list holds what no leg above can, because
+no move is owed to any of them: a run under a lease its worker keeps alive, a run parked on
+an event nobody emits, and a task that a worker with no handler for it parks again on every
+tick (section 3.2). Under a tick once a minute, each
+tick's claim takes that task's run and the worker parks it 15 to 24 seconds on, so it is due
+and unclaimed for part of every minute, and never for as long as the default grace. A seed holds that in both forms, the current worker's `deferLaunch` and
+the release alpha.1's start and `reschedule`: at eight instants between each of four ticks
+no leg lists the task under the default grace, a grace of zero shows it at the same
+instants, and its age finds it. One batch, `aged-tasks`, reads the live tasks of each live
+state through the index of live tasks (schema version 11, below), in the order they were
+enqueued and one row past the limit, and then the clock. Core merges the legs and applies
+the age with the comparison it applies a grace with.
+
+A task whose enqueue instant is outside its bounds is reported when its leg reads it, and
+only then. It is named in `corrupt`, and it is listed whatever age was asked, with no age,
+after every task whose age is readable. A leg reads its state's tasks in the order of the
+stored instant and stops one row past the limit, so such a task is read where its stored
+value sorts: first when the value is below its bounds, and last, after every other live
+task of its state, when it is above them. A limit that stops the leg before that row leaves
+the task out of the list and out of `corrupt`, so for such a row what `stuck --older-than`
+exits with can depend on `--limit`. With three pending tasks and one of them enqueued past
+the bound, a limit of one exits 0, a limit of two exits 10 and names the task without
+listing it, and a limit of five exits 10 and lists it. The gauge of live tasks reads the
+same order up to its cap, so beyond 1,001 live tasks of a state `stats` does not name such
+a task either. BUILD.md records the option of a bounded read of the rows whose instant is
+not readable.
+
+`stuck` prints `stuckRuns`, and with `--older-than` it prints `agedTasks` under `agedLive`,
+read after the legs in a snapshot of its own, with the database time it was read at. The
+default grace is `DUE_GRACE_MS`, the grace `explain` uses, and the default limit is 20 rows
+to a list. A duration is a whole number and a unit, `s`, `m`, `h` or `d`, of at most 100
+years. A grace, an age or a limit the command cannot read exits 2 before anything is sent.
+
+Listing a row is the command doing what it says, so it exits 0. With `--fail-if-any` it
+exits 9 when any row is listed: a row of any of the seven legs, and with `--older-than` a
+row of `agedLive` as well. A healthy run under a live lease is in no leg however long it has
+run, so it does not make `--fail-if-any` exit 9 unless the operator asked for live tasks by
+their age. The command exits 10 when its report names a row that is not readable, in the
+legs or in `agedLive`, and that comes before 9, so a script never takes a report with a
+corrupt row for a count. The report prints on stdout whatever the exit. `listed` is the
+number of rows over every list. A run in two legs counts in both, and a due run with its
+task past its deadline counts once for the run and once for the task.
+
+**How `stuck`, `stats` and `explain` relate.** The three read the same rows and ask
+different things of them. `stats` counts: `pendingRunsDue` and `sleepingRunsDue` are the
+runs of each state whose instant is at or before database time, with nothing of a claim's
+admission, and `claimLagMs` is how long the oldest of them has been due. `stuck` lists:
+with a grace of zero, the runs those two gauges count are the runs of `dueUnclaimed`,
+`sleepingPastWake` and `dueNotAdmitted`, each in one leg, as far as the limit and the
+window reach. The conformance
+cases hold both to one dump of the tables: the gauges equal a count of it, and every run
+the dump shows as due is in one of the three legs under its own state. So when `claimLagMs`
+is more than a grace, `stuck` under that grace lists a row, and `--fail-if-any` exits 9 or
+10. `explain` reads one task. Three of its causes name a run that is due:
+`pending-due-unclaimed`, `woken-unclaimed` and `sleeping-past-its-wake`. Their verdict is
+`stuck` once the run is more than `DUE_GRACE_MS` late, and under the default grace `stuck`
+the command then holds that run in one of its three legs of due runs: it lists the run, or
+a leg says with `atLeast` or `unexamined` that more runs are due than it settled. A task past its cancellation
+deadline is named for the deadline before any of the three, and a row that is not readable
+is named as that. `explain` does not test what a claim requires. It gives a run no claim admits the cause and
+the verdict it gives any due run, and it does not say that no tick will take the run. The
+leg `stuck` lists the run in is what tells the two apart.
+
+The legs of the sweep relate to the gauges the same way. The running runs
+`runningRunsLapsed` counts are the rows of `leaseLapsed` and `lapsedNotReclaimed`, and the
+live tasks `tasksPastTheirDeadline` counts are the rows of `cancelOverdue` and
+`deadlineNotCancelled`, as far as the limit and the window reach. A CLI case holds one such
+row end to end. A started run whose `activated_gen` was set past its `claim_gen`, an hour
+after its lease lapsed: the sweep takes nothing, `stats` counts one lapsed lease, `explain`
+answers `lease-lapsed-unswept` and `stuck`, and `stuck --grace 0s --fail-if-any` lists the
+run in `lapsedNotReclaimed` and exits 9.
+
+**A queue's gauges.** `stats --queue Q` prints `queueStatus(queue)`: nine gauges, three
+instants and an age. A gauge is a count of rows that stops at 1,000 (`OPERATOR_GAUGE_CAP`),
+with `atLeast` true when the queue holds more.
+
+- `pendingRuns`: pending runs that hold an available instant, which every pending run the
+  engine writes does. `pendingRunsDue`: those whose available instant is at or before
+  database time.
+- `sleepingRuns`: sleeping runs that hold a wake instant, which is a timer, a backoff or
+  the timeout of an await. A run parked on an await with no timeout holds none, and is in
+  no gauge of runs. `sleepingRunsDue`: those whose wake instant is at or before database
+  time.
+- `runningRuns`: running runs that hold a lease expiry, which every running run the engine
+  writes does. `runningRunsLapsed`: those whose lease expiry is at or before database time.
+- `tasksWithADeadline`: live tasks that have a cancellation deadline.
+  `tasksPastTheirDeadline`: those whose deadline is at or before database time.
+- `liveTasks`: every task that is pending, running or sleeping.
+- `claimLagMs`: database time less the earliest instant of a pending or a sleeping run that
+  has come due, or null when none has. It is how long the head of the queue has waited for
+  a claim.
+- `leaseHeadroomMs`: the earliest lease expiry of a running run less database time, or null
+  when no run is running. It is negative once a lease has lapsed.
+- `nextWakeAtMs`: the earliest instant any counted run or deadline holds, past or to come,
+  or null when none holds one. Where every stored instant is within its bounds it is the
+  instant the store's own read of the queue's next wake answers, which the conformance
+  cases hold at every reading.
+- `oldestLiveTaskAgeMs`: database time less the instant the oldest live task was enqueued,
+  or null when the queue holds no live task.
+
+One batch, `queue-status`, reads each gauge's rows in the order of their instant, through
+the index that holds them in that order, up to one row past the cap, and core counts them.
+No SQL aggregate is read: a count over a backlog costs the backlog, and a LIMIT costs the
+cap. The batch is three legs of runs, the legs of deadlines, the clock, and the legs of
+live tasks, one to a live state. The deadlines are one leg on libSQL and PostgreSQL and one
+to a live state on MySQL, whose index of deadlines leads with the state.
+
+What a gauge is not:
+
+- It is not what a claim would take. A gauge counts rows by their state and their instant
+  and applies nothing of a claim's or a sweep's admission. A pending run that is due and
+  whose task is past its deadline is in `pendingRunsDue`, and no claim takes it. `stuck`
+  lists what the engine would take, and lists that run apart, in `dueNotAdmitted`.
+- It is not a rate. Nothing here says how many runs were claimed or ended in a minute. A
+  rate is two readings and the reader's own clock.
+- It is not a histogram. `claimLagMs` is the wait of the head of the queue, and says
+  nothing of how the waits behind it are spread.
+- It is not exact past its cap, and says so with `atLeast`.
+- It is not a verdict. `stats` prints `summary: quiet` when every gauge is zero and
+  `summary: active` otherwise, and never `ok`: a queue whose driver has stopped with nothing
+  enqueued counts the same as a healthy idle one.
+
+A row whose instant is outside its bounds is counted in the gauge of its state, in neither
+gauge of an instant, and listed in `corrupt`. `stats` then exits 10, and prints its report
+on stdout all the same.
+
+**A queue's row counts.** `sizes --queue Q` prints `tableRows(queue)`: how many rows of the
+queue each of five tables holds, `runs`, `tasks`, `waits`, `events` and `checkpoints`, each
+count stopped at 1,000,000 (`OPERATOR_TABLE_ROWS_CAP`) with `atLeast`. One batch,
+`table-rows`, holds one statement to a table: a count over a derived table that selects the
+queue's rows under a LIMIT of one row past the cap. The closed statement grammar takes that
+shape, and the three dialects answer it with an integer, so it is a statement tree and no
+registered text statement. It is the one read here that costs what it counts. On libSQL the
+plan test excuses its five statements by name, each for its walk of the table it counts. On
+PostgreSQL a count goes through an index of every row that leads with the queue where the
+table has one, and scans `tasks` and `checkpoints`, which have none. On MySQL a case holds
+that the batch walks the rows it counts. It runs on request only: no engine
+actor and no other command sends it. `drivers` is not counted. Core's table of the columns a
+statement tree may name holds those five tables, and a driver's row is a heartbeat, which
+does not grow with a queue's work.
+
+**Schema version 11.** The index `tasks_live` on `tasks (queue, state, enqueue_at_ms)` is
+what hands `aged-tasks` and the gauge of live tasks their rows oldest first. On libSQL and
+PostgreSQL it is partial: `WHERE state IN ('pending','running','sleeping') AND enqueue_at_ms
+IS NOT NULL`. On MySQL, which has no partial index, it is whole. A task enters it when it is
+spawned, moves in it when its state changes, and on libSQL and PostgreSQL leaves it when the
+task ends.
+
+The second term of the predicate leaves no task out, because every task has an enqueue
+instant. It is there to keep the engine's statements off the index. Without it, libSQL
+planned 25 statements of 14 batches through `tasks_live` by queue and state, the claim's
+among them, and PostgreSQL planned the same kinds of statement through it once sequential
+scans were disabled. Each then read every live task of a state where it had read one task
+by its key. Both databases use a partial index only for a statement that holds the index's
+predicate, and no statement the engine sends tests or compares the enqueue instant. What a
+read must write to use the index differs, and was measured. On SQLite 3.45, which this
+store runs on, a read must write both terms as the index writes them, and a comparison of
+the instant is not taken for the second. On PostgreSQL 17 a comparison of the instant is
+what implies the second term, and a test for NULL alone is not, because the server drops a
+test for NULL of a column that cannot hold one before it looks at the index. So each
+store's leg is its own text.
+
+What the index costs the writes that move a task in it was measured through each store's
+own port, beside 20,000 live tasks that were not due. Each call spawned one task, claimed
+it, started it and completed it, in eight rounds of 300 calls, four with the index dropped
+and four with it, interleaved. The medians, in milliseconds, without the index and with it:
+
+- libSQL: spawn 1.94 and 2.00, claim 4.69 and 4.84, a task's ending 3.40 and 3.48. The
+  index was built over the 20,000 tasks in 41 ms.
+- PostgreSQL: spawn 2.57 and 2.47, claim 7.67 and 7.79, a task's ending 5.17 and 5.20. The
+  build took 17 ms.
+- MySQL: spawn 1.59 and 1.58, claim 4.57 and 4.57, a task's ending 3.67 and 3.58. The
+  build took 94 ms.
+
+The numbers are from a loaded shared machine, with a load average of 27 to 54 while they
+were taken. On every dialect the difference is inside the spread between rounds of one
+kind. On PostgreSQL the build takes a lock that blocks writes to `tasks` while it reads the
+whole table, as the builds of versions 6 and 9 do. The stores export no note for the
+version in `SCHEMA_VERSION_NOTES`.
+
+It is an index and nothing else. A build that predates it runs against the schema
+unchanged. A read command never migrates, so version 11 arrives only through `migrate
+--yes`, and on a libSQL database still at version 5 the reads of a queue answer as they do
+at the current version, with no index to read through: a case holds the answers there, and
+not their cost.
+
+**Three decisions, which the maintainer approved on 2026-10-04.** Each is approved as
+built. The first two are built as planned, and the third the plan did not have.
+
+1. **The libSQL plan reader counts a range on `enqueue_at_ms` as a due range** (section
+   3.2). Before, a range was a due range only on the three instants the engine hands work
+   out by, and the reader refused each of the six statements that read live tasks in the
+   order they were enqueued as a walk of `tasks`. What the gate protects still holds by its
+   two mechanisms: the plan test names each of the six, with the LIMIT that bounds it, and
+   the growth oracle still measures every shipped statement beside a backlog. `agedTasks`,
+   `stuck --older-than`, the gauge of live tasks and the age of the oldest need the change.
+   Without it the launch-deferral loop, a hung handler and an await nobody emits are found
+   by a task id alone.
+2. **The metric definitions.** Claim latency is two numbers: `claimLagMs`, which is the wait
+   of the head of the queue, and a task's start latency, its first start less its enqueue
+   instant, which `inspect` prints of one task. There is no `claimed_at_ms` column, which
+   would be a write on the claim and a schema version, no histogram, and no rate.
+3. **`stuck` lists seven legs where the plan had four.** The plan's rule was that a leg
+   holds what the engine's next claim or sweep takes, which left a row a move is owed to
+   that the engine refuses in no leg. Three legs list such rows, `dueNotAdmitted`,
+   `lapsedNotReclaimed` and `deadlineNotCancelled`, each found through a bounded window and
+   each counted by `--fail-if-any`, as this section says above.
+
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
 completed result, a failure reason the task's code wrote, a failed rollback's error, and
@@ -5972,7 +6341,9 @@ row that is not readable prints one list, `notReadable`: an outcome the decoders
 each corrupt integer by its field and the ids of its row, and the task and each run or wait
 whose state or status is not the engine's own by the same. It quotes no stored value. One
 function builds that list, and a task's facts are readable when it is empty, so `inspect`
-exits 10 exactly when `explain` would name something.
+exits 10 exactly when `explain` would name something. `stuck`, `stats` and `sizes` print
+ids, task names, states of the engine's own, instants and counts, and no value a user
+wrote.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
@@ -5982,17 +6353,17 @@ object under `dialect`: the URL scheme and the store's schema window.
 In human text one rule decides the stream. An answer prints on stdout when the command
 exits 0. An answer its handler marks as the snapshot the command exists to print also
 prints on stdout, whatever the command exits with, so the exit code alone tells a script
-how it ended. The snapshot of `inspect` and the answer of `explain` are the two marked so
-today, and each prints there when it exits 10. Every other answer that does not exit 0 is a refusal and prints on
+how it ended. The snapshot of `inspect`, the answer of `explain` and the reports of `stuck` and
+`stats` are marked so. Each prints there when it exits 10, and the report of `stuck` when
+it exits 9. Every other answer that does not exit 0 is a refusal and prints on
 stderr. That holds when the refusal names a fact about the store. On a database recorded
-at a schema version outside the window, `doctor`, `inspect`, `explain`, `result` and
-`checkpoints` exit 5 and print the recorded version on stderr. `migrate` without `--yes` exits 2 and
+at a schema version outside the window, every read exits 5 and prints the recorded version
+on stderr. `migrate` without `--yes` exits 2 and
 prints the version it starts from and the versions it would apply on stderr, and a
 `migrate` that fails partway prints the versions it applied there. A usage error, a
 refused call, a store that is unavailable, a task that is not there, and the answer of
-`result` or `checkpoints` for a row the decoders refuse print there too. `stuck` and `stats`
-will follow it the same way: the report each exists to print is marked and prints on stdout
-whatever it exits with, and each of their refusals prints on stderr.
+`result` or `checkpoints` for a row the decoders refuse print there too. A refusal of `stuck`, as of a grace
+it cannot read, prints there like any other.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
@@ -6008,7 +6379,7 @@ same table, which a test holds equal to this one.
 | 6 | unavailable | the store is unavailable; safe to repeat, with retries capped, because a wrong credential exits 6 too |
 | 7 | permanent | the store answered with a permanent error |
 | 8 | not-found | no such task in the queue |
-| 9 | found | reserved for a later stuck --fail-if-any that finds rows; no command gives it yet |
+| 9 | found | stuck --fail-if-any listed at least one row |
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
@@ -6032,8 +6403,10 @@ time, on each dialect, from each starting state the command runs from: `migrate`
 database that was never initialized, from version 5 and from one version below the
 build's, and each read from the current version. `inspect` runs by an idempotency key,
 which sends the read by key and then every batch a read by a task id sends. `explain` runs
-by the key of a run asleep on a timer, which sends each batch it declares, and of a parent
-parked on its child, where a fault meets the reads of both tasks. The command
+by the key of a run asleep on a timer, which reads the checkpoints, and of a parent parked
+on its child, which reads the waiters of the child's completion and where a fault meets the
+reads of both tasks, so between them each batch it declares is sent. `stuck` runs with
+`--older-than`, which sends each batch it declares, and `stats` and `sizes` send theirs. The command
 table declares exit 6 for
 the first two and the exit of a clean run for duplicate, except at the batches whose lost
 answer `migrate` recovers, where it declares 0 for crash-after by label:

@@ -114,6 +114,7 @@ import {
   userRetrySuccessorInsert,
   wakeHasOwn,
   wakeRunsUpdate,
+  LIVE_STATES,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -142,6 +143,7 @@ import {
   storedIncrementableClaimGeneration,
   storedIncrementableInteger,
   storedInteger,
+  storedAtAll,
   storedIntegerWithin,
   storedIntegerWithinOffIndex,
   storedPositiveClaimGeneration,
@@ -354,14 +356,37 @@ function finishSuspension(b: FencedBatch, queue: string, runId: string): void {
 }
 
 /**
+ * What a claim requires of a run and its task before it takes the run, over their two
+ * aliases. The claim holds each candidate to it before the candidates' limit. The
+ * operator's read of the runs a claim is owed to holds its rows to the same predicate, so
+ * the two cannot disagree about which runs a claim would take.
+ */
+export const claimEligibility = (run: string, task: string): string => {
+  const wait = registeredWait(run)
+  return `${eligibleTask(task, NOW)}
+               AND ${durableTaskRetryAdmissible(task)}
+               AND ${durableTaskHeadersAdmissible(task)}
+               AND ${soleLiveRun(run)}
+               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
+               AND ${wait.temporallySafe}
+               AND ${storedIncrementableClaimGeneration(run)}
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}
+               AND ${run}.activated_gen <= ${run}.claim_gen
+               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
+               AND ${storedCurrentRunAccounting(run, task)}
+               AND ${storedHighestOwnedOrdinal(run)}`
+}
+
+/**
  * Sweep discovery's predicates, as the fragments its two reads take (`sweepDueCancelsRead`
  * and `sweepExpiredClaimsRead`). Each binds the queue once. The query-plan suite pins the
- * statements a real sweep sends, which it records from the store.
+ * statements a real sweep sends, which it records from the store. The operator's read of
+ * what a sweep is owed to takes the same three, so it lists what the scan would find.
  */
-const SWEEP_CANCELS_DUE = `t.queue = ? AND ${cancelDue('t', NOW)}
+export const SWEEP_CANCELS_DUE = `t.queue = ? AND ${cancelDue('t', NOW)}
   AND t.state IN ${LIVE}
   AND ${taskOwnsEveryRun('t')}`
-const SWEEP_LIVE_RUN_OF_TASK = `${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}`
+export const SWEEP_LIVE_RUN_OF_TASK = `${runOwnedByTask('r', 't')} AND r.state IN ${LIVE}`
 
 /** `next-wake`'s four sources, as the predicates `nextWakeRead` takes. Each binds the queue once. */
 const NEXT_WAKE_PENDING = `r.queue = ? AND r.state = 'pending'
@@ -412,9 +437,82 @@ const sweepScanAdmissible = (run: string, task: string): string =>
   `((${task}.state IN ${LIVE} AND ${sweepLiveOwnerAdmissible(run, task)})
     OR (${task}.state NOT IN ${LIVE} AND ${sweepTerminalOwnerAdmissible(run)}))`
 
-const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
+export const SWEEP_CLAIMS_EXPIRED = `r.queue = ? AND r.state = 'running'
   AND ${runClaimExpired('r', NOW)}
   AND ${sweepScanAdmissible('r', 't')}`
+
+/**
+ * The runs of one state that are due, over a run `r` alone: a claim's candidates by their
+ * instant, before anything is required of them or of their task. The operator's read of
+ * what a claim is owed to reads its window of the oldest of these. Each binds the queue
+ * once.
+ */
+const dueRuns = (state: 'pending' | 'sleeping'): string =>
+  `r.queue = ? AND r.state = '${state}'
+  AND ${runAvailableDue('r', NOW)}`
+export const DUE_PENDING = dueRuns('pending')
+export const DUE_SLEEPING = dueRuns('sleeping')
+
+/**
+ * The runs of one state a claim would take now, over a run `r` and its task `t`: due
+ * (`dueRuns`), and eligible as the claim requires of each (`claimEligibility`). The
+ * operator's read of the runs a claim is owed to takes these. The claim's own candidate
+ * subquery is not a read's to take: it is shaped for the claim's update. Each binds the
+ * queue once.
+ */
+const claimOwed = (state: 'pending' | 'sleeping'): string =>
+  `${dueRuns(state)}
+  AND ${claimEligibility('r', 't')}`
+export const CLAIM_OWED_PENDING = claimOwed('pending')
+export const CLAIM_OWED_SLEEPING = claimOwed('sleeping')
+
+/**
+ * What the sweep's scan is owed to by its instant alone, before the scan's own admission:
+ * over a run `r`, the running runs whose lease has expired, and over a task `t`, the live
+ * tasks past their cancellation deadline. The operator's read of what a sweep is owed to
+ * reads its window of the oldest of each. The deadlines are one leg or several, each a
+ * predicate whose rows the index of deadlines hands out in the order of the deadline. Each
+ * binds the queue once.
+ */
+export const LEASES_LAPSED = `r.queue = ? AND r.state = 'running' AND ${runClaimExpired('r', NOW)}`
+export const DEADLINES_PASSED: readonly string[] = [
+  `t.queue = ? AND t.state IN ${LIVE} AND ${cancelDue('t', NOW)}`,
+]
+
+/**
+ * The rows each gauge of the operator's `queue-status` counts: the runs of one state whose
+ * instant is stored at all, and the live tasks whose cancellation deadline is. None holds
+ * its instant to bounds, because a gauge counts a row whose instant its bounds refuse, and
+ * each is handed out by an index in the order of its instant. Each binds the queue once.
+ */
+const countedRuns = (state: 'pending' | 'sleeping' | 'running', instant: string): string =>
+  `r.queue = ? AND r.state = '${state}'
+  AND ${storedAtAll(instant)}`
+export const COUNTED_PENDING_RUNS = countedRuns('pending', 'r.available_at_ms')
+export const COUNTED_SLEEPING_RUNS = countedRuns('sleeping', 'r.available_at_ms')
+export const COUNTED_RUNNING_RUNS = countedRuns('running', 'r.claim_expires_at_ms')
+export const COUNTED_DEADLINES: readonly string[] = [
+  `t.queue = ? AND t.state IN ${LIVE}
+  AND ${storedAtAll('t.cancel_at_ms')}`,
+]
+
+/**
+ * The live tasks of a queue in one state, which `tasks_live` hands out in the order they
+ * were enqueued: the rows the operator's read of a queue's oldest live tasks takes, and
+ * its gauge of live tasks counts. One leg to a live state, because the index orders by the
+ * enqueue instant within a state. Each binds the queue once.
+ *
+ * Each leg writes the two terms of the index's own predicate as the index writes them,
+ * the live states and that the enqueue instant is not NULL. SQLite reads a partial index
+ * only for a statement that holds the index's terms, and the SQLite this store runs on
+ * (3.45) does not take the comparison below for the second of them. The comparison is
+ * what gives the index a range to read in order, so the leg stops at its limit: with the
+ * test for NULL alone the rows of a state are read whole and sorted.
+ */
+export const LIVE_TASKS_BY_AGE: readonly string[] = LIVE_STATES.map(
+  (state) => `t.queue = ? AND t.state IN ${LIVE} AND t.state = '${state}'
+  AND t.enqueue_at_ms IS NOT NULL AND ${storedAtAll('t.enqueue_at_ms')}`,
+)
 
 /**
  * The task still admits this run's completion: it is already terminal, or this is its
@@ -677,21 +775,6 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
     // Eligibility belongs inside each ordered leg, BEFORE its limit. Filtering
     // the merged shortlist lets an earlier corrupt/ineligible run consume the
     // whole budget and permanently starve later healthy work.
-    const claimEligibility = (run: string, task: string): string => {
-      const wait = registeredWait(run)
-      return `${eligibleTask(task, NOW)}
-               AND ${durableTaskRetryAdmissible(task)}
-               AND ${durableTaskHeadersAdmissible(task)}
-               AND ${soleLiveRun(run)}
-               AND (${run}.wake_step IS NOT NULL OR ${wait.unambiguous})
-               AND ${wait.temporallySafe}
-               AND ${storedIncrementableClaimGeneration(run)}
-               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.activated_gen, run)}
-               AND ${run}.activated_gen <= ${run}.claim_gen
-               AND ${storedIntegerWithin(RUN_INTEGER_BOUNDS.relaunch_count, run)}
-               AND ${storedCurrentRunAccounting(run, task)}
-               AND ${storedHighestOwnedOrdinal(run)}`
-    }
     const candidateEligibility = claimEligibility('r', 't')
     const b = new FencedBatch('claim', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
     // Due runs of live tasks → running, holding the caller's lease token AND

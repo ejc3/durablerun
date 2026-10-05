@@ -324,6 +324,19 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     version: 10,
     statements: setNotNullWhileNullable('events', 'payload', BODY),
   },
+  {
+    // An operator asks which live tasks of a queue are the oldest: `stuck --older-than`
+    // lists them, and `stats` counts a queue's live tasks by state and names the age of
+    // the oldest. `tasks_cancel` holds a queue's tasks by state and then by cancellation
+    // deadline, so by enqueue instant each of those reads walked every task of the state.
+    // MySQL has no partial index, so this one holds every task of a queue, the ended ones
+    // too, by state and then by enqueue instant: a read of one live state takes the oldest
+    // first and stops at its limit. A task enters it at spawn and moves in it when its
+    // state changes. It is an index and nothing else: a build that predates it runs
+    // against this schema unchanged, and no statement the engine sends reads it.
+    version: 11,
+    statements: createIndexIfMissing('tasks', 'tasks_live', '(queue, state, enqueue_at_ms)'),
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

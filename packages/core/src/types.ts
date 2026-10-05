@@ -1,3 +1,4 @@
+import type { QueueTable } from './store-tables.js'
 /**
  * Engine data model, ported from Absurd's t_/r_/c_/e_/w_ tables
  * (DESIGN.md §1.2, §3.4) with the additions from adversarial review:
@@ -240,6 +241,8 @@ export interface RollbackOutcome {
 export interface CorruptInteger {
   /** The field as core's bounds name it, such as `runs.claim_gen`. */
   readonly field: string
+  /** The task whose row holds it, for a field of a task that a read of a queue met. */
+  readonly taskId?: string
   /** The run whose row holds it, for a field of a run or of a wait. */
   readonly runId?: string
   /** The step of the wait that holds it. */
@@ -354,3 +357,267 @@ export interface TaskFacts {
 export type EventState =
   | (Extract<EmittedEvent, { exists: false }> & { readonly corrupt: readonly [] })
   | (Extract<EmittedEvent, { exists: true }> & { readonly corrupt: readonly CorruptInteger[] })
+
+/** A list an operator read stopped at a limit: the rows it lists, and whether more exist. */
+export interface Capped<Row> {
+  readonly rows: readonly Row[]
+  /** True when the database holds more rows of this kind than `rows` lists. */
+  readonly atLeast: boolean
+}
+
+/** A count an operator read stopped at a cap: the count, and whether more rows exist than it. */
+export interface Gauge {
+  readonly count: number
+  /** True when the count is the cap and the database holds more rows than that. */
+  readonly atLeast: boolean
+}
+
+/** A run a move of the driver is owed to: a claim, for a run that is due and unclaimed. */
+export interface OverdueRun {
+  readonly runId: string
+  readonly taskId: string
+  readonly taskName: string
+  readonly attempt: number | null
+  /** The instant the move came due: when the run became available, or when its lease expired. */
+  readonly dueAtMs: number | null
+  /** Database time less `dueAtMs`, or null when either is not readable. */
+  readonly lateByMs: number | null
+}
+
+/** A run whose lease expired, which the sweep takes back. */
+export interface LapsedRun extends OverdueRun {
+  /**
+   * Whether a worker started the run under its newest claim. The sweep fails a run that
+   * was started, with a successor while the task has retries left, and reopens a launch
+   * that was lost.
+   */
+  readonly activated: boolean | null
+}
+
+/**
+ * A list of rows a move is owed to that the engine does not take. It is found through a
+ * window: the oldest rows by the leg's instant alone, as many as the limit and two more,
+ * of which the leg lists those the engine's own statement does not answer. The window is
+ * all the leg reads, so `atLeast` says less here than for a leg read to its end. True says
+ * the window showed more such rows than `rows` lists. False says only that the window
+ * showed no more: how many lie past it the leg cannot know, and `unexamined` is what says
+ * that more may exist.
+ */
+export interface Windowed<Row> extends Capped<Row> {
+  /**
+   * True when a row the window did not settle could be one the leg lists under the grace
+   * it was asked with: a row it read that sorts after the last row the engine's statement
+   * answered and is old enough for the grace, or rows past a window that came back full
+   * whose last row is old enough. Such a row that the engine does not take is not listed
+   * until the rows ahead of it are taken. False says the window settled every row that is
+   * old enough for the grace.
+   */
+  readonly unexamined: boolean
+}
+
+/**
+ * A run that is due and that no claim admits: a claim's own statement does not answer it,
+ * so no claim takes it however long it has been due. The sweep takes it only by cancelling
+ * its task, when the task is past its cancellation deadline and the sweep's scan takes
+ * that task: `cancelOverdue` then lists the task. When the scan refuses the task,
+ * `deadlineNotCancelled` lists it, and no sweep takes the run. It is read from the run's
+ * own row, with no task joined, so it has no task name.
+ */
+export interface UnadmittedRun {
+  readonly runId: string
+  readonly taskId: string
+  /** The state the run is in: `pending`, or `sleeping` past its wake. */
+  readonly state: 'pending' | 'sleeping'
+  readonly attempt: number | null
+  /** The instant the run became available. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
+}
+
+/** A running run whose lease has expired and that the sweep's scan does not answer, so no sweep takes it back. */
+export interface UnreclaimedRun {
+  readonly runId: string
+  readonly taskId: string
+  readonly attempt: number | null
+  /** The instant the lease expired. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
+}
+
+/** A live task past its cancellation deadline that the sweep's scan does not answer, so no sweep cancels it. */
+export interface UncancelledTask {
+  readonly taskId: string
+  readonly taskName: string
+  readonly state: string
+  /** The cancellation deadline. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
+}
+
+/** A live task whose cancellation deadline has passed, which the sweep cancels. */
+export interface OverdueTask {
+  readonly taskId: string
+  readonly taskName: string
+  readonly state: string
+  /** The task's newest live run, or null when it has none. */
+  readonly runId: string | null
+  /** The cancellation deadline. */
+  readonly dueAtMs: number | null
+  readonly lateByMs: number | null
+}
+
+/** What `stuckRuns` is asked for. */
+export interface StuckRunsOptions {
+  /** How long a move must have been owed before its row is listed. Zero lists what the engine would take now. */
+  readonly graceSeconds: number
+  /** The most rows each leg lists, from 1 to `OPERATOR_LIST_CAP`. */
+  readonly limit: number
+}
+
+/**
+ * The runs and tasks of one queue that a move of the driver is owed to and has been for at
+ * least the grace, in seven legs, each oldest first and each stopped at the limit. Four hold
+ * what the engine's own statement would take: `dueUnclaimed` and `sleepingPastWake` are the
+ * pending and the sleeping runs a claim takes, `leaseLapsed` and `cancelOverdue` are what
+ * the sweep's scan finds. A run under a lapsed lease whose task is also past its deadline
+ * is in both of the last two, and the sweep takes it by either arm. Three hold what the
+ * engine does not take, each beside the legs it completes: `dueNotAdmitted` the due runs
+ * no claim admits, `lapsedNotReclaimed` the lapsed leases no sweep takes back, and
+ * `deadlineNotCancelled` the passed deadlines no sweep cancels. Each of the three is found
+ * through a window of the oldest rows by the instant alone (`Windowed`). Every member but
+ * `fakeClock` is read from one snapshot, and `fakeClock` straight after it.
+ */
+export interface StuckRuns {
+  /** Database time as the snapshot's last statement read it. */
+  readonly nowMs: number | null
+  readonly fakeClock: boolean
+  readonly dueUnclaimed: Capped<OverdueRun>
+  readonly sleepingPastWake: Capped<OverdueRun>
+  readonly dueNotAdmitted: Windowed<UnadmittedRun>
+  readonly leaseLapsed: Capped<LapsedRun>
+  readonly lapsedNotReclaimed: Windowed<UnreclaimedRun>
+  readonly cancelOverdue: Capped<OverdueTask>
+  readonly deadlineNotCancelled: Windowed<UncancelledTask>
+  readonly corrupt: readonly CorruptInteger[]
+}
+
+/**
+ * The gauges of one queue, each a count of rows that stops at `OPERATOR_GAUGE_CAP`. A
+ * gauge counts rows by their state and their stored instant and applies nothing of a
+ * claim's or a sweep's admission, so it is not a count of what the engine would take:
+ * `stuckRuns` lists that. A row whose instant is not readable is counted in its state's
+ * gauge, in neither gauge of an instant, and listed in `corrupt`.
+ */
+export interface QueueGauges {
+  /** Pending runs. */
+  readonly pendingRuns: Gauge
+  /** Pending runs whose available instant is at or before database time. */
+  readonly pendingRunsDue: Gauge
+  /**
+   * Sleeping runs that hold a wake instant: a timer, a backoff, or the timeout of an await.
+   * A run parked on an await with no timeout holds none and is in no gauge of runs.
+   */
+  readonly sleepingRuns: Gauge
+  /** Sleeping runs whose wake instant is at or before database time. */
+  readonly sleepingRunsDue: Gauge
+  /** Running runs, which hold a lease. */
+  readonly runningRuns: Gauge
+  /** Running runs whose lease expiry is at or before database time. */
+  readonly runningRunsLapsed: Gauge
+  /** Live tasks that have a cancellation deadline. */
+  readonly tasksWithADeadline: Gauge
+  /** Live tasks whose cancellation deadline is at or before database time. */
+  readonly tasksPastTheirDeadline: Gauge
+  /** Live tasks: every task that is pending, running or sleeping. */
+  readonly liveTasks: Gauge
+}
+
+/** What an operator reads of one queue's state. Every member but `fakeClock` is read from one snapshot. */
+export interface QueueStatus {
+  readonly nowMs: number | null
+  readonly fakeClock: boolean
+  readonly gauges: QueueGauges
+  /**
+   * Database time less the earliest instant of a pending or a sleeping run that has come
+   * due, or null when none has. It is how long the head of the queue has waited for a claim.
+   */
+  readonly claimLagMs: number | null
+  /**
+   * The earliest lease expiry of a running run less database time, or null when no run is
+   * running. It is negative once a lease has lapsed.
+   */
+  readonly leaseHeadroomMs: number | null
+  /**
+   * The earliest instant a run or a cancellation deadline that a gauge counts holds, past
+   * or to come, or null when none holds one. The enqueue instant of a live task is not
+   * among them, though the gauge of live tasks reads it: it is when a task entered the
+   * queue, and no move comes due at it. Where every stored instant is readable it is the
+   * instant the store's own read of a queue's next wake answers.
+   */
+  readonly nextWakeAtMs: number | null
+  /**
+   * Database time less the instant the oldest live task was enqueued, or null when the
+   * queue holds no live task. It is an age and no lateness: a task is live for as long as
+   * its work takes.
+   */
+  readonly oldestLiveTaskAgeMs: number | null
+  readonly corrupt: readonly CorruptInteger[]
+}
+
+/** A live task, as the read of a queue's oldest live tasks lists it. */
+export interface AgedTask {
+  readonly taskId: string
+  readonly taskName: string
+  readonly state: string
+  /** When the task was enqueued. */
+  readonly enqueueAtMs: number | null
+  /** Database time less `enqueueAtMs`, or null when either is not readable. */
+  readonly ageMs: number | null
+}
+
+/** What `agedTasks` is asked for. */
+export interface AgedTasksOptions {
+  /** How long ago a task must have been enqueued to be listed. Zero lists every live task. */
+  readonly olderThanSeconds: number
+  /** The most tasks listed, from 1 to `OPERATOR_LIST_CAP`. */
+  readonly limit: number
+}
+
+/**
+ * The live tasks of one queue that were enqueued at least so long ago, oldest first and
+ * stopped at the limit. It reports an age, and an age is not a defect: nothing says how
+ * long a task's work may take. It lists what no leg of `stuckRuns` can, because no move
+ * is owed to any of them: a run under a lease its worker keeps alive, a run parked on an
+ * event nobody emits, and a task a worker parks again on every tick. Every member but
+ * `fakeClock` is read from one snapshot.
+ */
+export interface AgedTasks {
+  readonly nowMs: number | null
+  readonly fakeClock: boolean
+  readonly tasks: Capped<AgedTask>
+  readonly corrupt: readonly CorruptInteger[]
+}
+
+/** How many rows of each table one queue holds, each count stopped at `cap`. */
+export interface TableRows {
+  readonly cap: number
+  readonly tables: Readonly<Record<QueueTable, Gauge>>
+}
+
+/** One wait registered on an event: the task that waits, its run, and the step that awaits. */
+export interface EventWaiter {
+  readonly taskId: string
+  readonly runId: string
+  readonly stepName: string
+  /** When the wait times out, or null for a wait with no timeout. */
+  readonly timeoutAtMs: number | null
+}
+
+/**
+ * The waits of one queue that are registered on an event and still waiting, in the order
+ * of run and then step, stopped at `OPERATOR_GAUGE_CAP`: the first of them in that order.
+ */
+export interface EventWaiters {
+  readonly waiters: Capped<EventWaiter>
+  readonly corrupt: readonly CorruptInteger[]
+}

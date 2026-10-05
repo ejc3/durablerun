@@ -560,6 +560,34 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
 })
 
 /**
+ * How each statement a recorder saw reaches its rows, planned with sequential and bitmap
+ * scans disabled: every index scan with its condition, and every scan of a table that
+ * remains, which is a table no index of the statement reaches. `meta` is left out of both.
+ */
+async function indexesAndScans(client: Client, recorder: RecordingExecutor) {
+  const reached: Record<string, string[]> = {}
+  const scans: string[] = []
+  const seen = recorder.batches.flatMap(({ label, statements }) =>
+    statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
+  )
+  for (const { name, sql } of seen) {
+    const lines = await planLines(client, sql)
+    reached[name] = lines.flatMap((line, at) => {
+      const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
+      if (found === null || /^meta\b/.test(found[2] ?? '')) return []
+      const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
+      return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
+    })
+    scans.push(
+      ...lines
+        .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta\b/.test(line))
+        .map((line) => `[${name}] ${line.trim()}`),
+    )
+  }
+  return { reached, scans }
+}
+
+/**
  * An operator's reads reach every row by a key. Each statement is recorded from a real
  * read of a parked task, and planned with sequential and bitmap scans disabled, so a scan
  * that remains is a table no index of the statement reaches. Every index scan is pinned
@@ -596,25 +624,7 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
     expect((await reads.eventState('q', 'approval')).exists).toBe(false)
 
     await client.query(`SET search_path TO "${db.schemaName}"`)
-    const reached: Record<string, string[]> = {}
-    const scans: string[] = []
-    const seen = recorder.batches.flatMap(({ label, statements }) =>
-      statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
-    )
-    for (const { name, sql } of seen) {
-      const lines = await planLines(client, sql)
-      reached[name] = lines.flatMap((line, at) => {
-        const found = /Index (?:Only )?Scan using (\w+) on (\w+(?: \w+)?)/.exec(line)
-        if (found === null || found[2] === 'meta') return []
-        const condition = /^Index Cond: (.*)$/.exec((lines[at + 1] ?? '').trim())
-        return [`${found[1]} on ${found[2]}: ${condition?.[1] ?? 'no condition'}`]
-      })
-      scans.push(
-        ...lines
-          .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta$/.test(line.trim()))
-          .map((line) => `[${name}] ${line.trim()}`),
-      )
-    }
+    const { reached, scans } = await indexesAndScans(client, recorder)
     expect(scans).toEqual([])
     const sagaPhase = "((task_id = tasks.task_id) AND (checkpoint_name = '$rolling-back'::text))"
     expect(reached).toEqual({
@@ -644,6 +654,200 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
       'task-id-by-key#0': ['tasks_idem on tasks: ((queue = $1) AND (idempotency_key = $2))'],
       'event-state#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
     })
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
+/**
+ * An operator's reads of a queue. Each leg of `stuck-runs` and of `queue-status` reaches
+ * its rows through the index that hands them out in the order of their instant, and the
+ * waiters of an event through the index on a queue's events. A count of `table-rows`
+ * reads the rows it counts: through an index that leads with the queue where the table has
+ * one, and by a scan of the table where it has none, which is `tasks` and `checkpoints`.
+ * Planned as the case above plans, and with `meta` left out for its reason. This needs a
+ * server.
+ */
+it("reads a queue for an operator through the index of each leg's instant, and scans a table only to count its rows", async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-operator-queue-reads' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const recorder = new RecordingExecutor(db.raw)
+    const store = new PostgresSchedulerStore(db.raw, db.ids)
+    await store.spawn('q', 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
+    const reads = operatorReads(recorder)
+    const owed = await reads.stuckRuns('q', { graceSeconds: 0, limit: 10 })
+    expect(owed.dueUnclaimed.rows).toHaveLength(1)
+    expect((await reads.queueStatus('q')).gauges.pendingRuns.count).toBe(1)
+    expect((await reads.tableRows('q')).tables.tasks.count).toBe(1)
+    expect((await reads.eventWaiters('q', 'approval')).waiters.rows).toEqual([])
+    const oldest = await reads.agedTasks('q', { olderThanSeconds: 0, limit: 10 })
+    expect(oldest.tasks.rows).toHaveLength(1)
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const { reached, scans } = await indexesAndScans(client, recorder)
+    const counts = Object.keys(reached).filter((name) => name.startsWith('table-rows#'))
+    // The legs and the gauges, by the index each table is reached through. The first index
+    // of a statement is the one that hands its rows out. A leg's conditions are left out:
+    // they are the engine's own bounds on an instant, and the cases above pin those where
+    // the engine sends them.
+    const indexOf = (reach: string): string => reach.slice(0, reach.indexOf(':'))
+    const liveTasks = (state: string): string =>
+      `tasks_live on tasks t: ((queue = $1) AND (state = '${state}'::text) AND (enqueue_at_ms >= '-9223372036854775808'::bigint))`
+    const aClaimIsOwed = [
+      'runs_poll on runs r',
+      'waits_event on waits w_1',
+      'tasks_pkey on tasks t',
+      'runs_task_attempt on runs sibling',
+      'waits_pkey on waits w',
+      'runs_task_attempt on runs higher',
+    ]
+    expect(
+      Object.fromEntries(
+        Object.entries(reached)
+          .filter(([name]) => !counts.includes(name))
+          .map(([name, reaches]) => [
+            name,
+            name.startsWith('stuck-runs#') ? reaches.map(indexOf) : reaches,
+          ]),
+      ),
+    ).toEqual({
+      // The windows: the oldest rows by their instant alone, from the row's own table.
+      // Pending runs that are due, then sleeping ones, lapsed leases, and passed deadlines.
+      'stuck-runs#0': ['runs_poll on runs r'],
+      'stuck-runs#1': ['runs_poll on runs r'],
+      'stuck-runs#2': ['runs_held on runs r'],
+      'stuck-runs#3': ['tasks_cancel on tasks t'],
+      // Pending runs a claim is owed to, then sleeping ones, by their due instant.
+      'stuck-runs#4': aClaimIsOwed,
+      'stuck-runs#5': aClaimIsOwed,
+      // Runs under a lapsed lease, by the index of held runs.
+      'stuck-runs#6': [
+        'runs_held on runs r',
+        'runs_task_attempt on runs sibling',
+        'runs_task_attempt on runs higher',
+        'tasks_pkey on tasks t',
+      ],
+      // Tasks past their deadline, by the index of deadlines.
+      'stuck-runs#7': ['tasks_cancel on tasks t', 'runs_task_attempt on runs ownership_run'],
+      // The clock, which reads `meta` and nothing else.
+      'stuck-runs#8': [],
+      'queue-status#0': [
+        "runs_poll on runs r: ((queue = $1) AND (state = 'pending'::text) AND (available_at_ms IS NOT NULL))",
+      ],
+      'queue-status#1': [
+        "runs_poll on runs r: ((queue = $1) AND (state = 'sleeping'::text) AND (available_at_ms IS NOT NULL))",
+      ],
+      'queue-status#2': ['runs_lease on runs r: (queue = $1)'],
+      'queue-status#3': ['tasks_cancel on tasks t: (queue = $1)'],
+      'queue-status#4': [],
+      // The live tasks of each state, by the index of live tasks, which the comparison of
+      // the enqueue instant lets the planner use: for the gauge of them, and for the read
+      // of the oldest.
+      'queue-status#5': [liveTasks('pending')],
+      'queue-status#6': [liveTasks('running')],
+      'queue-status#7': [liveTasks('sleeping')],
+      'aged-tasks#0': [liveTasks('pending')],
+      'aged-tasks#1': [liveTasks('running')],
+      'aged-tasks#2': [liveTasks('sleeping')],
+      'aged-tasks#3': [],
+      'fake-clock#0': [],
+      'event-waiters#0': ['waits_event on waits w: ((queue = $1) AND (event_name = $2))'],
+    })
+    // The counts. A table with an index that leads with the queue is counted through one,
+    // by the queue alone, and which of several such indexes is the planner's choice. `tasks`
+    // and `checkpoints` have none, so their count scans the table.
+    expect(
+      counts.map((name) => [
+        name,
+        (reached[name] ?? []).map((reach) => reach.replace(/^\w+ on /, '')),
+      ]),
+    ).toEqual([
+      ['table-rows#0', ['runs: (queue = $1)']],
+      ['table-rows#1', []],
+      ['table-rows#2', ['waits: (queue = $1)']],
+      ['table-rows#3', ['events: (queue = $1)']],
+      ['table-rows#4', []],
+    ])
+    expect(scans).toEqual([
+      '[table-rows#1] ->  Seq Scan on tasks',
+      '[table-rows#4] ->  Seq Scan on checkpoints',
+    ])
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
+/**
+ * No statement the engine sends is planned through `tasks_live`, the index of a queue's
+ * live tasks by state and enqueue instant, which schema version 11 adds for an operator's
+ * reads. Every statement that names a task's queue and its live states could be, because
+ * the index leads with both. The index's predicate is what keeps them off it: it requires
+ * an enqueue instant, and no statement the engine sends compares one. The statements are
+ * recorded from real operations and planned as the cases above plan theirs, with
+ * sequential and bitmap scans disabled, which is when a planner with nothing else to go on
+ * takes any index it may. This needs a server.
+ */
+it('plans no statement the engine sends through the index of live tasks, and a read that compares the enqueue instant through it', async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-tasks-live' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const seen = new Map<string, string>()
+    const { store, claimed, started } = driving(db, (label, statement) => {
+      const planned = /^\s*(?:select|insert|update|delete|with)\b/i.test(statement.sql)
+      if (planned && !seen.has(statement.sql)) seen.set(statement.sql, label)
+    })
+    const deferred = await claimed('deferred')
+    await store.deferLaunch('q', deferred.runId, deferred.claimToken, deferred.claimGen, 3600)
+    const waiting = await started('waiting')
+    await store.awaitEvent('q', waiting.taskId, waiting.runId, waiting.claimToken, 's', 'e', null)
+    const completed = await started('completes')
+    await store.heartbeat('q', completed.runId, completed.claimToken, 60)
+    await store.getCheckpoints('q', completed.taskId, 1)
+    await store.complete('q', completed.runId, completed.claimToken, '{}')
+    await store.getTaskResult('q', completed.taskId)
+    const retried = await started('retries', 2)
+    await store.fail('q', retried.runId, retried.claimToken, '{}', { delaySeconds: 3600 })
+    const failed = await started('fails')
+    await store.fail('q', failed.runId, failed.claimToken, '{}', null)
+    await store.cancelTask('q', waiting.taskId)
+    await store.nextWakeAtEpochMs('q')
+    // Last, because it moves the clock: a launch that is lost, and a task that is never
+    // started by its deadline, for the sweep to find.
+    await claimed('launch-is-lost')
+    await store.spawn('q', 'never-starts', '{}', { cancellation: { maxDelaySeconds: 30 } })
+    await db.admin.setFakeNowEpochMs(1_000_000 + 120_000)
+    expect((await store.sweep('q', 10)).map((swept) => swept.kind).sort()).toEqual([
+      'cancelled',
+      'lost-launch',
+    ])
+    await store.emitEvent('q', 'e', '{}')
+
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    const throughIt = async (sql: string) =>
+      (await planLines(client, sql)).filter((line) => line.includes('tasks_live'))
+    // The check can say yes: the oldest live tasks of one state, which is what the index
+    // is for, are read through it.
+    expect(
+      await throughIt(
+        `SELECT t.task_id FROM tasks t
+         WHERE t.queue = ? AND t.state IN ('pending','running','sleeping') AND t.state = 'pending'
+           AND t.enqueue_at_ms >= -9223372036854775808
+         ORDER BY t.enqueue_at_ms LIMIT ?`,
+      ),
+    ).not.toEqual([])
+    const planned: string[] = []
+    for (const [sql, label] of seen) {
+      planned.push(...(await throughIt(sql)).map((line) => `[${label}] ${line.trim()}`))
+    }
+    expect(planned).toEqual([])
+    expect(seen.size).toBeGreaterThan(40)
   } finally {
     await client.end()
     await db.close()

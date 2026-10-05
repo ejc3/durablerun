@@ -1286,8 +1286,14 @@ describe('diagnose', () => {
         { waits: [waitOf('e', NOW_MS + 5_000)] },
       ),
     }
+    // Every piece of evidence a cause could ask for is handed over, so an arm that takes one
+    // of these shapes answers its cause, and the comparison below is what fails.
+    const evidence = {
+      checkpoints: 1,
+      waiters: { waiters: { rows: [], atLeast: false }, corrupt: [] },
+    }
     for (const [shape, facts] of Object.entries(shapes)) {
-      const answer = answered(diagnose(facts, { checkpoints: 1 }))
+      const answer = answered(diagnose(facts, evidence))
       expect(
         { shape, cause: answer.cause, verdict: answer.verdict, next: answer.nextTransitionAtMs },
         'mutation-verdict:behavior:cli-explain-reads-no-cause-from-rows-that-disagree',
@@ -1411,6 +1417,64 @@ describe('diagnose', () => {
     }
   })
 
+  it('asks for the waits on the event an await names, and lists every one of them', () => {
+    const parked = factsOf(
+      { state: 'sleeping', wakeEvent: 'approval', wakeStep: 's', availableAtMs: null },
+      { waits: [waitOf('approval', null)] },
+    )
+    expect(diagnose(parked)).toEqual({ needs: 'waiters', eventName: 'approval' })
+    const waiter = (taskId: string, timeoutAtMs: number | null) => ({
+      taskId,
+      runId: `run-of-${taskId}`,
+      stepName: 's',
+      timeoutAtMs,
+    })
+    const rows = [waiter('t', null), waiter('u', NOW_MS + 5_000), waiter('v', null)]
+    const listed = answered(
+      diagnose(parked, { waiters: { waiters: { rows, atLeast: true }, corrupt: [] } }),
+    )
+    expect([listed.cause, listed.verdict, listed.facts]).toEqual([
+      'awaiting-an-untimed-event',
+      'waiting',
+      {
+        runId: 'r',
+        event: 'approval',
+        step: 's',
+        waiters: rows.map(({ taskId, runId, timeoutAtMs }) => ({
+          taskId,
+          runId,
+          step: 's',
+          timeoutAtMs,
+        })),
+        moreWaiters: true,
+      },
+    ])
+    // A wait of the list whose timeout is not readable is named, and no list is printed
+    // beside it: the answer is the one a row of the task's own gets.
+    const refused = answered(
+      diagnose(parked, {
+        waiters: {
+          waiters: { rows, atLeast: false },
+          corrupt: [
+            {
+              field: 'waits.timeout_at_ms',
+              runId: 'run-of-u',
+              stepName: 's',
+              reason: 'out-of-range',
+              stored: 'number',
+              value: '-7',
+            },
+          ],
+        },
+      }),
+    )
+    expect([refused.cause, refused.verdict, refused.facts]).toEqual([
+      'unreadable',
+      'inconsistent',
+      { notReadable: [{ field: 'waits.timeout_at_ms', runId: 'run-of-u', stepName: 's' }] },
+    ])
+  })
+
   it('asks for the evidence a cause turns on, once, and answers from it', () => {
     const timer = factsOf({ state: 'sleeping', availableAtMs: NOW_MS + 60_000 })
     expect(diagnose(timer)).toEqual({ needs: 'checkpoints' })
@@ -1437,8 +1501,11 @@ describe('diagnose', () => {
       { waits: [waitOf(child, NOW_MS + 60_000)] },
     )
     expect(diagnose(parent)).toEqual({ needs: 'child', taskId: 'the-child' })
+    // Once the child is read, the cause asks for the waits on the child's completion.
+    expect(diagnose(parent, { child: 'absent' })).toEqual({ needs: 'waiters', eventName: child })
+    const waiters = { waiters: { rows: [], atLeast: false }, corrupt: [] }
     const through = (evidence: Parameters<typeof diagnose>[1]) => {
-      const answer = answered(diagnose(parent, evidence))
+      const answer = answered(diagnose(parent, { ...evidence, waiters }))
       return [answer.cause, answer.verdict, answer.nextTransitionAtMs, answer.facts.followed]
     }
     const childIs = (cause: Cause, verdict: Verdict, ended = false): Diagnosis => ({
@@ -1476,5 +1543,68 @@ describe('diagnose', () => {
       unexplained: ['awaiting-a-child', 'unexplained', null, 'followed'],
       ended: ['awaiting-a-child', 'unexplained', null, 'followed'],
     })
+  })
+})
+
+describe('explain of an await on libSQL', () => {
+  it('answers unreadable and exits 10 when another wait on the same event holds a timeout that is not readable', async () => {
+    const db = await openCliDb('libsql', 'explain-waiter-not-readable')
+    try {
+      const asked = await parkedOnAnEvent(db, null)
+      const other = await parkedOnAnEvent(db, 300)
+      const before = await explain(db, asked)
+      expect({ exit: before.exit, cause: before.cause }).toEqual({
+        exit: 0,
+        cause: 'awaiting-an-untimed-event',
+      })
+      // Fixture-built: no engine path writes a timeout outside its bounds.
+      await fixture(db, 'UPDATE waits SET timeout_at_ms = -7 WHERE task_id = ?', [other])
+      const answer = await explain(db, asked)
+      expect(
+        { exit: answer.exit, cause: answer.cause, verdict: answer.verdict, facts: answer.facts },
+        'mutation-verdict:behavior:cli-explain-names-a-waiter-it-cannot-read',
+      ).toEqual({
+        exit: 10,
+        cause: 'unreadable',
+        verdict: 'inconsistent',
+        facts: {
+          notReadable: [
+            { field: 'waits.timeout_at_ms', runId: expect.any(String), stepName: 'approve' },
+          ],
+        },
+      })
+      // In text the answer prints on stdout, as every answer of explain does.
+      const text = await runCli(['explain', asked, '--queue', QUEUE], db.env)
+      expect({
+        exit: text.exit,
+        stderr: text.stderr,
+        names: text.stdout.includes('waits.timeout_at_ms'),
+      }).toEqual({
+        exit: 10,
+        stderr: '',
+        names: true,
+      })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('reads the waiters of an event once for each task it follows that awaits one', async () => {
+    const db = await openCliDb('libsql', 'explain-waiter-reads')
+    try {
+      const [parent] = await chainOfAwaits(db, 3)
+      const recording = recordingOpener()
+      const answer = await explain(db, parent ?? '', recording.opener)
+      const sent = (label: string) =>
+        recording.sent().filter((batch) => batch.label === label).length
+      // Two of the three tasks await their child. The last is due and awaits nothing.
+      expect({
+        cause: answer.cause,
+        facts: sent('task-facts'),
+        waiters: sent('event-waiters'),
+      }).toEqual({ cause: 'awaiting-a-child', facts: 3, waiters: 2 })
+    } finally {
+      await db.close()
+    }
   })
 })

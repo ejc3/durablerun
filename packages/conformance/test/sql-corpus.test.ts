@@ -56,6 +56,13 @@ describe('generated SQL corpus', () => {
         expect((await operator.taskFacts('q', run.taskId))?.runs).toHaveLength(1)
         expect(await operator.taskIdByKey('q', 'no-such-key')).toBeNull()
         expect((await operator.eventState('q', 'no-such-event')).exists).toBe(false)
+        // And of the queue, which holds the one running run.
+        expect((await operator.stuckRuns('q', { graceSeconds: 0, limit: 10 })).corrupt).toEqual([])
+        expect((await operator.queueStatus('q')).gauges.runningRuns.count).toBe(1)
+        expect((await operator.tableRows('q')).tables.tasks.count).toBe(1)
+        expect((await operator.eventWaiters('q', 'no-such-event')).waiters.rows).toEqual([])
+        const aged = await operator.agedTasks('q', { olderThanSeconds: 0, limit: 10 })
+        expect(aged.tasks.rows).toHaveLength(1)
         // A run this store never heard of: the terminal batch reads its task, finds none,
         // and reads its state to say why it refuses.
         await expect(store.complete('q', 'no-such-run', 'no-token', '"x"')).rejects.toThrow()

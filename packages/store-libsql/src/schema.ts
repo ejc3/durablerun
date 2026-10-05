@@ -306,6 +306,32 @@ export const MIGRATIONS: Migration[] = [
       'UPDATE events SET payload = payload WHERE payload IS NULL',
     ],
   },
+  {
+    // An operator asks which live tasks of a queue are the oldest: `stuck --older-than`
+    // lists them, and `stats` counts a queue's live tasks by state and names the age of
+    // the oldest. No index led by a queue held the tasks by when they were enqueued, so
+    // each of those reads walked every task the database holds. This index holds only live
+    // tasks, by state and then by enqueue instant, so a read of one state takes the oldest
+    // first and stops at its limit. A task enters it at spawn, moves in it when its state
+    // changes, and leaves it when the task ends, which is the write this version adds to
+    // those transitions. It is an index and nothing else: a build that predates it runs
+    // against this schema unchanged, and no statement the engine sends reads it.
+    //
+    // The second term of its predicate is what keeps the engine's statements off it. Every
+    // task has an enqueue instant, so the term leaves no task out. SQLite uses a partial
+    // index only for a statement whose own WHERE holds the index's terms, and no statement
+    // the engine sends tests the enqueue instant. Without the term every follow-on that
+    // updates a task by its key was planned through this index, by its queue and its state,
+    // and read every live task of that state: the plan test named 25 statements of 14
+    // batches, the claim's among them. A read that means to use the index writes both terms
+    // as they stand here. Measured on the SQLite this store runs on (3.45), a comparison of
+    // the instant is not taken for the second term, and the test for NULL is.
+    version: 11,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS tasks_live ON tasks (queue, state, enqueue_at_ms)
+       WHERE state IN ('pending','running','sleeping') AND enqueue_at_ms IS NOT NULL`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
@@ -314,7 +340,7 @@ export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version
  * The schema versions this build's reads accept. A read-only tool, such as the operator
  * CLI, answers against any version in the window and refuses one outside it, and it never
  * migrates. The window starts at version 5 because the release alpha.1 migrated its
- * databases to version 5 and nothing later: versions 6 to 10 add indexes, empty versions and
+ * databases to version 5 and nothing later: versions 6 to 11 add indexes, empty versions and
  * triggers, and no read selects a column that a later version adds. A database recorded
  * past `newest` was migrated by a newer build and is refused.
  */

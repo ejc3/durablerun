@@ -76,11 +76,12 @@ async function started(db: CliDb, options: SpawnOptions = {}) {
   return { taskId: task.taskId, run }
 }
 
-/** A started task parked on the event `approval`, under a timeout or with none. */
+/** A started task parked on an event, `approval` unless another is named, under a timeout or with none. */
 export async function parkedOnAnEvent(
   db: CliDb,
   timeoutSeconds: number | null,
   options: SpawnOptions = {},
+  event = 'approval',
 ) {
   const { taskId, run } = await started(db, options)
   const answer = await db.store.awaitEvent(
@@ -89,7 +90,7 @@ export async function parkedOnAnEvent(
     run.runId,
     run.claimToken,
     'approve',
-    'approval',
+    event,
     timeoutSeconds,
   )
   if (answer.emitted) throw new Error('the seed found its event emitted already')

@@ -129,3 +129,15 @@ export type StoreTables = {
 
 /** The one builder every shared statement builds trees with. */
 export const treeBuilder = compileOnlyBuilder<StoreTables>()
+
+/** A table statement builders name. Each holds the queue of its rows in a column `queue`. */
+export type QueueTable = keyof typeof STORE_TABLE_COLUMNS
+
+/**
+ * The tables statement builders name, which are the tables whose rows an operator counts
+ * for one queue. The type holds that each has a `queue` column: a table without one could
+ * not be listed here.
+ */
+export const QUEUE_TABLES: readonly QueueTable[] = Object.freeze(
+  Object.keys(STORE_TABLE_COLUMNS satisfies Record<QueueTable, { readonly queue: ColumnSpec }>),
+) as readonly QueueTable[]

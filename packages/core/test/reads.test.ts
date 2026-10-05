@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { checkpointsRead, claimedTaskNameRead, sqlFragment } from '../src/index.js'
+import {
+  QUEUE_TABLES,
+  checkpointsRead,
+  claimedTaskNameRead,
+  sqlFragment,
+  tableRowsRead,
+} from '../src/index.js'
 import { batch, capturingExecutor, loose, statement } from './tree-fixtures.js'
 
 /**
@@ -67,5 +73,27 @@ describe('the states a read compares', () => {
     expect(() => batch().readTree('read', bound)).toThrow(
       /a state column compared with a bound value/,
     )
+  })
+})
+
+/**
+ * `sizes` counts one queue's rows of a table up to a cap, so it needs a count over a
+ * derived table that carries the LIMIT. A batch of reads holds every statement to the
+ * closed grammar, so a batch that takes this statement is the grammar accepting it.
+ */
+describe('a count over a derived table that carries a LIMIT', () => {
+  it('is inside the statement grammar, for every table it counts, and binds the queue and one row past the cap', async () => {
+    for (const table of QUEUE_TABLES) {
+      const { captured, executor } = capturingExecutor(0)
+      await batch()
+        .readTree('read', tableRowsRead({ table, queue: 'q', cap: 1_000_000 }))
+        .run(executor)
+      expect(captured).toEqual([
+        {
+          sql: `select count(*) as "row_count" from (select "queue" from "${table}" where "queue" = ? limit ?) as "counted"`,
+          args: ['q', 1_000_001],
+        },
+      ])
+    }
   })
 })

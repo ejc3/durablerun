@@ -337,6 +337,11 @@ export const OPERATOR_READ_STRINGS = frozenThroughout({
   taskFacts: ['queue', 'taskId'],
   taskIdByKey: ['queue', 'idempotencyKey'],
   eventState: ['queue', 'eventName'],
+  stuckRuns: ['queue', null],
+  agedTasks: ['queue', null],
+  queueStatus: ['queue'],
+  tableRows: ['queue'],
+  eventWaiters: ['queue', 'eventName'],
 } as const satisfies PortStringsOf<OperatorReads>)
 
 /** Every method the operator read table names, which is every method of that port. */

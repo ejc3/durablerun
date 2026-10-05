@@ -17,7 +17,7 @@ import { type UserValue, userValue } from './render.js'
  * names a value a user wrote and prints it in the clear still builds, and the redaction
  * cases are what fail.
  */
-type Printed<Facts> = Record<keyof Facts, unknown>
+export type Printed<Facts> = Record<keyof Facts, unknown>
 
 /** Whether a stored state is one of the engine's own, as core tells them. */
 const isState = (stored: string): boolean => isLiveState(stored) || isTerminalState(stored)
@@ -90,8 +90,9 @@ const eventView = (event: AwaitedEventFacts): Printed<AwaitedEventFacts> => ({
 })
 
 /** A corrupt integer. Its value is a number's text and never a value of another kind. */
-const corruptView = (entry: CorruptInteger): Printed<Required<CorruptInteger>> => ({
+export const corruptView = (entry: CorruptInteger): Printed<Required<CorruptInteger>> => ({
   field: entry.field,
+  taskId: entry.taskId,
   runId: entry.runId,
   stepName: entry.stepName,
   eventName: entry.eventName,
@@ -134,6 +135,14 @@ export interface NotReadable {
   readonly eventName?: string | undefined
 }
 
+/** A corrupt integer by its field and the ids that name its row, with what it stores left out. */
+export const rowNamed = ({ field, runId, stepName, eventName }: CorruptInteger): NotReadable => ({
+  field,
+  runId,
+  stepName,
+  eventName,
+})
+
 /**
  * What in a task's facts is not readable, each thing by its field and the ids that name
  * its row: an outcome the decoders refuse, every corrupt integer, and the task and each run
@@ -145,12 +154,7 @@ export interface NotReadable {
 export function whatIsNotReadable(facts: TaskFacts): NotReadable[] {
   return [
     ...('result' in facts.outcome ? [] : [{ field: 'outcome' }]),
-    ...facts.corrupt.map(({ field, runId, stepName, eventName }) => ({
-      field,
-      runId,
-      stepName,
-      eventName,
-    })),
+    ...facts.corrupt.map(rowNamed),
     ...(isState(facts.task.state) ? [] : [{ field: 'tasks.state' }]),
     ...facts.runs
       .filter((run) => !isState(run.state))

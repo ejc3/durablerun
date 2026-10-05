@@ -173,6 +173,13 @@ export const cancelNotDue = (task: string, at: string): string => {
  */
 export const storedInteger = (col: string): string => `(${col}) IS NOT NULL`
 
+/**
+ * A column holds a value at all. An operator's gauge counts a row whose instant its bounds
+ * refuse, so its predicate may not be `storedIntegerWithin`. A typed column here holds an
+ * integer or NULL, so this is `storedInteger` under the name the reads ask it by.
+ */
+export const storedAtAll = (column: string): string => storedInteger(column)
+
 /** Native INTEGER plus the semantic port range used before durable arithmetic. */
 const storedBoundedInteger = (col: string, min: number, max: number): string =>
   `(${storedInteger(col)} AND ${col} BETWEEN ${min} AND ${max})`

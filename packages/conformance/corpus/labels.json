@@ -29,5 +29,10 @@
   "task-done-state": ["read"],
   "task-facts": ["read"],
   "task-id-by-key": ["read"],
-  "event-state": ["read"]
+  "event-state": ["read"],
+  "stuck-runs": ["read"],
+  "queue-status": ["read"],
+  "table-rows": ["read"],
+  "event-waiters": ["read"],
+  "aged-tasks": ["read"]
 }

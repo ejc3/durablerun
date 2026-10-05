@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { type Client, createClient } from '@libsql/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openTestDb } from '../src/testing.js'
+import { aloneAsNamed, nameOf as placeOf } from './plan-due-ranges.js'
 import { type Shipped, keyOf, recordHistory } from './plan-history.js'
 import { ENTITY_COLUMNS, type NestReading, type PlanRow, readNests } from './plan-nests.js'
 import {
@@ -66,6 +67,10 @@ const LINE_KINDS: readonly (readonly [string, RegExp])[] = [
 /** One statement, in one variation, measured and read. */
 interface Row {
   readonly name: string
+  /** The statement's name in the plan test's tables: its place in the corpus. */
+  readonly place: string
+  /** The text that was read, which a variation may have changed. */
+  readonly sql: string
   readonly kind: string
   readonly variation: 'shipped' | 'without an index' | 'without its WHERE'
   readonly dropped: string | undefined
@@ -139,6 +144,8 @@ async function judge(
     )
     const row: Row = {
       name,
+      place: placeOf(context.shipped),
+      sql: variant.sql,
       kind: kindOf(context.shipped.sql),
       variation,
       dropped,
@@ -367,24 +374,33 @@ describe('the plan reader against a measured backlog', () => {
     expect(await under('delete from runs', [])).toBe(true)
   })
 
-  it('refuses no statement that the measurement shows reading a backlog, unless a due range drives it', () => {
-    // A due range is bounded by a LIMIT that a plan never prints, so the reader reports each
-    // one it sees and `query-plans.test.ts` names them line for line. What it must not do is
-    // pass a statement that grew, and report no due range either.
+  /**
+   * What excuses a statement that grew and that the reader passed. A due range that drives
+   * another step does, in any variation: it is bounded by a LIMIT that a plan never
+   * prints, and `query-plans.test.ts` names each one line for line. A due range that
+   * stands alone does only as that test's table of them names it: in that statement, by
+   * those lines, with the bound still in the text that was read (`aloneAsNamed`).
+   */
+  const excusedByADueRange = (r: Row) =>
+    r.reading.dueDrivers.length > 0 || aloneAsNamed(r.place, r.reading, r.sql)
+
+  it('refuses no statement that the measurement shows reading a backlog, unless a due range drives it or stands alone in it as the plan test names it', () => {
+    // What the reader must not do is pass a statement that grew with neither excuse.
     const passedAndGrew = rows
       .filter((r) => !insideATrigger(r))
-      .filter((r) => r.grew && !isBad(r.reading) && r.reading.dueDrivers.length === 0)
+      .filter((r) => r.grew && !isBad(r.reading) && !excusedByADueRange(r))
       .map(nameOfRow)
     expect(passedAndGrew, 'mutation-verdict:behavior:plan-nests').toEqual([])
   })
 
   it('refuses exactly the statements that grew, in the database as the store shipped it', () => {
-    // With every index in place the reader passes every shipped statement, and none of them
-    // grew but the ones a due range drives. Both directions are held: a statement the reader
-    // refuses that does no more work beside a backlog is a reader that has misread a plan.
+    // With every index in place the reader passes every shipped statement but the row counts
+    // an operator asks for, and none that it passes grew but the ones a due range excuses.
+    // Both directions are held: a statement the reader refuses that does no more work beside
+    // a backlog is a reader that has misread a plan.
     const disagree = rows
       .filter((r) => r.variation === 'shipped' && !insideATrigger(r))
-      .filter((r) => isBad(r.reading) !== (r.grew && r.reading.dueDrivers.length === 0))
+      .filter((r) => isBad(r.reading) !== (r.grew && !excusedByADueRange(r)))
       .map(nameOfRow)
     expect(disagree, 'mutation-verdict:behavior:plan-nests').toEqual([])
   })

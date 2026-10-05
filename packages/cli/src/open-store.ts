@@ -1,11 +1,13 @@
 import { existsSync } from 'node:fs'
 import type {
+  AgedTasksOptions,
   HeldOperatorReads,
   IdSource,
   OperatorReads,
   SchedulerStore,
   SqlExecutor,
   StoreAdmin,
+  StuckRunsOptions,
 } from '@durablerun/core'
 
 /**
@@ -27,7 +29,16 @@ export type CliAdmin = Pick<StoreAdmin, 'schemaVersion' | 'nowEpochMs' | 'migrat
 export type CliScheduler = Pick<SchedulerStore, 'getTaskResult' | 'getCheckpoints'>
 
 /** The operator reads a command may make. */
-export type CliOperator = Pick<OperatorReads, 'taskFacts' | 'taskIdByKey'>
+export type CliOperator = Pick<
+  OperatorReads,
+  | 'taskFacts'
+  | 'taskIdByKey'
+  | 'stuckRuns'
+  | 'agedTasks'
+  | 'queueStatus'
+  | 'tableRows'
+  | 'eventWaiters'
+>
 
 /** What an operator should know before a migration crosses a version, as a store says it. */
 export type SchemaVersionNotes = Readonly<Record<number, string>>
@@ -300,6 +311,11 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       taskFacts: (queue: string, taskId: string) => operator.taskFacts(queue, taskId),
       taskIdByKey: (queue: string, idempotencyKey: string) =>
         operator.taskIdByKey(queue, idempotencyKey),
+      stuckRuns: (queue: string, options: StuckRunsOptions) => operator.stuckRuns(queue, options),
+      agedTasks: (queue: string, options: AgedTasksOptions) => operator.agedTasks(queue, options),
+      queueStatus: (queue: string) => operator.queueStatus(queue),
+      tableRows: (queue: string) => operator.tableRows(queue),
+      eventWaiters: (queue: string, eventName: string) => operator.eventWaiters(queue, eventName),
     }),
     close: () => opened.close(),
   }

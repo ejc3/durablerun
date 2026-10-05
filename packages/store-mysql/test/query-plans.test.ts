@@ -1195,4 +1195,152 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
       await db.close()
     }
   })
+
+  it("reads what a queue is owed, its gauges, its oldest live tasks and an event's waiters without walking what they do not list or count, and walks a table to count its rows", async () => {
+    // Each leg of what a queue is owed takes the runs or the tasks whose instant has come,
+    // oldest first, from the index that holds them in that order. Each gauge takes the runs
+    // of one state from the same indexes. Beside them stands a history of tasks that ended,
+    // which no leg lists and no gauge counts, and then a backlog of runs that are not due,
+    // which no leg lists. Every batch is measured from inside its own transaction.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-operator-queue-reads', nowMs: 1_000_000 })
+    try {
+      const labels = ['stuck-runs', 'queue-status', 'event-waiters', 'table-rows', 'aged-tasks']
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      // One task that ended, one run parked on an event, one run under a lease, and one
+      // run that is due and unclaimed under a start deadline.
+      const ended = await store.spawn(Q, 'job', '{}')
+      const [first] = await store.claim(Q, 'w-ended', { leaseSeconds: 60, limit: 1 })
+      if (first?.taskId !== ended.taskId) throw new Error('the first task was not claimed')
+      await store.activate(Q, first.runId, first.claimToken, first.claimGen)
+      await store.complete(Q, first.runId, first.claimToken, '{}')
+      await store.spawn(Q, 'job', '{}')
+      const [parked] = await store.claim(Q, 'w-parked', { leaseSeconds: 60, limit: 1 })
+      if (parked === undefined) throw new Error('the second task was not claimed')
+      await store.activate(Q, parked.runId, parked.claimToken, parked.claimGen)
+      await store.awaitEvent(
+        Q,
+        parked.taskId,
+        parked.runId,
+        parked.claimToken,
+        'approve',
+        'approval',
+        30,
+      )
+      await store.spawn(Q, 'job', '{}')
+      const [leased] = await store.claim(Q, 'w-leased', { leaseSeconds: 60, limit: 1 })
+      if (leased === undefined) throw new Error('the third task was not claimed')
+      const due = await store.spawn(Q, 'job', '{}', { cancellation: { maxDelaySeconds: 30 } })
+      if (due.runId === null) throw new Error('the fourth task has no run')
+      // The history: tasks that ended, each with its run, and waits on other events.
+      await cloneRows(db, 'tasks', `src.task_id = '${ended.taskId}'`, {
+        task_id: "CONCAT('old-task-', seq.n)",
+      })
+      await cloneRows(db, 'runs', `src.run_id = '${first.runId}'`, {
+        run_id: "CONCAT('old-run-', seq.n)",
+        task_id: "CONCAT('old-task-', seq.n)",
+      })
+      await cloneRows(db, 'waits', `src.run_id = '${parked.runId}'`, {
+        run_id: "CONCAT('old-run-', seq.n)",
+        task_id: "CONCAT('old-task-', seq.n)",
+        event_name: "CONCAT('old-event-', seq.n)",
+      })
+      const analyze = () =>
+        db.raw.batch('fixture:analyze', [{ sql: 'ANALYZE TABLE tasks, runs, waits', args: [] }])
+      await analyze()
+      await db.admin.setFakeNowEpochMs(1_000_000 + 70_000)
+      const beside = async (what: string) => {
+        const { executor, walked } = countingRowsWalked(db, labels)
+        const reads = operatorReads(executor)
+        const owed = await reads.stuckRuns(Q, { graceSeconds: 0, limit: 10 })
+        const status = await reads.queueStatus(Q)
+        const waiters = await reads.eventWaiters(Q, 'approval')
+        const rows = await reads.tableRows(Q)
+        const oldest = await reads.agedTasks(Q, { olderThanSeconds: 0, limit: 10 })
+        return {
+          what,
+          oldest: oldest.tasks.rows.length,
+          answered: {
+            // The await that timed out, the lease that lapsed, and the task past its deadline.
+            sleepingPastWake: owed.sleepingPastWake.rows.length,
+            leaseLapsed: owed.leaseLapsed.rows.length,
+            cancelOverdue: owed.cancelOverdue.rows.length,
+            runningRuns: status.gauges.runningRuns.count,
+            waiters: waiters.waiters.rows.length,
+          },
+          tasks: rows.tables.tasks.count,
+          walked: Object.fromEntries(labels.map((label) => [label, Number(walked.get(label))])),
+        }
+      }
+      /** Which batches walked fewer than 50 rows, and whether the counts walked the rows they count. */
+      const judged = ({ walked, ...rest }: Awaited<ReturnType<typeof beside>>) => ({
+        ...rest,
+        walkedFew: Object.fromEntries(
+          Object.entries(walked).map(([label, rows]) => [label, Number(rows) < 50]),
+        ),
+        countsWalkTheirRows: Number(walked['table-rows']) >= rest.tasks,
+      })
+      const answered = {
+        sleepingPastWake: 1,
+        leaseLapsed: 1,
+        cancelOverdue: 1,
+        runningRuns: 1,
+        waiters: 1,
+      }
+      const besideTheHistory = await beside('a history of ended tasks')
+      // The backlog: pending runs that are due in an hour, each with a task of its own.
+      await cloneRows(db, 'tasks', `src.task_id = '${due.taskId}'`, {
+        task_id: "CONCAT('later-task-', seq.n)",
+        cancel_at_ms: 'NULL',
+      })
+      await cloneRows(db, 'runs', `src.run_id = '${due.runId}'`, {
+        run_id: "CONCAT('later-run-', seq.n)",
+        task_id: "CONCAT('later-task-', seq.n)",
+        available_at_ms: '4600000',
+      })
+      await analyze()
+      const besideTheBacklog = await beside('a backlog of runs that are not due')
+      // Measured on MySQL 8.4. Beside the history the legs walked 15 rows between them, the
+      // gauges 9, the waiters 1 and the read of the oldest live tasks 3, which is every live
+      // task. Beside the backlog the legs still walked 15: a run that is not due is in no
+      // leg, and no window reads it. The read of the oldest live tasks walked 12 of the 403 live tasks, one row past
+      // its limit of ten and one each of the other two states: the index of live tasks
+      // hands them out oldest first. The gauges walked 809, because a gauge counts every
+      // pending run and every live task, due or not, up to its cap. The counts of rows walk
+      // the rows they count: 2,427 and then 4,027 over the five tables.
+      expect([judged(besideTheHistory), judged(besideTheBacklog)]).toEqual([
+        {
+          what: 'a history of ended tasks',
+          answered,
+          // The three live tasks: the parked one, the leased one and the due one.
+          oldest: 3,
+          tasks: 4 + HISTORY,
+          walkedFew: {
+            'stuck-runs': true,
+            'queue-status': true,
+            'event-waiters': true,
+            'table-rows': false,
+            'aged-tasks': true,
+          },
+          countsWalkTheirRows: true,
+        },
+        {
+          what: 'a backlog of runs that are not due',
+          answered,
+          // The limit asked for, of the 403 live tasks.
+          oldest: 10,
+          tasks: 4 + 2 * HISTORY,
+          walkedFew: {
+            'stuck-runs': true,
+            'queue-status': false,
+            'event-waiters': true,
+            'table-rows': false,
+            'aged-tasks': true,
+          },
+          countsWalkTheirRows: true,
+        },
+      ])
+    } finally {
+      await db.close()
+    }
+  })
 })
