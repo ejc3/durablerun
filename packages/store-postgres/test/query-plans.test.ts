@@ -694,6 +694,8 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
         'runs_task_attempt on runs sibling_2: (task_id = r.task_id)',
         'runs_task_attempt on runs higher_2: (task_id = r.task_id)',
       ],
+      // Database time, read last: it reaches no table.
+      'task-admission#3': [],
     })
   } finally {
     await client.end()

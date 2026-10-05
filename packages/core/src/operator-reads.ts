@@ -1133,10 +1133,11 @@ async function eventPayload(
  * Why the statements of `task-admission` may see different clocks, the reason `readTree`
  * asks of every read of the clock after a batch's first. Each flag is one of the engine's
  * predicates at the instant of its own statement, and each is answered beside the state
- * and the instant of the row it was read from.
+ * and the instant of the row it was read from. The answer's time is read by the batch's
+ * last statement, so no flag saw a later clock than the one the answer is dated by.
  */
 const ADMISSION_DRIFT =
-  "read-only report: each flag holds one of the engine's predicates at the instant of its own statement, beside the state and the instant of the row it read"
+  "read-only report: each flag holds one of the engine's predicates at the instant of its own statement, beside the state and the instant of the row it read, and the last statement reads the time the answer is dated by"
 
 async function taskAdmission(
   dialect: OperatorReadsDialect,
@@ -1158,6 +1159,7 @@ async function taskAdmission(
     }),
     ADMISSION_DRIFT,
   )
+  b.readTree('now', databaseNowRead({}), ADMISSION_DRIFT)
   const ran = await dialect.run(b)
   const guard = readRows(b, ran, 'retry')[0]
   const task = readRows(b, ran, 'sweep')[0]
@@ -1193,11 +1195,10 @@ async function taskAdmission(
   })
   // By id. The read hands no ordinal over: one at the edge of its column is no number.
   runs.sort((left, right) => byCodePoints(left.runId, right.runId))
-  const beside = integersOf(task, corrupt, { taskId })
   return {
-    nowMs: beside.now('now_ms'),
+    nowMs: reportTime(b, ran, corrupt),
     state: stringFrom(task.state),
-    cancelAtMs: beside(TASK.cancel_at_ms),
+    cancelAtMs: integersOf(task, corrupt, { taskId })(TASK.cancel_at_ms),
     retry: freeze(retry),
     sweepCancels: flagOf('task-admission sweepCancels', task.sweepCancels),
     runs,

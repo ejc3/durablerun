@@ -403,10 +403,11 @@ export interface RunAdmission {
  */
 export interface TaskAdmission {
   /**
-   * Database time as the read's own statement read it: the instant every flag here is of.
-   * A reader that holds facts of an earlier instant compares the two with the instants the
-   * flags depend on. Null when it is outside the bounds of an instant, and it is then
-   * listed in `corrupt`.
+   * Database time as the last statement of the read's batch read it. Each flag is of the
+   * instant of its own statement, and none of those is later than this one. A reader that
+   * holds facts of an earlier instant compares the two with the instants the flags depend
+   * on. Null when it is outside the bounds of an instant, and it is then listed in
+   * `corrupt`.
    */
   readonly nowMs: number | null
   readonly state: string

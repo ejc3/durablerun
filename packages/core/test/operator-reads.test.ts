@@ -1604,7 +1604,7 @@ describe('how the reads a drive verb asks decode a row', () => {
     ...Object.fromEntries(RETRY_CONJUNCTS.map((name) => [name, 1])),
     ...Object.fromEntries(refused.map((name) => [name, 0])),
   })
-  const task: SqlRow = { state: 'failed', cancel_at_ms: null, sweepCancels: 0, now_ms: 5000 }
+  const task: SqlRow = { state: 'failed', cancel_at_ms: null, sweepCancels: 0 }
   const admitted = (row: Partial<SqlRow> & { run_id: string }): SqlRow => ({
     state: 'pending',
     claim_gen: 0,
@@ -1616,7 +1616,7 @@ describe('how the reads a drive verb asks decode a row', () => {
     ...row,
   })
   const admission = (guardRow: SqlRow, taskRow: SqlRow, runs: SqlRow[] = []) => ({
-    'task-admission': [[guardRow], [taskRow], runs],
+    'task-admission': [[guardRow], [taskRow], runs, [{ now_ms: 5000 }]],
   })
 
   it("answers an event's payload only when the stored value is text, and names the kind of any other", async () => {
@@ -1667,10 +1667,11 @@ describe('how the reads a drive verb asks decode a row', () => {
       runs: [],
       corrupt: [],
     })
-    // One batch. Database time is a column of it, and whether the clock is a test's is not read.
+    // One batch. Its last statement reads database time, and whether the clock is a test's is
+    // not read.
     expect(sent).toEqual(['task-admission'])
     // A task that is not there has no row in either read of it.
-    const absent = readsAnswering({ 'task-admission': [[], [], []] }).reads
+    const absent = readsAnswering({ 'task-admission': [[], [], [], [{ now_ms: 5000 }]] }).reads
     expect(await absent.taskAdmission('q', 't')).toBeNull()
     // A dialect that answers a flag as text is refused: a string read as true would say a
     // conjunct holds that does not.

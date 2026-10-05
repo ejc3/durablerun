@@ -5709,7 +5709,8 @@ one name.
   the read: each conjunct of the retry guard, as true, false or not asked, whether the
   sweep's scan of due cancellations takes the task, and for each run whether a claim takes it and whether the
   sweep's scan of expired claims does, each beside the state and the instants it was read
-  with, and beside database time as its own statement read it. `retry` reads it to name a
+  with, and database time as the last statement of its batch read it, so that no flag
+  saw a later clock than the answer is dated by. `retry` reads it to name a
   refusal, and `explain` reads it to tell a move the driver
   is late for from a move the engine does not take.
 
@@ -5744,8 +5745,8 @@ A
 conformance case plants a state for every conjunct and requires the read to name it and the
 revival to be refused. Another holds the read to the guard, to a claim and to a sweep on
 every state a walk of the engine leaves, with a floor under how many of each it reaches.
-The read is one batch, `task-admission`, of three statements, and `event-payload` is one
-statement.
+The read is one batch, `task-admission`, of four statements, the last of which reads
+database time, and `event-payload` is one statement.
 
 Core holds the one implementation (`createOperatorReads`). Its statements are shared trees
 (`statements/operator.ts`) over each store's own fragments, and each store package exports
@@ -6247,8 +6248,9 @@ it does not answer (`deadline-no-sweep-cancels`). `explain` reads the facts and 
 predicates in two snapshots. When the row moved between them, so that a state, a claim
 generation or an instant the flags were read beside is not the one the facts hold, the
 predicates decide nothing, the late cause answers for the row as it stood, and asking again
-answers it. The predicates read the clock as well as the row, so `taskAdmission` answers
-the database time it was read at. When a deadline, a wake or the end of a lease lies after
+answers it. The predicates read the clock as well as the row, each at the instant of its
+own statement, so `taskAdmission` answers database time as its last statement read it.
+When a deadline, a wake or the end of a lease lies after
 the facts' database time and at or before the predicates', it passed between the two reads
 and no row moved: the facts hold it as ahead and the predicates as behind. `explain` then
 reads the facts again, once, and answers from them. So a deadline that passes while the
