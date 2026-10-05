@@ -130,7 +130,8 @@ interface Planted {
  */
 const WRITTEN_DOWN = {
   // Stuck, and cleared by the `sweep` the CLI suggests.
-  // The sweep takes the run back and makes it due again after the engine's relaunch delay.
+  // The sweep takes the run back, and the engine holds it for the backoff after a lease that
+  // ran out before it is due again.
   leaseLapsed: { cause: 'lease-lapsed-unswept', verdict: 'stuck', after: 'pending-delayed' },
   cancellationOverdue: {
     cause: 'cancellation-deadline-passed',
@@ -204,9 +205,9 @@ async function plant(
   await fixture(db, "UPDATE tasks SET retry_strategy = 'not json' WHERE task_id = ?", [
     notTaken.taskId,
   ])
-  // Ten seconds short of the grace before the script runs, a real worker that has no
-  // handler for the task claims it and parks it again, 15 to 24 seconds on. So when the
-  // script runs, its wake is past by less than the grace, and no owed move lists it.
+  // 130 seconds before the script runs, a real worker that has no handler for the task
+  // claims it and parks it again, 15 to 24 seconds on. So when the script runs, its wake
+  // is past by less than the grace of 120 seconds, and no owed move lists it.
   await db.admin.setFakeNowEpochMs(DRILL_AT_MS - 130_000)
   const neverStarted = await store.spawn(QUEUE, 'unhandled', '{}')
   await deferralTick(db, 'current', neverStarted.taskId, 1)

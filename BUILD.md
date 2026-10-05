@@ -615,7 +615,7 @@ accepts it.
     that wait on nothing. One `sweep` clears the lapsed lease and the overdue cancellation,
     one `tick --url` against the router completes the due run, and the two cancels end the
     never-started run, which the SDK's worker parked for want of a handler, and the untimed
-    await, which the router's own worker parked. Three healthy controls are found by their
+    await, which the router's own worker parked. Two healthy controls are found by their
     age and stay as they are, and two more are in no list. A row no claim admits,
     fixture-built, is planted beside them: `explain` names it `due-run-no-claim-admits`
     and suggests `inspect`, and after the sweep and the tick `stuck` lists it still. "finds
@@ -6674,12 +6674,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     event's row, so the answer says `already-emitted` and the twin holds the stamp.
     (4) `explain` asks the engine's predicates before it calls the driver late, in a
     second snapshot, and reads a row that moved between the two as it stood. (5) The
-    never-started run of the drill is parked ten seconds short of the grace before the
-    script runs, as a live driver would leave it, so no owed move lists it and only its
-    age finds it. A run parked longer ago than the grace is in the leg of runs past their
-    wake as well. (6) A swept lease is not due at once: the engine holds the run for its
-    relaunch delay, so the drill writes down `pending-delayed`, a `waiting` verdict, for
-    it. (7) `tick`'s child-process case is in `tick.test.ts` and waits for the child
+    never-started run of the drill is parked 130 seconds before the script runs, to wake
+    15 to 24 seconds later, as a live driver would leave it. Its wake is then past by less
+    than the grace of 120 seconds, so no owed move lists it and only its age finds it. A run parked longer ago than the grace is in the leg of runs past their
+    wake as well. (6) A swept lease is not due at once: the engine holds the run for the
+    backoff after a lease that ran out, so the drill writes down `pending-delayed`, a
+    `waiting` verdict, for it. (7) `tick`'s child-process case is in `tick.test.ts` and waits for the child
     without blocking, because the listener it calls is in the test's own process.
     (8) `retry` of a task that is live at the read after a null answer exits 0, as
     `revived` when the task was failed before the write and as `already-live` when it was
