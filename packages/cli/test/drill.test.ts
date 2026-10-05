@@ -2,7 +2,6 @@ import { systemClock } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import type { TaskHandler, TaskRegistry } from '@durablerun/sdk'
 import { describe, expect, it } from 'vitest'
-import { COMMANDS, type Verb } from '../src/commands.js'
 import { asleep, fixture } from './explain-seeds.js'
 import { TICK_TOKEN, onDeployment } from './hosted.js'
 import { deferralTick } from './queue-seeds.js'
@@ -50,7 +49,7 @@ const A_HUMAN_CANCELS = ['never-started', 'awaiting-an-untimed-event']
  * which it names the store again for a write of its own. It is handed no task id: it asks
  * `stuck` what the queue holds that is owed a move or is old, asks `explain` about each
  * task listed, and runs what `explain` suggests for a verdict of `stuck`, with `--yes`
- * where the command table says the command takes it. `olderThan` is the age it asks
+ * where the CLI's own `help --json` says the command takes it. `olderThan` is the age it asks
  * `stuck` to list live tasks from, or null to ask for the owed moves alone.
  */
 async function drill(
@@ -93,6 +92,13 @@ async function drill(
     }
     return { cause: answer.cause, verdict: answer.verdict, next: answer.next?.argv ?? null }
   }
+  // Which commands take --yes, as the CLI itself prints its table.
+  const help = JSON.parse((await cli(['help', '--json'])).stdout) as {
+    commands: { name: string; flags: Record<string, unknown> }[]
+  }
+  const confirmed = new Set(
+    help.commands.filter((command) => Object.hasOwn(command.flags, 'yes')).map(({ name }) => name),
+  )
   const found = new Map<string, Finding>()
   for (const taskId of await listed()) found.set(taskId, await explained(taskId))
   const ran: { argv: readonly string[]; run: CliRun }[] = []
@@ -102,8 +108,7 @@ async function drill(
     const now = await explained(taskId)
     if (now.verdict !== 'stuck' || now.next === null) continue
     const [verb] = now.next
-    const takesYes = Object.hasOwn(COMMANDS[verb as Verb]?.flags ?? {}, 'yes')
-    const argv = [...now.next, ...(takesYes ? ['--yes'] : []), '--json']
+    const argv = [...now.next, ...(confirmed.has(verb ?? '') ? ['--yes'] : []), '--json']
     ran.push({ argv, run: await cli(argv) })
   }
   for (const [taskId, first] of found) {
@@ -307,7 +312,7 @@ describe('the operator drill', () => {
               'sweep',
               'tick',
             ])
-            // No suggestion confirmed a write: the script added --yes itself, where the table has it.
+            // No suggestion confirmed a write: the script added --yes itself, where the CLI's own help has it.
             for (const { argv } of drilled.ran) {
               expect([argv[0], argv.includes('--yes')]).toEqual([argv[0], argv[0] === 'cancel'])
             }

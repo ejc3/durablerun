@@ -6466,7 +6466,10 @@ reach.
 - `sweep --queue Q --target T [--limit N]` is `sweep`, and then a read of the queue's next
   wake. It cancels the tasks past their deadline and takes back the runs whose lease
   lapsed, as a tick's first step does, up to the limit (20 by default, at most 1,000), and
-  it claims nothing. `atLimit` says when it filled its limit and may have left more.
+  it claims nothing. `atLimit` says the sweep made as many transitions as its limit, and so
+  may have left more. When it is false the sweep made fewer, and that does not say nothing
+  is owed: the port answers the transitions this call won, and a row another sweeper took
+  from under it is not among them. `stuck` lists what is still owed.
 
 `emit`, `cancel` and `retry` change nothing without `--yes`. They exit 2 with
 `confirmation-required` and print what they would do, from the read before the write.

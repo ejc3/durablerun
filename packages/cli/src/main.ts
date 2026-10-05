@@ -1071,7 +1071,10 @@ const sweep: Handler = async (context) => {
       queue,
       limit: most,
       swept: swept.length,
-      // A sweep that filled its limit may have left more: run it again.
+      // The sweep made as many transitions as its limit, so it may have left more: run it
+      // again. False says only that it made fewer. The port answers the transitions this
+      // call won, and a row another sweeper took from under it is not among them, so what
+      // is still owed is what `stuck` lists.
       atLimit: swept.length >= most,
       // Each transition is a kind and the ids it names. None is a value a user wrote.
       transitions: swept,
