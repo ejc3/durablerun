@@ -1,7 +1,12 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PortRefusalError, RETRY_GUARD, type RetryGuardConjunct } from '@durablerun/core'
+import {
+  PortRefusalError,
+  RETRY_GUARD,
+  type RetryGuardConjunct,
+  StoreUnavailableError,
+} from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { RETRY_REFUSALS } from '../../conformance/src/operator-admission.js'
@@ -575,6 +580,140 @@ describe('enqueue on libSQL', () => {
       const [claimed] = await db.store.claim(QUEUE, 'a-worker', { leaseSeconds: 60, limit: 1 })
       expect([taken.exit, claimed?.paramsJson]).toEqual([0, held])
     }))
+  it('refuses a number by its value, however it is written: an integer a double cannot hold with a fraction of zeros or an exponent, and a number that reads as zero and is not', () =>
+    onDb('drive-enqueue-number-spellings', async (db) => {
+      const before = await db.dump()
+      const { opener, sent } = recordingOpener()
+      const REASONS = ['not finite', 'a double cannot hold', 'reads as zero']
+      const asked = async (params: string) => {
+        const run = await runCli(
+          ['enqueue', 'report', '--key', 'k', '--params', params, ...writeFlags(db), '--json'],
+          db.env,
+          opener,
+        )
+        const answer = JSON.parse(run.stdout) as JsonAnswer
+        const message = answer.error?.message ?? ''
+        return [run.exit, answer.error?.kind, ...REASONS.filter((one) => message.includes(one))]
+      }
+      const spellings = {
+        // Twenty digits, which a double rounds to another integer, written three more ways.
+        aFractionOfZeros: '{"n":12345678901234567890.0}',
+        aFractionAndAnExponent: '{"n":1.2345678901234567890e19}',
+        anExponentOfZero: '{"n":12345678901234567890e0}',
+        // One past the largest integer a double keeps.
+        onePastWithAFraction: '{"n":9007199254740993.0}',
+        onePastWithAnExponent: '[-9007199254740993e0]',
+        // Ten to the 23rd is an integer no double is.
+        aPowerOfTen: '[1e23]',
+        // Not zero as written, and zero once read.
+        tooSmall: '{"x":1e-400}',
+        tooSmallBelowZero: '[-0.1e-400]',
+        tooLarge: '[1.5e309]',
+      }
+      const said: Record<string, unknown> = {}
+      for (const [name, params] of Object.entries(spellings)) said[name] = await asked(params)
+      const notHeld = [2, 'usage', 'a double cannot hold']
+      expect(
+        { said, sent: sent().length, unchanged: (await db.dump()) === before },
+        'mutation-verdict:behavior:cli-refuses-a-number-by-its-value',
+      ).toEqual({
+        said: {
+          aFractionOfZeros: notHeld,
+          aFractionAndAnExponent: notHeld,
+          anExponentOfZero: notHeld,
+          onePastWithAFraction: notHeld,
+          onePastWithAnExponent: notHeld,
+          aPowerOfTen: notHeld,
+          tooSmall: [2, 'usage', 'reads as zero'],
+          tooSmallBelowZero: [2, 'usage', 'reads as zero'],
+          tooLarge: [2, 'usage', 'not finite'],
+        },
+        sent: 0,
+        unchanged: true,
+      })
+      // What a double holds is taken however it is written: an integer it keeps with a
+      // fraction of zeros or an exponent, zero in each of its spellings, the least number
+      // above zero, and a fraction a double rounds, which is stored as the double it reads as.
+      const held =
+        '{"a":9007199254740992.0,"b":1e2,"c":1.5e3,"d":0.0,"e":0e7,"f":1e22,"g":5e-324,"h":0.1000000000000000055511151231257827}'
+      const taken = await drive(db, [
+        'enqueue',
+        'report',
+        '--key',
+        'held',
+        '--params',
+        held,
+        ...writeFlags(db),
+      ])
+      const [claimed] = await db.store.claim(QUEUE, 'a-worker', { leaseSeconds: 60, limit: 1 })
+      expect([taken.exit, claimed?.paramsJson]).toEqual([
+        0,
+        '{"a":9007199254740992,"b":100,"c":1500,"d":0,"e":0,"f":1e+22,"g":5e-324,"h":0.1}',
+      ])
+    }))
+
+  it('answers a repeat the spawn answered when the task it found cannot be read back, and says the stored name is unknown and no mismatch', () =>
+    onDb('drive-enqueue-found-unread', async (db) => {
+      const line = (key: string) => ['enqueue', 'report', '--key', key, ...writeFlags(db), '--json']
+      let runs = 0
+      const enqueued = async (key: string, opener?: StoreOpener) => {
+        const run = await runCli(line(key), db.env, opener, testIdSource(`unread-${runs++}`))
+        const answer = JSON.parse(run.stdout) as JsonAnswer
+        return {
+          taskId: String(answer.taskId),
+          said: [
+            run.exit,
+            answer.created,
+            answer.storedTaskName,
+            answer.taskNameMatches,
+            answer.storedTaskNotRead,
+            // Nothing of the error the read met is printed without --reveal.
+            `${run.stdout}${run.stderr}`.includes(SENTINEL),
+          ],
+        }
+      }
+      const repeated = async (key: string, opener?: StoreOpener, plant?: string) => {
+        const first = await enqueued(key)
+        if (plant !== undefined) await fixture(db, plant, [first.taskId])
+        const again = await enqueued(key, opener)
+        return { sameTask: again.taskId === first.taskId, said: again.said }
+      }
+      expect(
+        {
+          // The store is unavailable at the read that follows the spawn's answer.
+          outage: await repeated(
+            'an-outage',
+            readingFactsAs(() => Promise.reject(new StoreUnavailableError(`lost ${SENTINEL}`))),
+          ),
+          // A stored row the store's decoders refuse.
+          refusedRow: await repeated(
+            'a-refused-row',
+            readingFactsAs(() => Promise.reject(new RangeError(`a row that holds ${SENTINEL}`))),
+          ),
+          // The task is gone by the time it is read.
+          gone: await repeated(
+            'gone',
+            readingFactsAs(() => Promise.resolve(null)),
+          ),
+          // A counter past what a number holds, fixture-built: the client hands no such
+          // integer over, so every read of the row fails, and a repeat fails it again.
+          pastANumber: await repeated(
+            'past-a-number',
+            undefined,
+            'UPDATE tasks SET attempts = 9223372036854775807 WHERE task_id = ?',
+          ),
+        },
+        'mutation-verdict:behavior:cli-enqueue-answers-a-repeat-it-cannot-read-back',
+      ).toEqual({
+        outage: { sameTask: true, said: [0, false, null, 'unknown', 'store-unavailable', false] },
+        refusedRow: { sameTask: true, said: [0, false, null, 'unknown', 'unreadable', false] },
+        gone: { sameTask: true, said: [0, false, null, 'unknown', 'not-found', false] },
+        pastANumber: {
+          sameTask: true,
+          said: [0, false, null, 'unknown', 'store-unavailable', false],
+        },
+      })
+    }))
 })
 
 describe('emit on libSQL', () => {
@@ -703,6 +842,43 @@ describe('emit on libSQL', () => {
     }))
 })
 
+/**
+ * The store as a command opens it, but for one thing: once the command has read the task,
+ * and before it writes, the task's worker fails it, and the saga begins.
+ */
+function beginsAfterTheRead(fail: () => Promise<void>) {
+  let began = false
+  const opener: StoreOpener = async (url, token, ids, options) => {
+    const opened = await openStore(url, token, ids, options)
+    return {
+      ...opened,
+      operator: {
+        ...opened.operator,
+        taskFacts: async (queue, id) => {
+          const facts = await opened.operator.taskFacts(queue, id)
+          if (!began) {
+            began = true
+            await fail()
+          }
+          return facts
+        },
+      },
+    }
+  }
+  return { opener, began: () => began }
+}
+
+/**
+ * The store as a command opens it, but for the read of a task's facts, which answers what
+ * the test says: a rejection, or no task.
+ */
+function readingFactsAs(read: () => Promise<null>): StoreOpener {
+  return async (url, token, ids, options) => {
+    const opened = await openStore(url, token, ids, options)
+    return { ...opened, operator: { ...opened.operator, taskFacts: read } }
+  }
+}
+
 describe('cancel on libSQL', () => {
   it('cancels a live task, reports a task cancelled already, and names a task that ended another way or is not there', () =>
     onDb('drive-cancel', async (db) => {
@@ -806,29 +982,6 @@ describe('cancel on libSQL', () => {
 
   it('leaves a task uncancelled when its saga begins between the read and the write, and prints the rollback facts', () =>
     onDb('drive-cancel-saga-begins', async (db) => {
-      // The store as the command opens it, but for one thing: once the command has read the
-      // task, and before it writes, the task's worker fails it, and the saga begins.
-      const beginsAfterTheRead = (fail: () => Promise<void>) => {
-        let began = false
-        const opener: StoreOpener = async (url, token, ids, options) => {
-          const opened = await openStore(url, token, ids, options)
-          return {
-            ...opened,
-            operator: {
-              ...opened.operator,
-              taskFacts: async (queue, id) => {
-                const facts = await opened.operator.taskFacts(queue, id)
-                if (!began) {
-                  began = true
-                  await fail()
-                }
-                return facts
-              },
-            },
-          }
-        }
-        return { opener, began: () => began }
-      }
       const { taskId, forward, fail } = await sagaStepStarted(db)
       const spared = beginsAfterTheRead(fail)
       const run = await runCli(
@@ -891,6 +1044,51 @@ describe('cancel on libSQL', () => {
       ])
     }))
 
+  it('says of the task it cancelled whether its saga had begun, from a read after the write, so a rollback that was halted shows in the answer', () =>
+    onDb('drive-cancel-says-halted', async (db) => {
+      const cancelled = async (taskId: string, flags: readonly string[], opener?: StoreOpener) => {
+        const run = await runCli(
+          ['cancel', taskId, '--yes', ...flags, ...writeFlags(db), '--json'],
+          db.env,
+          opener,
+          testIdSource(`says-halted-${taskId}`),
+        )
+        const answer = JSON.parse(run.stdout) as JsonAnswer
+        return [
+          run.exit,
+          answer.outcome,
+          answer.stateBefore,
+          answer.sagaBegan,
+          answer.haltedRollback,
+        ]
+      }
+      // The saga begins once the command has read the task, and the operator said to halt.
+      const beside = await sagaStepStarted(db)
+      const besideTheCommand = await cancelled(
+        beside.taskId,
+        ['--halt-rollback'],
+        beginsAfterTheRead(beside.fail).opener,
+      )
+      // The task was rolling back before the command ran.
+      const known = await rollingBack(db)
+      const knownBefore = await cancelled(known.taskId, ['--halt-rollback'])
+      // No saga began: the flag halts nothing, and neither does a cancel without it.
+      const plain = await db.store.spawn(QUEUE, 'plain', '{}')
+      const noSaga = await cancelled(plain.taskId, ['--halt-rollback'])
+      const other = await db.store.spawn(QUEUE, 'plain', '{}')
+      const spared = await cancelled(other.taskId, [])
+      expect(
+        { besideTheCommand, knownBefore, noSaga, spared },
+        'mutation-verdict:behavior:cli-cancel-says-whether-it-halted-a-rollback',
+      ).toEqual({
+        // `stateBefore` is of the read before the call, when the task was still running.
+        besideTheCommand: [0, 'cancelled', 'running', true, true],
+        knownBefore: [0, 'cancelled', 'pending', true, true],
+        noSaga: [0, 'cancelled', 'pending', false, false],
+        spared: [0, 'cancelled', 'pending', false, false],
+      })
+    }))
+
   it('names a live task one of whose runs is in another queue, which the port refuses, fixture-built', () =>
     onDb('drive-cancel-elsewhere', async (db) => {
       const task = await db.store.spawn(QUEUE, 'job', '{}')
@@ -917,6 +1115,19 @@ describe('retry on libSQL', () => {
   it('revives a failed task, and a repeat reports the live run it finds', () =>
     onDb('drive-retry', async (db) => {
       const tasks = await seedTasks(db)
+      // Without --yes: a failed task the guard admits would be revived, and a live task's
+      // run would be reported.
+      const forecast = async (taskId: string) => {
+        const { exit, answer } = await drive(db, ['retry', taskId, ...writeFlags(db)])
+        return [exit, answer.error?.kind, answer.wouldBe, answer.cause]
+      }
+      expect({
+        failed: await forecast(tasks.failed),
+        live: await forecast(tasks.pending),
+      }).toEqual({
+        failed: [2, 'confirmation-required', 'revived', undefined],
+        live: [2, 'confirmation-required', 'already-live', undefined],
+      })
       const revived = await drive(db, ['retry', tasks.failed, '--yes', ...writeFlags(db)])
       expect(revived).toMatchObject({
         exit: 0,
@@ -962,6 +1173,31 @@ describe('retry on libSQL', () => {
       it(`${name}: ${planted.what}`, () =>
         onDb(`drive-retry-${name}`, async (db) => {
           const taskId = await planted.build(db)
+          // Without --yes the command says what --yes would do: the refusal, by its cause.
+          const asked = await changedBy(db, () => drive(db, ['retry', taskId, ...writeFlags(db)]))
+          expect(
+            {
+              conjunct: name,
+              exit: asked.out.exit,
+              kind: asked.out.answer.error?.kind,
+              wouldBe: asked.out.answer.wouldBe,
+              cause: asked.out.answer.cause,
+              conjunctsNotHeld: asked.out.answer.conjunctsNotHeld,
+              saysItWouldBeRefused:
+                asked.out.answer.error?.message?.includes('retry would be refused'),
+              unchanged: asked.unchanged,
+            },
+            'mutation-verdict:behavior:cli-retry-says-what-yes-would-do',
+          ).toEqual({
+            conjunct: name,
+            exit: 2,
+            kind: 'confirmation-required',
+            wouldBe: 'refused',
+            cause: CAUSE_NAMED[planted.leavesFalse[0] ?? name],
+            conjunctsNotHeld: planted.leavesFalse,
+            saysItWouldBeRefused: true,
+            unchanged: true,
+          })
           const refused = await changedBy(db, () =>
             drive(db, ['retry', taskId, '--yes', ...writeFlags(db)]),
           )

@@ -333,6 +333,50 @@ describe('tick --url against a hosted router on the loopback address', () => {
     }
   }, 60_000)
 
+  it("exits 7 for a 500 that carries a hosted route's error body, whatever its code, and 6 for a 500 that carries none", async () => {
+    const answers = {
+      internal: await answering(500, '{"error":"internal_error"}'),
+      authorization: await answering(500, '{"error":"authorization_invalid"}'),
+      // A code this build does not know, in the shape a hosted route answers in.
+      aLaterCode: await answering(500, '{"error":"a_code_of_a_later_build"}'),
+      // No body of a hosted route: a platform's page, and a JSON object with no code.
+      aPage: await answering(500, 'the function crashed'),
+      anotherObject: await answering(500, '{"message":"upstream failed"}'),
+      // The route's own outage is a 503, and stays one.
+      unavailable: await answering(503, '{"error":"service_unavailable"}'),
+    }
+    try {
+      const said: Record<string, unknown> = {}
+      for (const [name, deployment] of Object.entries(answers)) {
+        const run = await tick(['--url', deployment.url, '--json'], envOf(deployment))
+        const code = run.answer?.code
+        said[name] = [
+          run.exit,
+          run.answer?.error?.kind,
+          code,
+          // The refusal names the code the route gave, and promises nothing of a repeat.
+          typeof code === 'string' && run.answer?.error?.message?.includes(code),
+          run.answer?.error?.message?.includes('does not cure'),
+        ]
+      }
+      const outage = exitCode('unavailable')
+      const permanent = exitCode('permanent')
+      expect(
+        said,
+        'mutation-verdict:behavior:cli-tick-exits-7-for-a-500-of-the-route-itself',
+      ).toEqual({
+        internal: [permanent, 'deployment-error', 'internal_error', true, false],
+        authorization: [permanent, 'deployment-error', 'authorization_invalid', true, false],
+        aLaterCode: [permanent, 'deployment-error', 'a_code_of_a_later_build', true, false],
+        aPage: [outage, 'deployment-unavailable', undefined, false, false],
+        anotherObject: [outage, 'deployment-unavailable', undefined, false, false],
+        unavailable: [outage, 'deployment-unavailable', 'service_unavailable', false, false],
+      })
+    } finally {
+      for (const deployment of Object.values(answers)) await deployment.close()
+    }
+  })
+
   it('answers a deployment that cannot be reached or says try later with exit 6, and one whose answer a repeat would not change with exit 7', async () => {
     // A listener that drops every connection: the request fails by construction.
     const gone = await dropping()

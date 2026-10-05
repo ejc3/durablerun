@@ -160,6 +160,45 @@ export function identifierBoundConformance(
       }
     })
 
+    it('refuses the options of a cancel that are no object, or whose unlessSagaBegan is no boolean, before anything is sent', async () => {
+      // A store reads the option as a switch, and a caller that passes it asks for a saga
+      // to be spared. Read loosely, 1 and 'true' left the conjunct out of the cancel, which
+      // then halted a rollback. They are refused as the caller's mistake, as a string
+      // outside the domain is.
+      const notTaken: Readonly<Record<string, unknown>> = {
+        'a number for the switch': { unlessSagaBegan: 1 },
+        'a string for the switch': { unlessSagaBegan: 'true' },
+        'a string': 'true',
+        'a number': 1,
+        null: null,
+      }
+      const answers: Record<string, { refused: boolean; sent: boolean }> = {}
+      for (const [what, options] of Object.entries(notTaken)) {
+        const { refused, sent } = await outcomeOf(f, (store) =>
+          store.cancelTask('q', 't', options as never),
+        )
+        answers[what] = { refused, sent }
+      }
+      expect(
+        answers,
+        'mutation-verdict:behavior:port-cancel-options-are-held-to-a-boolean',
+      ).toEqual(
+        Object.fromEntries(
+          Object.keys(notTaken).map((what) => [what, { refused: true, sent: false }]),
+        ),
+      )
+      // The control: what the port's type takes reaches the store.
+      for (const options of [
+        undefined,
+        {},
+        { unlessSagaBegan: true },
+        { unlessSagaBegan: false },
+      ]) {
+        const { refused, sent } = await outcomeOf(f, (store) => store.cancelTask('q', 't', options))
+        expect([options, refused, sent]).toEqual([options, false, true])
+      }
+    })
+
     it('refuses a string the port requires when it is left out, at every place, and passes one the caller may leave out', async () => {
       // A place is asked with a value in the cases above. Here it is asked with nothing: a
       // member is omitted, an argument is undefined, and an options object is left out

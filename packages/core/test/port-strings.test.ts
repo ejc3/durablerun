@@ -278,6 +278,44 @@ describe('a value where an options object belongs', () => {
       'empty options': 'accepted',
     })
   })
+
+  it('refuses the options of a cancel unless they are left out, or an object whose unlessSagaBegan is a boolean or left out', () => {
+    // A store reads the option as a switch. Read loosely, a number or a string there left
+    // the saga conjunct out, and the cancel halted a rollback its caller asked it to spare.
+    const cancel = (options: unknown) =>
+      refusalOf(() => requirePortStrings('cancelTask', ['q', 't', options]))
+    const noBoolean = 'cancelTask[2].unlessSagaBegan must be a boolean'
+    const noObject = 'cancelTask[2] must be an object'
+    expect({
+      'a number for the switch': cancel({ unlessSagaBegan: 1 }),
+      'a string for the switch': cancel({ unlessSagaBegan: 'true' }),
+      'null for the switch': cancel({ unlessSagaBegan: null }),
+      'a string': cancel('true'),
+      'a number': cancel(1),
+      'a boolean': cancel(true),
+      null: cancel(null),
+      'an array': cancel([]),
+      'left out': cancel(undefined),
+      empty: cancel({}),
+      'the switch on': cancel({ unlessSagaBegan: true }),
+      'the switch off': cancel({ unlessSagaBegan: false }),
+      'the switch left out': cancel({ unlessSagaBegan: undefined }),
+    }).toEqual({
+      'a number for the switch': noBoolean,
+      'a string for the switch': noBoolean,
+      'null for the switch': noBoolean,
+      'a string': noObject,
+      'a number': noObject,
+      'a boolean': noObject,
+      null: noObject,
+      'an array': noObject,
+      'left out': 'accepted',
+      empty: 'accepted',
+      'the switch on': 'accepted',
+      'the switch off': 'accepted',
+      'the switch left out': 'accepted',
+    })
+  })
 })
 
 describe('a store that extends the held port', () => {
