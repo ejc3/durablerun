@@ -1167,31 +1167,6 @@ describe('retry on libSQL', () => {
       it(`${name}: ${planted.what}`, () =>
         onDb(`drive-retry-${name}`, async (db) => {
           const taskId = await planted.build(db)
-          // Without --yes the command says what --yes would do: the refusal, by its cause.
-          const asked = await changedBy(db, () => drive(db, ['retry', taskId, ...writeFlags(db)]))
-          expect(
-            {
-              conjunct: name,
-              exit: asked.out.exit,
-              kind: asked.out.answer.error?.kind,
-              wouldBe: asked.out.answer.wouldBe,
-              cause: asked.out.answer.cause,
-              conjunctsNotHeld: asked.out.answer.conjunctsNotHeld,
-              saysItWouldBeRefused:
-                asked.out.answer.error?.message?.includes('retry would be refused'),
-              unchanged: asked.unchanged,
-            },
-            'mutation-verdict:behavior:cli-retry-says-what-yes-would-do',
-          ).toEqual({
-            conjunct: name,
-            exit: 2,
-            kind: 'confirmation-required',
-            wouldBe: 'refused',
-            cause: CAUSE_NAMED[planted.leavesFalse[0] ?? name],
-            conjunctsNotHeld: planted.leavesFalse,
-            saysItWouldBeRefused: true,
-            unchanged: true,
-          })
           const refused = await changedBy(db, () =>
             drive(db, ['retry', taskId, '--yes', ...writeFlags(db)]),
           )
@@ -1223,6 +1198,34 @@ describe('retry on libSQL', () => {
             stdout: text.stdout,
             names: text.stderr.includes(`cause: ${CAUSE_NAMED[planted.leavesFalse[0] ?? name]}`),
           }).toEqual({ exit: exitCode('refused'), stdout: '', names: true })
+          // Asked again without --yes, the command says what --yes just did: the refusal, by
+          // its cause. It is asked second: a refusal that names no cause fails the question
+          // above, whose marker is the one that holds it. The refusal changed nothing, so
+          // this is asked of the same state.
+          const asked = await changedBy(db, () => drive(db, ['retry', taskId, ...writeFlags(db)]))
+          expect(
+            {
+              conjunct: name,
+              exit: asked.out.exit,
+              kind: asked.out.answer.error?.kind,
+              wouldBe: asked.out.answer.wouldBe,
+              cause: asked.out.answer.cause,
+              conjunctsNotHeld: asked.out.answer.conjunctsNotHeld,
+              saysItWouldBeRefused:
+                asked.out.answer.error?.message?.includes('retry would be refused'),
+              unchanged: asked.unchanged,
+            },
+            'mutation-verdict:behavior:cli-retry-says-what-yes-would-do',
+          ).toEqual({
+            conjunct: name,
+            exit: 2,
+            kind: 'confirmation-required',
+            wouldBe: 'refused',
+            cause: CAUSE_NAMED[planted.leavesFalse[0] ?? name],
+            conjunctsNotHeld: planted.leavesFalse,
+            saysItWouldBeRefused: true,
+            unchanged: true,
+          })
         }))
     }
   })
