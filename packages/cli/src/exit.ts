@@ -15,7 +15,7 @@ export const EXITS = Object.freeze([
     code: 2,
     name: 'usage',
     meaning:
-      'usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and nothing was sent',
+      'usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and no request went to a deployment',
   },
   { code: 3, name: 'refused', meaning: 'the engine refused the call, and says why' },
   {

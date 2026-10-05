@@ -6610,7 +6610,7 @@ same table, which a test holds equal to this one.
 | --- | --- | --- |
 | 0 | done | the command did what it says |
 | 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
-| 2 | usage | usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and nothing was sent |
+| 2 | usage | usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and no request went to a deployment |
 | 3 | refused | the engine refused the call, and says why |
 | 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
 | 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |

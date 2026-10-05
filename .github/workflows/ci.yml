@@ -354,13 +354,15 @@ jobs:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == 'dd72d14946a4b10201953dd231401d20f86c3410303efb363d2f2bff2286eba1':
-              # The drive verbs register forty-seven mutations: twenty-one for what `enqueue`,
-              # `emit`, `cancel`, `retry` and `sweep` require, send and answer, eight for where
-              # `tick` sends its token and how it reads the answer, three for the operator drill,
-              # six for what `explain` says of a move the engine does not take and what it
-              # suggests, three for how core decodes the two reads the verbs ask, and six for
-              # what those reads answer on libSQL against the engine. Their cases carry forty-one
-              # verdict markers. Each is newer than the base registry, so each is exempted there.
+              # The drive verbs register sixty-two mutations: twenty-eight for what `enqueue`,
+              # `emit`, `cancel`, `retry` and `sweep` require, send and answer, eleven for where
+              # `tick` sends its token, how long it waits and how it reads the answer, three for
+              # the operator drill, seven for what `explain` says of a move the engine does not
+              # take and of an instant that passes between its two reads, and what it suggests,
+              # four for how core decodes the two reads the verbs ask, eight for what those reads
+              # answer on libSQL against the engine, and one for the store's cancel that spares a
+              # saga. Their cases carry fifty-five verdict markers. Each is newer than the
+              # base registry, so each is exempted there.
               # Nine base entries are re-aimed: the lines of the libSQL retry guard that they
               # mutate moved out of `retryTask` into `RETRY_ADMITS`, the record of the guard's
               # conjuncts that the guard and the operator's read of it are both built from.
