@@ -6430,6 +6430,12 @@ reach.
   name this call passed (`taskNameMatches`). The name and the parameters beside them are
   this call's. The stored parameters are not compared, and the answer says so
   (`storedParams: not-compared`), because no read of the CLI selects a task's parameters.
+  The spawn has answered before that read, so the read fails nothing. When the task cannot
+  be read back, the command still exits 0 with `created: false` and the task's id.
+  `taskNameMatches` is then `unknown`, which is no mismatch, and `storedTaskNotRead` says
+  why: `store-unavailable`, `permanent-store-error`, `unreadable` for a row a read refuses,
+  or `not-found` for a task that is gone. The command table declares it: a fault at that
+  read ends in exit 0, and the fault surface holds that on every dialect.
   An empty task name is a usage error: no handler is registered under one. The parameters
   are one JSON value, parsed and written again by the two functions the hosted routes hand
   a store its JSON through, so a task enqueued here holds the bytes it holds when it is

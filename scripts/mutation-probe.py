@@ -21209,6 +21209,13 @@ MUTATION_SPECS.extend(
             "  return status === 500 && code === 'internal_error' // MUTATION: one code of a hosted route's 500 is permanent, and every other is an outage\n",
             "tick exits 6 for a hosted route's own 500 with the code authorization_invalid, so a caller that repeats an outage repeats a deployment whose authorization is misconfigured",
         ),
+        (
+            "cli-enqueue-answers-a-repeat-it-cannot-read-back",
+            "packages/cli/src/main.ts",
+            "    if (error instanceof StoreUnavailableError) return { notRead: 'store-unavailable' }\n",
+            "    // MUTATION: an outage at a read that follows an answered write fails the command\n",
+            "enqueue under a key a task holds exits 6 when the read of the found task meets an outage, though the spawn answered, and a repeat of a row no read can hand over fails for ever",
+        ),
     )
 )
 VERDICTS.update(
@@ -21231,6 +21238,12 @@ VERDICTS.update(
             "packages/cli/test/tick.test.ts",
             "tick --url against a hosted router on the loopback address exits 7 for a 500 that carries a hosted route's error body, whatever its code, and 6 for a 500 that carries none",
             "mutation-verdict:behavior:cli-tick-exits-7-for-a-500-of-the-route-itself",
+        ),
+        "cli-enqueue-answers-a-repeat-it-cannot-read-back": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL answers a repeat the spawn answered when the task it found cannot be read back, and says the stored name is unknown and no mismatch",
+            "mutation-verdict:behavior:cli-enqueue-answers-a-repeat-it-cannot-read-back",
         ),
     }
 )
@@ -25161,7 +25174,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1409:
+        if len(MUTATIONS) != 1410:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

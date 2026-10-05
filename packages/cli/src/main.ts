@@ -484,6 +484,31 @@ async function decoded<T>(
   }
 }
 
+/**
+ * A read that follows a write the store has answered: what it read, or why it read nothing.
+ * The write stands whatever the read meets. So an outage, a permanent error of the store, a
+ * row the decoders refuse and a row that is gone are each an answer here, and none fails
+ * the command: its caller is told what the write did, and that the read did not happen.
+ * Nothing of the error is kept, because a store's message can quote a stored value. Every
+ * other error is thrown.
+ */
+async function readBack<T>(read: () => Promise<T | null>): Promise<
+  | { readonly value: T }
+  | {
+      readonly notRead: 'not-found' | 'store-unavailable' | 'permanent-store-error' | 'unreadable'
+    }
+> {
+  try {
+    const value = await read()
+    return value === null ? { notRead: 'not-found' } : { value }
+  } catch (error) {
+    if (error instanceof StoreUnavailableError) return { notRead: 'store-unavailable' }
+    if (error instanceof PermanentStoreError) return { notRead: 'permanent-store-error' }
+    if (isUnreadableRow(error)) return { notRead: 'unreadable' }
+    throw error
+  }
+}
+
 type TaskResult = NonNullable<Awaited<ReturnType<OpenedStore['scheduler']['getTaskResult']>>>
 type ReadTask = { readonly queue: string; readonly taskId: string } & (
   | { readonly result: TaskResult }
@@ -761,7 +786,11 @@ const notConfirmed = (view: Record<string, unknown>, message: string): Answer =>
  * run made and makes no second one, and says so with `created: false`. The task it found
  * is then read for the name it is stored under, which prints beside whether it is the name
  * this call passed. Its stored parameters are not compared, and the answer says so: no
- * read selects a task's parameters.
+ * read selects a task's parameters. The spawn has answered by then, so that read fails
+ * nothing. When the task cannot be read back, the answer is still `created: false` with
+ * the task's id, `taskNameMatches` is `unknown`, which is no mismatch, and
+ * `storedTaskNotRead` says why: the store was unavailable, the row is one a read refuses,
+ * or the task is gone.
  */
 const enqueue: Handler = async (context) => {
   const { invocation, store, reveal } = context
@@ -812,8 +841,20 @@ const enqueue: Handler = async (context) => {
   if (found.created) return { exit: 'done', view }
   // The key found a task another call made, under the name and the parameters that call
   // passed. The name and the parameters above are this call's.
-  const stored = await store.operator.taskFacts(queue, found.taskId)
-  const storedTaskName = stored?.task.taskName ?? null
+  const stored = await readBack(() => store.operator.taskFacts(queue, found.taskId))
+  if ('notRead' in stored) {
+    return {
+      exit: 'done',
+      view: {
+        ...view,
+        storedTaskName: null,
+        taskNameMatches: 'unknown',
+        storedTaskNotRead: stored.notRead,
+        storedParams: 'not-compared',
+      },
+    }
+  }
+  const storedTaskName = stored.value.task.taskName
   return {
     exit: 'done',
     view: {

@@ -453,6 +453,12 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     ports: [SCHEMA_VERSION, SPAWN, TASK_FACTS],
     exits: DRIVE_EXITS,
     faults: DRIVE_FAULTS,
+    // That read follows a spawn the store has answered, so a fault at it fails nothing: the
+    // command answers the task the key found, and says its stored name was not read.
+    faultsAt: {
+      'task-facts': { 'crash-before': 'done', 'crash-after': 'done' },
+      'fake-clock': { 'crash-before': 'done', 'crash-after': 'done' },
+    },
   },
   emit: {
     verb: 'emit',
