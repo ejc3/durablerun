@@ -1,6 +1,6 @@
 # Postmortem: PR3.9a statement trees, review round 1 (PR #37)
 
-PR3.9a lets a store build a batch statement as a Kysely operation tree and makes `FencedBatch` check the tree instead of scanning SQL text. The first version accepted any tree and refused a list of known bad shapes. One Fable `/code-review` round and one Fable `/simplify` round then found ten shapes that list missed. They include an assignment written in the builder's other `set` form, a counter or a clock hidden in a raw fragment, and a write inside a common table expression under a read-only tail. They also include a fence compared on a table its statement never stamped, and a raw fragment adding a placeholder no argument binds. None was reachable from the one statement this PR moves to a tree, `complete`'s compare-and-set. All ten are fixed, and the checks now run inside a closed statement grammar that refuses any node kind or clause it does not list.
+PR3.9a lets a store build a batch statement as a Kysely operation tree and makes `FencedBatch` check the tree instead of scanning SQL text. The first version accepted any tree and refused a list of known bad shapes. One `/code-review` round and one `/simplify` round then found ten shapes that list missed. They include an assignment written in the builder's other `set` form, a counter or a clock hidden in a raw fragment, and a write inside a common table expression under a read-only tail. They also include a fence compared on a table its statement never stamped, and a raw fragment adding a placeholder no argument binds. None was reachable from the one statement this PR moves to a tree, `complete`'s compare-and-set. All ten are fixed, and the checks now run inside a closed statement grammar that refuses any node kind or clause it does not list.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -37,8 +37,8 @@ Nothing shipped a wrong write: `complete`'s compare-and-set used none of these s
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | PR3.9a's tree decision table and tree statement tests, before review | 0 | yes |
-| Fable `/code-review` round 1 over `a9b3c86...e4fe09c` | 9 | no |
-| Fable `/simplify` round 1 over `a9b3c86...e4fe09c` | 1 | no |
+| `/code-review` round 1 over `a9b3c86...e4fe09c` | 9 | no |
+| `/simplify` round 1 over `a9b3c86...e4fe09c` | 1 | no |
 
 Self-catch rate: 0 of 10, or 0% (previous round: 0%, `pr3.11c-store-answers-review.md`).
 
@@ -80,7 +80,7 @@ One, caught before commit by the exhibits above. The first `requireDefinedBinds`
 - Red tests: commit `0b51c8c`, run and seen failing (9 of 17 tests, the eight above and one more) against `e4fe09c`: the respelled clock and the clock function node.
 - No red was possible for findings 4, 7, and 10. `defineStatement` did not exist at the red commits, and the fixes for 7 and 10 removed the API that expressed them. For finding 4, `complete` was rescued at the red commits by its text follow-on, which throws on the same undefined value.
 - Fix: commit `52a8729`. Gate after it: typecheck, Biome lint and format, and the determinism, user boundary, ledger, fragment, batch, clock, outcome, and deferral lints pass. Core tests pass (15 files, 208 tests), and store and non-fuzz conformance tests pass on libSQL and PostgreSQL (36 files, 6,336 tests).
-- Finders: Fable `/code-review` and Fable `/simplify`, round 1. Quoted verdicts:
+- Finders: `/code-review` and `/simplify`, round 1. Quoted verdicts:
   - "`columnName()` matches only a bare `ColumnNode`. Kysely's two-argument `.set('col', v)` wraps the column in a `ReferenceNode`";
   - "The tree checks inspect only the root node. A data-modifying CTE under a SELECT tail or a gated follow-on is ungated, unstamped, and outside the blind-counter and INSERT checks";
   - "`gatingFences` accepts any column named `fence_stamp`, because `referencedColumn` drops the qualifier";

@@ -43,7 +43,7 @@ Nothing here touches durable state, because no SQL exists yet. The cost is a mod
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| One Fable review: the built-in `/code-review` in a single pass with five finder lenses, and `/simplify` with four cleanup agents | 19 | no |
+| One review: the built-in `/code-review` in a single pass with five finder lenses, and `/simplify` with four cleanup agents | 19 | no |
 | The mutant check, run on the fold before anything was pushed: three WRONG-PROPERTY verdicts | 1 | yes |
 | The every-property-named rule, on its first run | 1 | yes |
 
@@ -83,7 +83,7 @@ One of twenty-one: finding 20, caused by the fix for finding 2. The fold was re-
 
 ## Evidence
 
-- Finder: one Fable subagent invoking the built-in `/code-review`, a single pass with five finder lenses (reuse and efficiency, removed behaviour, altitude and conventions, a cross-file tracer, a line-by-line scan), and `/simplify` with four cleanup agents, over the six commits of the PR. Quoted: "13 findings (5 MEDIUM, 8 LOW), nothing HIGH", and from the lenses, "Two witness probes are satisfied by an empty saga, not by the behaviour their comments name", "the two globs already disagree", and "`outcome' = \"failed\"` is written even when `Pending = {}`, and no invariant requires \"failed\" to be honest". No lens ran TLC.
+- Finder: one subagent invoking the built-in `/code-review`, a single pass with five finder lenses (reuse and efficiency, removed behaviour, altitude and conventions, a cross-file tracer, a line-by-line scan), and `/simplify` with four cleanup agents, over the six commits of the PR. Quoted: "13 findings (5 MEDIUM, 8 LOW), nothing HIGH", and from the lenses, "Two witness probes are satisfied by an empty saga, not by the behaviour their comments name", "the two globs already disagree", and "`outcome' = \"failed\"` is written even when `Pending = {}`, and no invariant requires \"failed\" to be honest". No lens ran TLC.
 - Reds and greens, by commit subject. "Show what the side-model runner lets through, on a small fixture": 9 stub cases fail. The fixture cannot run at all under the old script, because of the prefix defect and two file names it hard-coded, and with the fixture made runnable five cases fail alone: the liveness job, the lost list, the dropped invariant, the action-property witness, and the side probe's heap. Green: "Decide once what belongs to a side model, and let nothing beside the specs go unchecked".
 - "Ask that a failed rollback outcome be honest, which the model is not": all four configurations exit 12 on `FailedOutcomeHonest`. Green: "Record what a saga that ends early left, in place of \"failed\" every time".
 - "Show that nothing holds a rollback's spent attempts": the mutant survives all four configurations. Green: "Hold a rollback's spent attempts within a saga generation", exit 13 on `TriesOnlyGrow`.

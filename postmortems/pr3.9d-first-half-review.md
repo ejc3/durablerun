@@ -1,6 +1,6 @@
 # Postmortem: PR3.9d first half, review round 1 (PR #40)
 
-PR3.9d's first half moves fail, the cancel transition, retry-task's revival, and set-checkpoint's lease onto shared statement trees. One Fable `/code-review` round found the four moved statements equal to the SQL they replace in both dialects, and found the defects around them: a lint this PR widened further than it said, a corpus scenario that asserted nothing, two lists of live states with nothing holding them together, and a revival whose failed-state check a store could leave out. Turning the second of those into assertions then caught a defect of our own: the scenario had been failing the wrong task. Our base-gate reproduction caught a sixth before CI ran. All six are fixed, and nothing wrote a wrong row.
+PR3.9d's first half moves fail, the cancel transition, retry-task's revival, and set-checkpoint's lease onto shared statement trees. One `/code-review` round found the four moved statements equal to the SQL they replace in both dialects, and found the defects around them: a lint this PR widened further than it said, a corpus scenario that asserted nothing, two lists of live states with nothing holding them together, and a revival whose failed-state check a store could leave out. Turning the second of those into assertions then caught a defect of our own: the scenario had been failing the wrong task. Our base-gate reproduction caught a sixth before CI ran. All six are fixed, and nothing wrote a wrong row.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -31,7 +31,7 @@ No shipped statement was wrong. The severity is in the gates, because each of th
 |----------|----------|-------|
 | The local base-gate reproduction, before the PR opened | 1 | yes |
 | The corpus scenario's new assertions, on their first run | 1 | yes |
-| Fable `/code-review` round 1 over `2506d6d...9f9c529` | 4 | no |
+| `/code-review` round 1 over `2506d6d...9f9c529` | 4 | no |
 
 Self-catch rate: 2 of 6, or 33%. PR3.9c's was 1 of 7 and PR3.9b's 2 of 13. The rise is real and small, and both self-catches share a cause worth naming: each came from running a real instrument end to end instead of reasoning about it. The base-gate reproduction is main's own checkers run on this tree, and the scenario assertions are the scenario run with its claims checked. Neither is a new checker. The four review findings are all places where no instrument ran at all.
 
@@ -60,7 +60,7 @@ None found. The fix for finding 5 broke one registered find, `retry-task-require
 
 ## Evidence
 
-- Review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `2506d6d...9f9c529`, run locally in the PR's worktree. Its verdict: "Neither found a correctness bug in the four moved statements", and for parity, "Every guard, SET column, and bind order is preserved for all four statements in both dialects."
+- Review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `2506d6d...9f9c529`, run locally in the PR's worktree. Its verdict: "Neither found a correctness bug in the four moved statements", and for parity, "Every guard, SET column, and bind order is preserved for all four statements in both dialects."
 - Quoted findings:
   - "The allowance `relative.parent == STATEMENTS` exempts every file directly under `statements/`, for reads as well as writes";
   - "The new scenario steps assert nothing, and the recorder captures a signature even when the compare-and-set matches no rows";

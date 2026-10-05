@@ -1,6 +1,6 @@
 # Postmortem: PR3.11c store answers, review rounds 1 and 2 (PR #36)
 
-PR3.11c makes a worker refuse an activation answer it cannot read, before user code runs, and lets the run recover for a compatible build. Two Fable review rounds and an automated PR review found nine defects in that refusal. In round 1, a refused answer ended as a nameless `aborted`. Malformed but present values ran the handler, and an outage at `activate` rejected the pass. In round 2, every defect lived in the first fix itself. The current store's own answer for a 1.001 s lease was refused. A bigint field, or an answer whose infrastructure retries reach its attempt, passed the check and then crashed or ran user code with a non-positive attempt. A throwing getter escaped the check, and a delivered wake saying `timedOut: false` was refused. The PR review then found that a throwing accessor inside the wake still escaped the decoder. All nine are fixed. The worker now decodes the answer once into the run it executes.
+PR3.11c makes a worker refuse an activation answer it cannot read, before user code runs, and lets the run recover for a compatible build. Two review rounds and an automated PR review found nine defects in that refusal. In round 1, a refused answer ended as a nameless `aborted`. Malformed but present values ran the handler, and an outage at `activate` rejected the pass. In round 2, every defect lived in the first fix itself. The current store's own answer for a 1.001 s lease was refused. A bigint field, or an answer whose infrastructure retries reach its attempt, passed the check and then crashed or ran user code with a non-positive attempt. A throwing getter escaped the check, and a delivered wake saying `timedOut: false` was refused. The PR review then found that a throwing accessor inside the wake still escaped the decoder. All nine are fixed. The worker now decodes the answer once into the run it executes.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -31,9 +31,9 @@ The fences refuse every write a wrong pass attempts, so no durable state was los
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | PR3.11c store answer surface and clock shapes, before review | 0 | yes |
-| Fable `/code-review` round 1 over the first refusal | 3 | no |
-| Fable `/code-review` round 2 over `5ac6a14...6e6bfaf` | 4 | no |
-| Fable `/simplify` round 2 over `5ac6a14...6e6bfaf` | 1 | no |
+| `/code-review` round 1 over the first refusal | 3 | no |
+| `/code-review` round 2 over `5ac6a14...6e6bfaf` | 4 | no |
+| `/simplify` round 2 over `5ac6a14...6e6bfaf` | 1 | no |
 | Greptile PR review over `ae56072` | 1 | no |
 
 Self-catch rate: 0 of 9, or 0% (previous round: 0%, `pr3.11b-generated-surfaces-review.md`).
@@ -71,7 +71,7 @@ Six. Findings 4 to 9 were introduced by `d8299c1`, the fix for round 1. It multi
   - the delivered wake with `timedOut: false` ended as `incompatible-store`.
 - Red tests: commit `fa1cb72`, run and seen failing (1 of 5 tests) against `ae56072`: four wake accessor variants `threw Error`.
 - Fixes: commits `d8299c1`, `b66f919`, and `063cbb0`. Gate after `1e2c58e`: Biome lint and format, typecheck, and the determinism, user boundary, fragment, batch, clock, outcome, and deferral lints pass, and core, SDK, driver, harness, and dogfood tests pass (44 files, 436 tests).
-- Finders: Fable `/code-review` rounds 1 and 2, and Fable `/simplify` round 2. Quoted round 2 verdicts:
+- Finders: `/code-review` rounds 1 and 2, and `/simplify` round 2. Quoted round 2 verdicts:
   - "The leaseSeconds check computes `value * 1000` and requires an exact safe integer. The stores return `lease_ms / 1000`, so a lease with a fractional millisecond remainder fails the float round trip";
   - "`bounded()` goes through `decodeBoundedInteger`, which accepts bigint";
   - "An answer with `infraRetries >= attempt` passes the check, and user code runs with a user attempt of zero or less";

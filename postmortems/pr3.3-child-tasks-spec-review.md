@@ -1,6 +1,6 @@
 # Postmortem: PR3.3 child-task spec, review rounds 1 and 2 (PR #42)
 
-PR3.3 is child tasks, and this PR is its TLA+ model and nothing else: `specs/ChildTasks.tla`, its configurations and probes, its place in the TLA gate, and the DESIGN.md text it proves. No SQL exists yet, so nothing shipped wrong. Two Fable review runs over the first version found seven defects in what the model and the text claimed. Four more were ours: one caught by CI on the first push, one by the mutant check this round built, and two by writing and running this document's false-negative exhibits. A second review, of the rework, found four more, and every one of them was a defect of the first round's fixes. All fifteen are fixed or recorded as obligations on the implementation.
+PR3.3 is child tasks, and this PR is its TLA+ model and nothing else: `specs/ChildTasks.tla`, its configurations and probes, its place in the TLA gate, and the DESIGN.md text it proves. No SQL exists yet, so nothing shipped wrong. Two review runs over the first version found seven defects in what the model and the text claimed. Four more were ours: one caught by CI on the first push, one by the mutant check this round built, and two by writing and running this document's false-negative exhibits. A second review, of the rework, found four more, and every one of them was a defect of the first round's fixes. All fifteen are fixed or recorded as obligations on the implementation.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -36,11 +36,11 @@ No SQL is built on the model yet. The cost of each defect is what the implementa
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Two Fable `/code-review` and `/simplify` runs over `fce5078...c72671c` | 7 | no |
+| Two `/code-review` and `/simplify` runs over `fce5078...c72671c` | 7 | no |
 | CI's verify job, `tla-artifact.test.ts` under the stub checker | 1 | yes |
 | The mutant check, run on the rework before it was pushed | 1 | yes |
 | Writing and running this document's false-negative exhibits | 2 | yes |
-| A second Fable `/code-review` and `/simplify` run, over the rework `1b4d5d7...6942c42` | 4 | no |
+| A second `/code-review` and `/simplify` run, over the rework `1b4d5d7...6942c42` | 4 | no |
 
 Self-catch rate: 4 of 15. The rounds before were 4 of 10, 0 of 1, 2 of 6, 1 of 7, and 2 of 13. The number that matters more is what kind of defect each side found. Review found every defect in what the model CLAIMED: a configuration that proved nothing, a missing invariant, an unstated lock, a wrong description of today's code. Our machinery found defects only after review had shown it how, by deleting guards. Both reviewers ran mutants by hand, 20 and 30 of them, and that practice is now a gate for this model. Nothing we own checks the text against the code, and four of review's seven findings were there.
 
@@ -73,7 +73,7 @@ One more in the process. The commit that introduced `AnswerIsFinal` did not pars
 
 ## Evidence
 
-- Review artifacts: two Fable subagents, each invoking the built-in `/code-review` and `/simplify` skills over `fce5078...c72671c` in the PR's worktree, with TLC runs of their own on scratch copies. The first reported "Ten findings survive verification" and "`ChildTasks.cfg` and `ChildTasksCrossQueue.cfg` both report 67 states generated and 47 distinct." The second, time-boxed, reported "Both hand-listed mutations that stay green bypass the refusing rule", "Every other mutation I ran turns TLC red, and I found no way for `scripts/tla.sh` to pass when it should fail", and "I ran 30 TLC jobs on scratch copies."
+- Review artifacts: two subagents, each invoking the built-in `/code-review` and `/simplify` skills over `fce5078...c72671c` in the PR's worktree, with TLC runs of their own on scratch copies. The first reported "Ten findings survive verification" and "`ChildTasks.cfg` and `ChildTasksCrossQueue.cfg` both report 67 states generated and 47 distinct." The second, time-boxed, reported "Both hand-listed mutations that stay green bypass the refusing rule", "Every other mutation I ran turns TLC red, and I found no way for `scripts/tla.sh` to pass when it should fail", and "I ran 30 TLC jobs on scratch copies."
 - Quoted findings: "SameQueue is read only by AwaitAllowed, so this cfg explores the identical state graph as ChildTasks.cfg", "Only emit-event and await-event call lockEvent today (store-postgres store.ts:1849 and 2045)", "`RefusalIsTheRule` restates `AwaitRefused`'s own guard, so it cannot catch this", and "The only HTTP emit route, packages/driver/src/hosted.ts:255, already calls UserName.parse".
 - Checked against the code before folding: `lockEvent` has two callers in the PostgreSQL store, the hosted route parses the name at `hosted.ts:255`, the SDK parses it in `context.ts`, the store's `emitEvent` checks only the payload, and the events table's key is `(queue, event_name)`.
 - Finding 2. Red: commit `2da5907`, the mutant check over the first version, 10 of 12 caught, with `miss-ignores-rule` and `hit-ignores-rule` surviving. Green: commit `31db220`, 12 of 12.
@@ -82,7 +82,7 @@ One more in the process. The commit that introduced `AnswerIsFinal` did not pars
 - Finding 11. Red: commit `3d3436c`, 15 of 16. Green: commit `ab50e00`, 16 of 16.
 - Finding 5: `ChildTasksProbeStrandedWaiter` exits 13 on `EveryWaitResolves`, 118 states. A probe is its own red, because the gate requires it to fail.
 - Finding 1: both configurations reported 47 distinct states in the first version's own evidence.
-- Second review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `1b4d5d7...6942c42`, time-boxed to 30 minutes, with about 40 TLC runs of its own. `/simplify` finished all four lenses. `/code-review` ran degraded: it stopped on the time box before its finder and verifier agents launched, and one reviewer scanned the diff alone. Its verdict: "The mutant check in `scripts/tla.sh` fails closed on every path I tried, but the test written to prove the gate does not isolate it. The model also accepts an implementation that refuses every await."
+- Second review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `1b4d5d7...6942c42`, time-boxed to 30 minutes, with about 40 TLC runs of its own. `/simplify` finished all four lenses. `/code-review` ran degraded: it stopped on the time box before its finder and verifier agents launched, and one reviewer scanned the diff alone. Its verdict: "The mutant check in `scripts/tla.sh` fails closed on every path I tried, but the test written to prove the gate does not isolate it. The model also accepts an implementation that refuses every await."
 - Quoted: "I removed `&& \"$mutant_fail\" -eq 0` from line 239. The exit was still 1, with 16 SURVIVED lines", "Deleting `~AwaitAllowed` from AwaitRefused survives both configurations", and "A real phase-2 MODEL VIOLATION now loses its `Scheduler_TTrace_*.tla`."
 - Finding 12. Red: commit `d3471bf`, 16 of 17 caught, with `refuse-ignores-rule` surviving. Green: commit `26745a0`, 17 of 17.
 - Findings 13, 14, and 15: commit `c63423c`. Witnessed: with the gate's conjunct on the mutants' verdict deleted, exactly the two failing-gate tests fail, 2 of 9, and all 9 pass on the real script. `-noGenerateSpecTE` was run on a safety probe and the liveness probe: exits 12 and 13 with the violated line, and no trace file, against two trace files without the flag. The control for the configuration check: a property deleted from one configuration fails the gate.

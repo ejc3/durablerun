@@ -1,6 +1,6 @@
 # Postmortem: PR3.11b generated surfaces, review round 1 (PR #35)
 
-PR3.11b added two generated driver surfaces: a launch payload case crossing driver versions, and a driver loop clock-shape surface. Before review, the clock-shape surface found that a backwards host clock step stretched a wake's floor wait past the registry interval, and a first fix landed. One Fable `/code-review` round then found two defects the surfaces could not see. The worker server acknowledged launches with malformed identity, which then never activated. And the first loop fix still let a wake overshoot the look its park planned when the step landed partway through a park. Both are fixed: launch identity has one definition in core, and the loop measures its waits with a monotonic clock reading.
+PR3.11b added two generated driver surfaces: a launch payload case crossing driver versions, and a driver loop clock-shape surface. Before review, the clock-shape surface found that a backwards host clock step stretched a wake's floor wait past the registry interval, and a first fix landed. One `/code-review` round then found two defects the surfaces could not see. The worker server acknowledged launches with malformed identity, which then never activated. And the first loop fix still let a wake overshoot the look its park planned when the step landed partway through a park. Both are fixed: launch identity has one definition in core, and the loop measures its waits with a monotonic clock reading.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -21,7 +21,7 @@ PR3.11b added two generated driver surfaces: a launch payload case crossing driv
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | PR3.11b launch payload and clock-shape surfaces, before review | 0 | yes |
-| Fable `/code-review` round 1 over `a5e0ff4...9d208cd` | 2 | no |
+| `/code-review` round 1 over `a5e0ff4...9d208cd` | 2 | no |
 
 Self-catch rate: 0 of 2, or 0% (previous round: 0%, `pr3.11a-cancelled-heartbeat-review.md`).
 
@@ -55,7 +55,7 @@ One. Finding 2 was introduced by `78f0779`, the fix for the clock-shape surface'
   - six problems of the form "interval 1000ms, step -400ms at middle, wake: the wait after a wake ends 125ms past the look the park planned";
   - six malformed identity payloads answered 202 instead of 400.
 - Fixes: commits `78f0779` and `346d802`. Gate after `346d802`: `pnpm typecheck`, the determinism lint, and Biome lint and format pass, and core, driver, and SDK tests pass (30 files, 382 tests).
-- Finder: Fable `/code-review` round 1 over `a5e0ff4...9d208cd`, quoted verdicts:
+- Finder: `/code-review` round 1 over `a5e0ff4...9d208cd`, quoted verdicts:
   - "a backwards clock step partway through a park can still push the look past the planned look";
   - "`http.ts:133-138` only checks `typeof parsed.claimGen !== 'number'`, so `NaN`, `1.5` or `-1` gets a 202".
 - Did not reproduce as stated: `NaN`. `JSON.stringify(NaN)` is `null`, so a driver's payload cannot carry a NaN claim generation, and the surface sends 1.5, 0, and -1 instead.

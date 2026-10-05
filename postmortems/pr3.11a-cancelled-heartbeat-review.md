@@ -1,6 +1,6 @@
 # Postmortem: cancellation on a refused heartbeat, PR3.11a (PR #32)
 
-PR #32 makes a refused heartbeat name why it was refused. A heartbeat on a cancelled task used to report only a lost lease, so a handler that made a context call after that beat ended as lease-lost instead of cancelled. The change gave `LeaseState` a `reason` and taught the worker's heartbeat pump to stop the handler with the matching error. The first Fable `/code-review` round found one release-safety defect in that change. The worker trusted every store to name a reason, and a store package built against the earlier contract names none, so the handler kept running after a refused beat. The fix treats any refusal that does not name the cancellation as a lost lease.
+PR #32 makes a refused heartbeat name why it was refused. A heartbeat on a cancelled task used to report only a lost lease, so a handler that made a context call after that beat ended as lease-lost instead of cancelled. The change gave `LeaseState` a `reason` and taught the worker's heartbeat pump to stop the handler with the matching error. The first `/code-review` round found one release-safety defect in that change. The worker trusted every store to name a reason, and a store package built against the earlier contract names none, so the handler kept running after a refused beat. The fix treats any refusal that does not name the cancellation as a lost lease.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -18,10 +18,10 @@ The escaped defect would have shipped with the new SDK package. A deployment tha
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Fable `/code-review` round 1 over `f3f8392...272c19c` | 1 | no |
-| Fable `/code-review` round 2 over `272c19c...6263223` | 0 | no |
-| Fable `/code-review` round 3 over `6263223...f43bffa` | 0 | no |
-| Fable `/code-review` round 4 over `f43bffa...0d54d55` | 0 | no |
+| `/code-review` round 1 over `f3f8392...272c19c` | 1 | no |
+| `/code-review` round 2 over `272c19c...6263223` | 0 | no |
+| `/code-review` round 3 over `6263223...f43bffa` | 0 | no |
+| `/code-review` round 4 over `f43bffa...0d54d55` | 0 | no |
 | Existing conformance, SDK, fault matrix, mutation, and lint gates before review | 0 | yes |
 
 Self-catch rate: 0 of 1, or 0% (previous round: 0%, `pr3.2b-retry-task-review.md`).
@@ -50,7 +50,7 @@ No correctness defect was introduced by the fixes. The folds did leave registry 
 
 - Red test: commit `d4c4177`, whose parent is the unfixed `272c19c`, run and seen failing (1 test): `-     "kind": "lease-lost",` `+     "kind": "completed",` `-   "stepRan": false,` `+   "stepRan": true,`.
 - Fix: commit `6263223`. At the PR's head, the SDK, provenance, and TLA artifact tests pass, the heartbeat, cancellation, and refusal conformance cases pass on libSQL and PostgreSQL (822), and remote `pnpm verify` passed with 109 test files and 6796 tests. The PR body lists every affected mutation verdict and the commit each ran at.
-- Finder: Fable `/code-review` round 1, quoted: "In plain JS, a store that still returns `{held:false, remainingMs:0}` leaves `leaseEnd = undefined`. The pump then returns without stopping the handler, which keeps running side effects until a fenced write is refused."
+- Finder: `/code-review` round 1, quoted: "In plain JS, a store that still returns `{held:false, remainingMs:0}` leaves `leaseEnd = undefined`. The pump then returns without stopping the handler, which keeps running side effects until a fenced write is refused."
 - Did not reproduce as a reachable defect: round 1's finding that the refusal read ignores queue and claim token. A run with a live pump is activated, an activated run is never reopened under its run id, and a caller passing another queue is outside the worker contract. It is rejected with that reason in the PR body.
 
 ## Root cause

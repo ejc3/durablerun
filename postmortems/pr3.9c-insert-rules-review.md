@@ -1,6 +1,6 @@
 # Postmortem: PR3.9c insert rules for statement trees, review round 1 (PR #39)
 
-PR3.9c lets a compare-and-set be an INSERT and moves reschedule, suspend, the await-event registration, and the event emit onto shared statement trees. One Fable `/code-review` round found that the new insert rules read less than they claimed. They read a value's position in the SELECT list where the property is the column the value lands in. They checked one assignment of a conflict arm where the property is the whole preserved fact. Six of their conditions could be deleted with every test green. Two guards that moved onto the tree stayed as weak as their text had been. The review found the four shipped statements correct and equal to the SQL they replace, so nothing wrote a wrong row. All seven findings are fixed.
+PR3.9c lets a compare-and-set be an INSERT and moves reschedule, suspend, the await-event registration, and the event emit onto shared statement trees. One `/code-review` round found that the new insert rules read less than they claimed. They read a value's position in the SELECT list where the property is the column the value lands in. They checked one assignment of a conflict arm where the property is the whole preserved fact. Six of their conditions could be deleted with every test green. Two guards that moved onto the tree stayed as weak as their text had been. The review found the four shipped statements correct and equal to the SQL they replace, so nothing wrote a wrong row. All seven findings are fixed.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -33,7 +33,7 @@ Nothing shipped wrong: no statement in either store has any of these shapes. The
 | Detector | Findings | Ours? |
 |----------|----------|-------|
 | The red test for finding 1, still failing after its first repair | 1 | yes |
-| Fable `/code-review` round 1 over `88d7149...e5ca895` | 6 | no |
+| `/code-review` round 1 over `88d7149...e5ca895` | 6 | no |
 
 Self-catch rate: 1 of 7, or 14%. PR3.9b's was 2 of 13, or 15%, and PR3.9a's was lower. The rate is flat. The one self-catch here exists only because the review's finding had already been turned into a red test, so the review found the class and our machinery found one instance of it.
 
@@ -67,7 +67,7 @@ One, finding 7. The first repair of finding 1 tested `SelectAllNode.is(selection
 
 ## Evidence
 
-- Review artifact: a Fable subagent invoking the built-in `/code-review` and `/simplify` skills over `88d7149...e5ca895`, run locally in the PR3.9c worktree. Its verdict: "None of its ten findings is a live bug in the four shipped statements", and "the review found the port matches the old SQL in both dialects, and the CI bridge arm and mutation re-aims correct". One verifier confirmed eight findings, most by reproduction.
+- Review artifact: a subagent invoking the built-in `/code-review` and `/simplify` skills over `88d7149...e5ca895`, run locally in the PR3.9c worktree. Its verdict: "None of its ten findings is a live bug in the four shipped statements", and "the review found the port matches the old SQL in both dialects, and the CI bridge arm and mutation re-aims correct". One verifier confirmed eight findings, most by reproduction.
 - Quoted findings:
   - "`insertProvenance` reads an INSERT … SELECT's stamp by index into `selections`. A star selection (`SelectAllNode` is in the grammar) is one entry that expands to N columns";
   - "Deleting any one of six conditions leaves `fenced-batch-tree.test.ts` at 40/40";

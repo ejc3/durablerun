@@ -42,7 +42,7 @@ None. The fix changed one pattern and one return shape, and was re-tested with t
 
 - Red tests: commit `66eea5d`, probe `packages/conformance/test/design-counts.test.ts` `reports a marker that no number touches, so a space before it cannot hide a wrong count` (run and seen failing, 1 test of 4, against `63a71a9`).
 - Fixes: commit `6adcf81`; gate after the fix: the counts test 4 of 4, and the short list of the final head.
-- Finder: the one review of this pull request, run as a Fable subagent invoking the built-in review skill. Quoted verdict: "No HIGH, no MEDIUM, five LOW; the marker with a space before it reproduces."
+- Finder: the one review of this pull request, run as a subagent invoking the built-in review skill. Quoted verdict: "No HIGH, no MEDIUM, five LOW; the marker with a space before it reproduces."
 - Claims that did not reproduce: the review's second finding, that a marker after a backtick or a punctuation mark is skipped, is refuted, because that shape already reports a non-number and fails loudly.
 
 ## Root cause
