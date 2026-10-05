@@ -412,6 +412,7 @@ jobs:
                   "mutation-verdict:behavior:cli-tick-ends-its-wait-through-the-clock",
                   "mutation-verdict:behavior:cli-tick-exits-4-for-a-refused-token",
                   "mutation-verdict:behavior:cli-tick-exits-6-for-an-answer-that-says-try-later",
+                  "mutation-verdict:behavior:cli-tick-exits-7-for-a-500-of-the-route-itself",
                   "mutation-verdict:behavior:cli-tick-follows-no-redirect",
                   "mutation-verdict:behavior:cli-tick-reads-no-more-of-an-answer-than-its-cap",
                   "mutation-verdict:behavior:cli-tick-refuses-a-credential-in-a-url",

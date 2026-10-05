@@ -387,7 +387,7 @@ describe('tick --url against a hosted router on the loopback address', () => {
       tooMany: await answering(429, '{"error":"rate_limited"}'),
       // A 500 that is not the router's own: the platform under it failed.
       crashed: await answering(500, 'the function crashed'),
-      // The router's own answer to a failure no retry cures.
+      // A hosted route's own 500, which carries its error body.
       permanent: await answering(500, '{"error":"internal_error"}'),
       notFound: await answering(404, '{"error":"not_found"}'),
       notJson: await answering(200, '<html>a page</html>'),

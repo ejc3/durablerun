@@ -19,9 +19,6 @@ export const TICK_PATH = '/api/tick'
  */
 export const BODY_MAX_BYTES = 4 * 1024 * 1024
 
-/** The code a hosted router answers, with 500, for a failure no retry cures (DESIGN.md section 3.5). */
-const ROUTER_PERMANENT_CODE = 'internal_error'
-
 /** The hosts a token may be sent to over http: the machine the command runs on. */
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]'])
 
@@ -197,23 +194,28 @@ function jsonObject(text: string): Record<string, unknown> | undefined {
 }
 
 /**
- * Whether an answer is a hosted router's own answer to a failure no retry cures: 500 with
- * the code `internal_error`, which it gives for a schema it does not read and for a
- * permanent store error, so that a caller does not send the same request again.
+ * Whether an answer is a hosted route's own 500: one that carries the route's error body,
+ * `{ "error": "<code>" }`, whatever the code. A route answers 503 for what it knows a
+ * retry cures, an outage of its store or of its authorization. So its 500 is a failure it
+ * does not class as an outage: `internal_error` for every error it cannot name, a schema
+ * it does not read and a permanent store error among them, and `authorization_invalid`
+ * for an authorization answer it cannot use (DESIGN.md section 3.5). The code promises no
+ * more than that, and it does not say that a repeat would be answered the same way. A 500
+ * with no such body is not the route's: a platform or a gateway in front of it failed.
  */
-export function isRoutersPermanentAnswer(status: number, code: string | undefined): boolean {
-  return status === 500 && code === ROUTER_PERMANENT_CODE
+export function isRoutesOwn500(status: number, code: string | undefined): boolean {
+  return status === 500 && code !== undefined
 }
 
 /**
  * Whether an answer says the same request may be answered another time: a request that
  * timed out (408), one sent too early (425), too many requests (429), and a failure of the
- * server or of a gateway in front of it (any 5xx) that is not the router's own permanent
- * answer. A tick is safe to send again, so these are an outage and not a refusal.
+ * server or of a gateway in front of it (any 5xx) that is not a hosted route's own 500. A
+ * tick is safe to send again, so these are an outage and not a refusal.
  */
 export function saysTryLater(status: number, code: string | undefined): boolean {
   if (status === 408 || status === 425 || status === 429) return true
-  return status >= 500 && !isRoutersPermanentAnswer(status, code)
+  return status >= 500 && !isRoutesOwn500(status, code)
 }
 
 /** The error code of a hosted route's refusal, `{ "error": "<code>" }`, when the body holds one. */

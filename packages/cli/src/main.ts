@@ -56,7 +56,7 @@ import {
 import {
   BODY_MAX_BYTES,
   deploymentOrigin,
-  isRoutersPermanentAnswer,
+  isRoutesOwn500,
   postTick,
   routerErrorCode,
   saysTryLater,
@@ -1092,8 +1092,9 @@ const sweep: Handler = async (context) => {
  * DURABLERUN_BASE_URL, and the token goes in the Authorization header to that origin
  * alone. An answer that does not come within the timeout exits `unavailable`: the pass may
  * still have run, and a tick is safe to send again. An answer that says the deployment
- * cannot now exits `unavailable` too. Only an answer a repeat would not change exits
- * `permanent`.
+ * cannot now exits `unavailable` too. An answer the command takes for no outage exits
+ * `permanent`: a hosted route's own 500, a status no tick route gives, and a 200 it cannot
+ * read as a tick's.
  */
 async function tick(
   invocation: Invocation,
@@ -1158,11 +1159,11 @@ async function tick(
         : `the deployment answered HTTP ${status}, which says it cannot now. A tick is safe to send again`,
     )
   }
-  if (isRoutersPermanentAnswer(status, code)) {
+  if (isRoutesOwn500(status, code)) {
     return refused(
       'permanent',
       'deployment-error',
-      'the deployment answered HTTP 500 internal_error, which a hosted route answers for a failure a repeat does not cure, such as a schema it does not read. Its own log says what failed',
+      `the deployment answered HTTP 500 with the code ${code}, which is a hosted route's own answer: the route failed in a way it does not class as an outage, for which it answers 503. Its own log says what failed`,
     )
   }
   if (status === 200 && outcome.kind === 'answer-too-large') {

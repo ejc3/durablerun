@@ -6554,9 +6554,14 @@ pass that swept several thousand rows. Reading stops at the first byte past it, 
 answer is never held whole. The command exits 4 when the deployment refuses the token (401
 or 403). It exits 6 when the deployment could not be reached, did not answer in time, or
 answered that it cannot now: 408, 425, 429 and any 5xx, a gateway's 502 or 504 among them,
-because a tick is safe to send again. One 5xx is not an outage: 500 with the code
-`internal_error`, which a hosted route answers for a failure no retry cures (section 3.5),
-exits 7 as `deployment-error`. It exits 7 as well for any other status, for a 200 whose
+because a tick is safe to send again. One 5xx is not an outage: a 500 that carries a
+hosted route's error body, `{ "error": "<code>" }`, whatever its code. A route answers 503
+for what it knows a retry cures, so its own 500 is a failure it does not class as an
+outage: `internal_error` for every error it cannot name, a schema it does not read and a
+permanent store error among them, and `authorization_invalid` for an authorization answer
+it cannot use (section 3.5). The code promises no more than that. The command exits 7 as
+`deployment-error` and prints the code. A 500 with no such body is a platform's or a
+gateway's, and exits 6. It exits 7 as well for any other status, for a 200 whose
 body is not one JSON object (`unexpected-answer`), and for a 200 whose body is past the cap
 (`answer-too-large`): no tick route is known to have answered, and if one did the pass ran.
 An answer that does not come in time leaves the outcome unknown: the pass may have run, and
@@ -6627,8 +6632,8 @@ same table, which a test holds equal to this one.
 | 3 | refused | the engine refused the call, and says why |
 | 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
 | 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
-| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not its own permanent 500); safe to repeat, with retries capped, because a wrong store credential exits 6 too |
-| 7 | permanent | the store answered with a permanent error, or the deployment answered tick with what a repeat does not change: a status no tick route gives, its own permanent 500, or a 200 that is no JSON object or is too long to read |
+| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a wrong store credential exits 6 too |
+| 7 | permanent | the store answered with a permanent error, or the deployment answered tick with what the command takes for no outage: a status no tick route gives, a 500 of a hosted route itself, or a 200 that is no JSON object or is too long to read |
 | 8 | not-found | no such task in the queue |
 | 9 | found | stuck --fail-if-any listed at least one row |
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |

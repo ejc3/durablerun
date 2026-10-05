@@ -21202,6 +21202,13 @@ MUTATION_SPECS.extend(
             "    if (/^-?[0-9]+$/.test(token) && BigInt(token) !== BigInt(read)) { // MUTATION: only a number written as digits alone is compared\n",
             "enqueue --params with a 20 digit integer written with a fraction of zeros or an exponent stores another integer, and prints the digest of what it stored",
         ),
+        (
+            "cli-tick-exits-7-for-a-500-of-the-route-itself",
+            "packages/cli/src/http.ts",
+            "  return status === 500 && code !== undefined\n",
+            "  return status === 500 && code === 'internal_error' // MUTATION: one code of a hosted route's 500 is permanent, and every other is an outage\n",
+            "tick exits 6 for a hosted route's own 500 with the code authorization_invalid, so a caller that repeats an outage repeats a deployment whose authorization is misconfigured",
+        ),
     )
 )
 VERDICTS.update(
@@ -21218,6 +21225,12 @@ VERDICTS.update(
             "packages/cli/test/drive-verbs.test.ts",
             "enqueue on libSQL refuses a number by its value, however it is written: an integer a double cannot hold with a fraction of zeros or an exponent, and a number that reads as zero and is not",
             "mutation-verdict:behavior:cli-refuses-a-number-by-its-value",
+        ),
+        "cli-tick-exits-7-for-a-500-of-the-route-itself": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address exits 7 for a 500 that carries a hosted route's error body, whatever its code, and 6 for a 500 that carries none",
+            "mutation-verdict:behavior:cli-tick-exits-7-for-a-500-of-the-route-itself",
         ),
     }
 )
@@ -25148,7 +25161,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1408:
+        if len(MUTATIONS) != 1409:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
