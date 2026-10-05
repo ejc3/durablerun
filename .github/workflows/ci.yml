@@ -386,6 +386,7 @@ jobs:
                   "mutation-verdict:behavior:cli-cancel-halts-a-rollback-only-when-told",
                   "mutation-verdict:behavior:cli-cancel-names-a-saga-the-store-spared",
                   "mutation-verdict:behavior:cli-cancel-names-why-the-port-answered-false",
+                  "mutation-verdict:behavior:cli-cancel-says-whether-it-halted-a-rollback",
                   "mutation-verdict:behavior:cli-drill-clears-what-is-stuck",
                   "mutation-verdict:behavior:cli-drill-finds-each-planted-cause-without-an-id",
                   "mutation-verdict:behavior:cli-drill-runs-each-suggestion-as-it-is-printed",

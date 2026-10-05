@@ -21216,6 +21216,13 @@ MUTATION_SPECS.extend(
             "    // MUTATION: an outage at a read that follows an answered write fails the command\n",
             "enqueue under a key a task holds exits 6 when the read of the found task meets an outage, though the spawn answered, and a repeat of a row no read can hand over fails for ever",
         ),
+        (
+            "cli-cancel-says-whether-it-halted-a-rollback",
+            "packages/cli/src/main.ts",
+            "    const said = namedAt(after)\n",
+            "    const said = namedAt(before) // MUTATION: a cancellation prints the saga as the read before the call found it\n",
+            "cancel --halt-rollback of a task whose saga began beside the command halts the rollback and prints sagaBegan false, so the operator cannot see that a rollback was halted",
+        ),
     )
 )
 VERDICTS.update(
@@ -21244,6 +21251,12 @@ VERDICTS.update(
             "packages/cli/test/drive-verbs.test.ts",
             "enqueue on libSQL answers a repeat the spawn answered when the task it found cannot be read back, and says the stored name is unknown and no mismatch",
             "mutation-verdict:behavior:cli-enqueue-answers-a-repeat-it-cannot-read-back",
+        ),
+        "cli-cancel-says-whether-it-halted-a-rollback": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "cancel on libSQL says of the task it cancelled whether its saga had begun, from a read after the write, so a rollback that was halted shows in the answer",
+            "mutation-verdict:behavior:cli-cancel-says-whether-it-halted-a-rollback",
         ),
     }
 )
@@ -25174,7 +25187,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1410:
+        if len(MUTATIONS) != 1411:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

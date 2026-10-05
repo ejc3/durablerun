@@ -6467,9 +6467,14 @@ reach.
   is (section 3.10), so that takes `--halt-rollback`. Without the flag the command passes
   `unlessSagaBegan`, and the store cancels only a task whose saga has not begun, in the
   statement that cancels. A saga that begins beside the command is therefore not halted,
-  whatever the command read before. The task is read before the call for what the answer
-  prints: its name, `stateBefore`, and `sagaBegan` beside the outcome `cancelled`, each as
-  of that read. When the port answers false it wrote nothing, and the task as it stands
+  whatever the command read before. The task is read before the call for its name and
+  `stateBefore`, and again after the call, whatever the port answered. Beside the outcome
+  `cancelled`, `sagaBegan` is of the read after, so it is true of the task the call
+  cancelled, and `haltedRollback` says whether the cancellation halted a rollback. With
+  `--halt-rollback`, a saga that began between the first read and the call shows there as
+  halted. A failure of the read after exits as any read's does: the task is cancelled, and
+  the command run again reports `already-cancelled`. When the port answers false it wrote
+  nothing, and the task as it stands
   after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`), rolling
   back with no `--halt-rollback` (exit 2, `confirmation-required`, with the rollback facts
   `taskFacts` carries: the attempts, the budget and every run), ended another way (exit 3,
