@@ -1,11 +1,12 @@
 import type { LaunchOutcome } from './launch.js'
 import type {
+  AgedTasks,
+  AgedTasksOptions,
+  CancelOptions,
   Checkpoint,
   CheckpointWrite,
   ClaimedRun,
   EventState,
-  AgedTasks,
-  AgedTasksOptions,
   EventWaiters,
   FailOutcome,
   FailedRollback,
@@ -256,7 +257,13 @@ export interface SchedulerStore {
    */
   driverHeartbeat(queue: string, driverId: string, ttlSeconds: number): Promise<void>
 
-  cancelTask(queue: string, taskId: string): Promise<boolean>
+  /**
+   * Cancel a live task: true when this call cancelled it, false when it wrote nothing. A
+   * task that is rolling back is cancelled too, which halts its saga, unless the caller
+   * passes `unlessSagaBegan` (`CancelOptions`): the store then cancels only a task whose
+   * saga has not begun, and decides that in the statement that cancels.
+   */
+  cancelTask(queue: string, taskId: string, options?: CancelOptions): Promise<boolean>
 
   /**
    * Absurd's retry_task: revive a FAILED task in place with a new pending run at

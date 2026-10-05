@@ -1,4 +1,5 @@
 import {
+  type CancelOptions,
   type Clock,
   type IdSource,
   MAX_RUN_ORDINAL,
@@ -850,11 +851,17 @@ const emitEvent: Handler = async (context) => {
 }
 
 /**
- * Cancel a task. It is the store's `cancelTask` and nothing else. The task is read first:
- * one whose saga began is cancelled only with --halt-rollback, because the cancellation
- * halts the rollback where it stands (DESIGN.md section 3.10). When the port answers false
- * it wrote nothing, and why is read from the task as it stands after: gone, cancelled
- * already, ended another way, or live with a run in another queue.
+ * Cancel a task. It is the store's `cancelTask` and nothing else. With --yes the port is
+ * always called: no read stops the call. Without --halt-rollback the call asks the store
+ * to spare a saga (`unlessSagaBegan`), so whether the task is rolling back is decided by
+ * the statement that cancels it, and a saga that begins beside this command is not halted.
+ * Cancelling a task whose saga began halts the rollback where it stands (DESIGN.md
+ * section 3.10), which is why that takes the flag. When the port answers false it wrote
+ * nothing, and why is read from the task as it stands after: gone, cancelled already,
+ * ended another way, rolling back with no --halt-rollback, or live with a run in another
+ * queue. The read before the call is for what a run without --yes says it would do, and
+ * for the name and the state the answer of a cancellation prints: `stateBefore` and
+ * `sagaBegan` beside the outcome `cancelled` are as of that read.
  */
 const cancel: Handler = async (context) => {
   const { invocation, store, reveal } = context
@@ -862,43 +869,50 @@ const cancel: Handler = async (context) => {
   const queue = await readableQueue(context)
   if (typeof queue !== 'string') return { ...queue, view: { taskId, ...queue.view } }
   const before = await store.operator.taskFacts(queue, taskId)
-  if (before === null) return noSuchTask(queue, taskId)
-  const live = isLiveState(before.task.state)
-  const haltsARollback = live && before.task.sagaBegan
-  const named = {
+  const haltRollback = invocation.booleans['halt-rollback'] === true
+  const rollingBack = (facts: TaskFacts): boolean =>
+    isLiveState(facts.task.state) && facts.task.sagaBegan
+  /** The task as one read found it, with the rollback facts when it is rolling back. */
+  const namedAt = (facts: TaskFacts | null) => ({
     queue,
     taskId,
-    taskName: before.task.taskName,
-    stateBefore: stateView(before.task.state, reveal),
-    sagaBegan: before.task.sagaBegan,
-    ...(haltsARollback ? { rollback: rollbackFacts(before, reveal) } : {}),
-  }
+    taskName: before?.task.taskName ?? facts?.task.taskName ?? null,
+    stateBefore: before === null ? null : stateView(before.task.state, reveal),
+    ...(facts === null
+      ? {}
+      : {
+          sagaBegan: facts.task.sagaBegan,
+          ...(rollingBack(facts) ? { rollback: rollbackFacts(facts, reveal) } : {}),
+        }),
+  })
   const halting =
     'its saga began, and cancelling it halts the rollback where it stands: a step not yet rolled back stays as it is'
   if (invocation.booleans.yes !== true) {
+    if (before === null) return noSuchTask(queue, taskId)
     return notConfirmed(
-      named,
-      !live
+      namedAt(before),
+      !isLiveState(before.task.state)
         ? `task ${taskId} is not live as of this read, so cancel would change nothing. Nothing was changed`
-        : haltsARollback
+        : rollingBack(before)
           ? `cancel would cancel task ${taskId} and its live run. As of this read ${halting}. Run it again with --yes and --halt-rollback. Nothing was changed`
           : `cancel would cancel task ${taskId} and its live run; run it again with --yes. Nothing was changed`,
     )
   }
-  if (haltsARollback && invocation.booleans['halt-rollback'] !== true) {
-    return notConfirmed(
-      named,
-      `task ${taskId} is rolling back as of this read: ${halting}. Run it again with --halt-rollback to cancel it all the same. Nothing was changed`,
-    )
-  }
-  if (await store.scheduler.cancelTask(queue, taskId)) {
-    return { exit: 'done', view: { ...named, outcome: 'cancelled' } }
-  }
+  const asked: CancelOptions = haltRollback ? {} : { unlessSagaBegan: true }
+  const cancelled = await store.scheduler.cancelTask(queue, taskId, asked)
+  if (cancelled) return { exit: 'done', view: { ...namedAt(before), outcome: 'cancelled' } }
   const after = await store.operator.taskFacts(queue, taskId)
   if (after === null) return noSuchTask(queue, taskId)
+  const named = namedAt(after)
   const state = after.task.state
   if (state === 'cancelled') {
     return { exit: 'done', view: { ...named, outcome: 'already-cancelled', state } }
+  }
+  if (!haltRollback && rollingBack(after)) {
+    return notConfirmed(
+      { ...named, state: stateView(state, reveal) },
+      `task ${taskId} is rolling back as of this read: ${halting}. The store was asked to spare a saga, and it cancelled nothing. Run it again with --halt-rollback to cancel it all the same. Nothing was changed`,
+    )
   }
   const elsewhere = runsInAnotherQueue(queue, after)
   const [cause, why] = isTerminalState(state)

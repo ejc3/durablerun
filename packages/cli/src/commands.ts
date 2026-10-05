@@ -475,7 +475,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: true,
     repeat: 'settles',
-    // The task is read before the write, and again when the port answers false.
+    // The task is read before the call, and again when the port answers false.
     ports: [SCHEMA_VERSION, TASK_FACTS, CANCEL_TASK],
     exits: [...DRIVE_EXITS, 'not-found'],
     faults: DRIVE_FAULTS,

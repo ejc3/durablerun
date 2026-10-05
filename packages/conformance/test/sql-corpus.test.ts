@@ -145,6 +145,9 @@ describe('generated SQL corpus', () => {
         // A compare-and-set that matches nothing still compiles, so each step says it won.
         expect(await store.retryTask('q', retried.taskId)).not.toBeNull()
         expect(await store.cancelTask('q', retried.taskId)).toBe(true)
+        // The same label asked to spare a saga, its second variant.
+        const spared = await store.spawn('q', 'job', '{}')
+        expect(await store.cancelTask('q', spared.taskId, { unlessSagaBegan: true })).toBe(true)
         // A saga: a registered step starts, the task fails for good, and that batch
         // enters the rolling-back phase. The rollback fails twice, once with budget left.
         const saga = await store.spawn('q', 'saga', '{}')

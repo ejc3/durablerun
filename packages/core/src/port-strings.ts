@@ -236,7 +236,7 @@ export const PORT_STRINGS = frozenThroughout({
   getTaskResult: ['queue', 'taskId'],
   nextWakeAtEpochMs: ['queue'],
   driverHeartbeat: ['queue', 'driverId', null],
-  cancelTask: ['queue', 'taskId'],
+  cancelTask: ['queue', 'taskId', null],
   retryTask: ['queue', 'taskId'],
 } as const satisfies PortStrings)
 

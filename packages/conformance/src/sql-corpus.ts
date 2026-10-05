@@ -1,5 +1,10 @@
 import { readFileSync } from 'node:fs'
-import type { SqlBatchControl, SqlExecutor, SqlStatement } from '@durablerun/core'
+import {
+  SAGA_PHASE_CHECKPOINT,
+  type SqlBatchControl,
+  type SqlExecutor,
+  type SqlStatement,
+} from '@durablerun/core'
 
 /**
  * The generated SQL corpus's enrolment. `corpus/labels.json` is the descriptor: each label
@@ -39,6 +44,11 @@ export const CORPUS_VARIANT_NAMERS: VariantNamers = {
   // Only a failed rollback with budget left inserts a run, the pass that retries it.
   'fail-rollback': (signature) =>
     signature.some(({ sql }) => insertsARun(sql)) ? 'retrying' : 'final',
+  // The saga conjunct a caller asks for, which names the phase marker.
+  'cancel-task': (signature) =>
+    signature.some(({ sql }) => sql.includes(`'${SAGA_PHASE_CHECKPOINT}'`))
+      ? 'cancelled-unless-saga-began'
+      : 'cancelled',
   'await-event': (signature) =>
     signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
       ? 'registered-child'

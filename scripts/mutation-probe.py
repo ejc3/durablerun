@@ -20385,8 +20385,8 @@ MUTATION_SPECS.extend(
         (
             "cli-cancel-changes-nothing-without-yes",
             "packages/cli/src/main.ts",
-            "  if (invocation.booleans.yes !== true) {\n    return notConfirmed(\n      named,\n      !live\n",
-            "  if (false) { // MUTATION: cancel writes without --yes\n    return notConfirmed(\n      named,\n      !live\n",
+            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noSuchTask(queue, taskId)\n    return notConfirmed(\n      namedAt(before),\n",
+            "  if (false) { // MUTATION: cancel writes without --yes\n    if (before === null) return noSuchTask(queue, taskId)\n    return notConfirmed(\n      namedAt(before),\n",
             "cancel ends a live task with no confirmation",
         ),
         (
@@ -20441,9 +20441,30 @@ MUTATION_SPECS.extend(
         (
             "cli-cancel-halts-a-rollback-only-when-told",
             "packages/cli/src/main.ts",
-            "  if (haltsARollback && invocation.booleans['halt-rollback'] !== true) {\n",
-            "  if (false) { // MUTATION: cancel halts a rollback without being told to\n",
+            "  const asked: CancelOptions = haltRollback ? {} : { unlessSagaBegan: true }\n",
+            "  const asked: CancelOptions = haltRollback ? {} : {} // MUTATION: cancel never asks the store to spare a saga\n",
             "cancel --yes of a task that is rolling back halts its saga where it stands, with steps not rolled back, and never says so",
+        ),
+        (
+            "cli-cancel-names-a-saga-the-store-spared",
+            "packages/cli/src/main.ts",
+            "  if (!haltRollback && rollingBack(after)) {\n",
+            "  if (false) { // MUTATION: a cancellation the store refused for a saga is not named\n",
+            "cancel of a task whose saga began beside the command exits 3, tells the operator to run it again, and never names --halt-rollback",
+        ),
+        (
+            "cancel-spares-a-saga-that-began",
+            "packages/store-libsql/src/store.ts",
+            "        sagaNotBegun: unlessSagaBegan ? sqlFragment(`NOT ${sagaBegan('tasks')}`) : null,\n",
+            "        sagaNotBegun: unlessSagaBegan ? sqlFragment('1 = 1') : null, // MUTATION: the conjunct asks nothing\n",
+            "a cancellation asked to spare a saga cancels a task that is rolling back, and halts its saga",
+        ),
+        (
+            "cli-a-confirmed-verb-always-makes-its-call",
+            "packages/cli/src/main.ts",
+            "  const asked: CancelOptions = haltRollback ? {} : { unlessSagaBegan: true }\n",
+            "  if (before === null) return noSuchTask(queue, taskId) // MUTATION: a read stops the call\n  const asked: CancelOptions = haltRollback ? {} : { unlessSagaBegan: true }\n",
+            "cancel decides from a read made before the write that it will not call the port, so a task that appears between the two is not cancelled",
         ),
         (
             "cli-retry-reports-the-live-run-a-repeat-finds",
@@ -20483,8 +20504,8 @@ MUTATION_SPECS.extend(
         (
             "cli-cancel-is-the-cancel-and-nothing-else",
             "packages/cli/src/main.ts",
-            "  if (await store.scheduler.cancelTask(queue, taskId)) {\n",
-            "  if (await store.scheduler.cancelTask(queue, `${taskId}-`)) { // MUTATION: the port is asked about another task\n",
+            "  const cancelled = await store.scheduler.cancelTask(queue, taskId, asked)\n",
+            "  const cancelled = await store.scheduler.cancelTask(queue, `${taskId}-`, asked) // MUTATION: the port is asked about another task\n",
             "cancel reads the task it was given and asks the port to cancel another, so the task stays live",
         ),
         (
@@ -20754,6 +20775,25 @@ VERDICTS.update(
             "packages/cli/test/drive-verbs.test.ts",
             "cancel on libSQL refuses a task whose saga began without --halt-rollback, prints the rollback facts, and cancels it with the flag",
             "mutation-verdict:behavior:cli-cancel-halts-a-rollback-only-when-told",
+        ),
+        "cli-cancel-names-a-saga-the-store-spared": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "cancel on libSQL leaves a task uncancelled when its saga begins between the read and the write, and prints the rollback facts",
+            "mutation-verdict:behavior:cli-cancel-names-a-saga-the-store-spared",
+        ),
+        "cancel-spares-a-saga-that-began": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "saga conformance [libsql] a cancellation that spares a saga cancels a task whose saga has not begun, and leaves one that is rolling back as it is",
+            "mutation-verdict:behavior:cancel-spares-a-saga-that-began",
+            "packages/conformance/src/sagas.ts",
+        ),
+        "cli-a-confirmed-verb-always-makes-its-call": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
+            "mutation-verdict:behavior:cli-a-confirmed-verb-always-makes-its-call",
         ),
         "cli-retry-reports-the-live-run-a-repeat-finds": ExpectedVerdict(
             "behavior",
@@ -24950,7 +24990,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1394:
+        if len(MUTATIONS) != 1397:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

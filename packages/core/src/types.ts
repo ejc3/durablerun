@@ -59,6 +59,17 @@ export interface CancellationPolicy {
   maxDurationSeconds?: number
 }
 
+/** What a caller may ask of `cancelTask`. */
+export interface CancelOptions {
+  /**
+   * Cancel the task only while its saga has not begun. The store's compare-and-set carries
+   * that conjunct, so the check and the cancellation are one statement: a task that is
+   * rolling back is left as it is, and the call answers false. Left out or false, a
+   * cancellation halts a saga where it stands (DESIGN.md section 3.10).
+   */
+  unlessSagaBegan?: boolean
+}
+
 export interface SpawnOptions {
   /** The caller's key. One that starts with `$` is refused: that namespace is the engine's. */
   idempotencyKey?: string

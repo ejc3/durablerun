@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import type {
   AgedTasksOptions,
+  CancelOptions,
   HeldOperatorReads,
   IdSource,
   OperatorReads,
@@ -328,7 +329,8 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
         scheduler.spawn(queue, taskName, paramsJson, spawnOptions),
       emitEvent: (queue: string, eventName: string, payloadJson: string) =>
         scheduler.emitEvent(queue, eventName, payloadJson),
-      cancelTask: (queue: string, taskId: string) => scheduler.cancelTask(queue, taskId),
+      cancelTask: (queue: string, taskId: string, cancelOptions?: CancelOptions) =>
+        scheduler.cancelTask(queue, taskId, cancelOptions),
       retryTask: (queue: string, taskId: string) => scheduler.retryTask(queue, taskId),
       sweep: (queue: string, limit: number) => scheduler.sweep(queue, limit),
       nextWakeAtEpochMs: (queue: string) => scheduler.nextWakeAtEpochMs(queue),

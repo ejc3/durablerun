@@ -27,6 +27,7 @@ import {
   type StartingSchema,
   dumpOf,
   openCliDb,
+  recordingOpener,
   rollingBack,
   runCli,
   seedTasks,
@@ -69,10 +70,11 @@ const CALLS = {
     line: ['emit', eventName, ...(payload === undefined ? [] : ['--payload', payload]), '--yes'],
     port: (store) => store.emitEvent(QUEUE, eventName, payload ?? 'null'),
   }),
-  // --halt-rollback is what a task whose saga began needs, and a task with none takes it.
-  cancel: (taskId: string): Call => ({
-    line: ['cancel', taskId, '--yes', '--halt-rollback'],
-    port: (store) => store.cancelTask(QUEUE, taskId),
+  // Without --halt-rollback the command asks the store to spare a saga, and that is its
+  // port call. With the flag it asks for nothing, as a caller that passes no option does.
+  cancel: (taskId: string, haltRollback = false): Call => ({
+    line: ['cancel', taskId, '--yes', ...(haltRollback ? ['--halt-rollback'] : [])],
+    port: (store) => store.cancelTask(QUEUE, taskId, haltRollback ? {} : { unlessSagaBegan: true }),
   }),
   retry: (taskId: string): Call => ({
     line: ['retry', taskId, '--yes'],
@@ -85,6 +87,18 @@ const CALLS = {
 } as const
 type WriteVerb = keyof typeof CALLS
 const WRITE_VERBS = Object.keys(CALLS) as WriteVerb[]
+
+/** The port call each verb is, as the command table names it. */
+const PORT_OF: Readonly<Record<WriteVerb, string>> = {
+  enqueue: 'scheduler.spawn',
+  emit: 'scheduler.emitEvent',
+  cancel: 'scheduler.cancelTask',
+  retry: 'scheduler.retryTask',
+  sweep: 'scheduler.sweep',
+}
+/** The labels that call sends its batches under, as the command table declares them. */
+const labelsOfTheCall = (verb: WriteVerb): readonly string[] =>
+  COMMANDS[verb].ports.find((use) => use.call === PORT_OF[verb])?.labels ?? []
 
 /**
  * What a command's answer says of the write, beside what the port call answered on the
@@ -218,8 +232,20 @@ const TWINS: Readonly<Record<WriteVerb, Twin>> = {
         exit: 'not-found',
       },
       {
-        name: 'of a task that is rolling back',
+        name: 'of a task that is rolling back, which the store spares',
         call: (_seeded, saga) => CALLS.cancel(saga),
+        changes: false,
+        exit: 'usage',
+      },
+      {
+        name: 'of a task that is not rolling back, with --halt-rollback',
+        call: (seeded) => CALLS.cancel(seeded.failed, true),
+        changes: false,
+        exit: 'refused',
+      },
+      {
+        name: 'of the task that is rolling back, with --halt-rollback',
+        call: (_seeded, saga) => CALLS.cancel(saga, true),
         changes: true,
         exit: 'done',
       },
@@ -303,6 +329,7 @@ async function compared(
   verb: WriteVerb,
   schema: StartingSchema,
   marker: string,
+  calledMarker: string,
 ): Promise<number> {
   const { prepare, steps } = TWINS[verb]
   return onTwins(dialect, `twin-${verb}`, schema, async (subject, twin) => {
@@ -320,12 +347,21 @@ async function compared(
       const call = step.call(on.subject.seeded, on.subject.prepared)
       // One seed to each side: an id the command mints is the id the port call mints.
       const seed = `drive-${index}`
+      const recorded = recordingOpener()
       const run = await runCli(
         [...call.line, ...writeFlags(subject), '--json'],
         subject.env,
-        undefined,
+        recorded.opener,
         testIdSource(seed),
       )
+      // A confirmed verb always makes its call, in a step the port refuses too: a command
+      // that decided from a read not to call would write what the port writes here, nothing,
+      // and would differ from it only when a row moved between that read and the write.
+      const sent = recorded.sent().map((batch) => batch.label)
+      expect(
+        { where, called: labelsOfTheCall(verb).some((label) => sent.includes(label)) },
+        calledMarker,
+      ).toEqual({ where, called: true })
       const ported = await call.port(twin.storeWith(testIdSource(seed)))
       const after = await subject.dump()
       expect({ where, same: after === (await twin.dump()) }, marker).toEqual({ where, same: true })
@@ -372,6 +408,7 @@ describe('a drive verb is its port call and nothing else', () => {
             verb,
             'current',
             'mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call',
+            'mutation-verdict:behavior:cli-a-confirmed-verb-always-makes-its-call',
           )
           expect([verb, steps]).toEqual([verb, TWINS[verb].steps.length])
         }
@@ -445,6 +482,7 @@ describe('the drive verbs at every schema version their store reads, on libSQL',
           verb,
           version,
           'mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call',
+          'mutation-verdict:behavior:cli-a-confirmed-verb-always-makes-its-call',
         )
         expect([version, verb, steps]).toEqual([version, verb, TWINS[verb].steps.length])
       }
@@ -459,9 +497,14 @@ const STEPS = 100
 /**
  * What the commands over the walks must reach, so a comparison of nothing fails. Measured
  * when the case was written: 241 commands, of which 9 revivals and 17 retries that revived
- * nothing, 61 cancellations and 82 cancels that cancelled nothing, 12 transitions swept, 10
- * tasks spawned and 22 emits. Each floor sits below what was measured, so a change to the
- * walk that moves a seed does not fail the case, and a walk that leaves nothing to drive does.
+ * nothing, 60 cancellations and 83 cancels that cancelled nothing, one of those a task that
+ * was rolling back, which the store spared, 12 transitions swept, 10 tasks spawned and 22
+ * emits. A floor sits below what was measured, so a change to the walk that moves a seed
+ * does not fail the case, and a walk that leaves nothing to drive does. Two floors are what
+ * was measured. Every walk spawns one task under a key of its own, so `spawned` is the
+ * number of the walks. One walk leaves a task that is rolling back, and `spared` holds
+ * that one: were no walk to leave any, the cancel that spares a saga would be compared
+ * over nothing, and this fails until a seed that leaves one joins the walks.
  */
 const FLOORS = {
   commands: 200,
@@ -469,6 +512,7 @@ const FLOORS = {
   notRevived: 12,
   cancelled: 45,
   notCancelled: 60,
+  spared: 1,
   swept: 8,
   spawned: 10,
   emitted: 15,
@@ -503,6 +547,7 @@ describe('a drive verb over the states a walk of the engine leaves, on libSQL', 
       notRevived: 0,
       cancelled: 0,
       notCancelled: 0,
+      spared: 0,
       swept: 0,
       spawned: 0,
       emitted: 0,
@@ -547,7 +592,11 @@ describe('a drive verb over the states a walk of the engine leaves, on libSQL', 
               ? []
               : [['enqueue', CALLS.enqueue('report', key)] as [WriteVerb, Call]]),
             // Every task the walk left, the revived among them, and the ended ones, which refuse.
-            ...tasks.map((taskId): [WriteVerb, Call] => ['cancel', CALLS.cancel(taskId)]),
+            // Every other one with --halt-rollback, so both of the port's shapes are driven.
+            ...tasks.map((taskId, at): [WriteVerb, Call] => [
+              'cancel',
+              CALLS.cancel(taskId, at % 2 === 1),
+            ]),
             ...failed.map((taskId): [WriteVerb, Call] => ['retry', CALLS.retry(taskId)]),
             ['sweep', CALLS.sweep()],
           ]
@@ -569,7 +618,14 @@ describe('a drive verb over the states a walk of the engine leaves, on libSQL', 
             if (!isDeepStrictEqual(said, did)) {
               differed.push(`${where}: the answer is not the port's`)
             }
-            if (![0, exitCode('refused')].includes(run.exit)) {
+            // A cancel without --halt-rollback that meets a saga exits as an unconfirmed one.
+            const spared =
+              verb === 'cancel' &&
+              !call.line.includes('--halt-rollback') &&
+              run.exit === exitCode('usage') &&
+              answer.sagaBegan === true
+            if (spared) reached.spared += 1
+            if (![0, exitCode('refused')].includes(run.exit) && !spared) {
               differed.push(`${where}: exit ${run.exit}: ${run.stdout}`)
             }
             reached.commands += 1

@@ -365,6 +365,8 @@ jobs:
               # mutate moved out of `retryTask` into `RETRY_ADMITS`, the record of the guard's
               # conjuncts that the guard and the operator's read of it are both built from.
               repaired = exempt(previous, candidate, (
+                  "mutation-verdict:behavior:cancel-spares-a-saga-that-began",
+                  "mutation-verdict:behavior:cli-a-confirmed-verb-always-makes-its-call",
                   "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
                   "mutation-verdict:behavior:cli-a-drive-verb-creates-no-database",
                   "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
@@ -372,6 +374,7 @@ jobs:
                   "mutation-verdict:behavior:cli-a-drive-verb-names-its-store",
                   "mutation-verdict:behavior:cli-a-drive-verb-refuses-a-schema-below-the-window",
                   "mutation-verdict:behavior:cli-cancel-halts-a-rollback-only-when-told",
+                  "mutation-verdict:behavior:cli-cancel-names-a-saga-the-store-spared",
                   "mutation-verdict:behavior:cli-cancel-names-why-the-port-answered-false",
                   "mutation-verdict:behavior:cli-drill-clears-what-is-stuck",
                   "mutation-verdict:behavior:cli-drill-finds-each-planted-cause-without-an-id",

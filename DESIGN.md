@@ -5306,7 +5306,7 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   | RunRollback | `set-checkpoint` of `$rollback:<step>` | Admitted only inside the phase, and through no other batch: a suspension's marker is held to the same predicate over the name, and a suspension runs only before the phase. Any other checkpoint is admitted only before it. |
   | RollbackRetry, RollbackHalts | `fail-rollback` | Its own port method, `failRollback`, and its own label. The port takes the step and the failure of this attempt. The store first reads the rollback's last attempt record, under the read label `rollback-tries`, and the batch writes the record one attempt on, under the name the store builds from the step, behind the failure. With a retry a pass follows, past the user budget. With none the task ends. Refused outside the phase. |
   | FinishSaga | `fail` with no retry, inside the phase | Ends the task with the reason the caller passes, which the SDK makes the failure that began the saga. |
-  | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. |
+  | Cancel | `cancel-task`, `sweep:cancel` | Unchanged. A caller of `cancelTask` may ask that a saga be spared, which is Cancel under "refused": the compare-and-set then also requires that the task holds no phase marker. |
   | Revive | `retry-task` | Refuses a task whose saga began. |
 
   A failed rollback is a separate port method, not an option of `fail`, so that
@@ -5587,7 +5587,16 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
     rollbacks never run, and the outcome is `failed` exactly when a step that
     started is left uncompensated. A cancellation that lands after the last
     rollback records `complete`. This is what cancellation does to any live
-    task.
+    task. A caller that must not halt a saga asks for that: `cancelTask` takes
+    `unlessSagaBegan`, and the store's cancel compare-and-set then carries one
+    more conjunct, that the task holds no phase marker. The check and the
+    cancellation are one statement, so a saga that begins beside the call is
+    never halted by it: the call answers false and writes nothing. That is
+    the model's Cancel under `CancelMidRollback = "refused"`, which
+    `SagasCancelRefused.cfg` checks. The label is `cancel-task` still, and
+    the corpus holds the conjunct as the label's second variant. Left out,
+    the option changes nothing. The operator CLI's `cancel` passes it unless
+    it is run with `--halt-rollback` (section 3.11).
   - `retry-task` REFUSES a task whose saga began. Reviving it without
     forgetting its rolled-back steps is unsound under any rule: the forward
     replay would skip memoized steps whose effects were compensated.
@@ -6386,13 +6395,18 @@ built. The first two are built as planned, and the third the plan did not have.
 
 **The drive verbs.** `enqueue`, `emit`, `cancel`, `retry` and `sweep` each make one call of
 the store's port, and that call is the whole write. The command reads before it and after
-it to say what happened, and nothing it reads decides whether a row changes: the port's own
-guard does. A test holds this on every dialect. The command runs through `main` against one
-database, and the port call it is runs against a twin: a second database built by the same
-calls with the same seeded ids. Both are handed an id source of one seed, and after each
-step a dump of every table of the one equals the dump of the other, and the command's
-answer is the port's. The same is held on libSQL over the states a walk of the engine
-leaves, after every command, with a floor under how many of each outcome the walks reach.
+it to say what happened. With its confirmation, and a schema version inside the window of
+its store's reads, a verb always makes its call, and nothing it reads of a task, a run or
+an event decides whether a row changes: the port's own guard does. What `cancel` must not
+do to a saga, it asks of that guard (below). A test holds this on every dialect. The
+command runs through `main` against one database, and the port call it is runs against a
+twin: a second database built by the same calls with the same seeded ids. Both are handed
+an id source of one seed, and after each step a dump of every table of the one equals the
+dump of the other, and the command's answer is the port's. Each step also holds that the
+command sent a batch of its port call, a step the port refuses included, so a refusal
+decided from a read fails there. The same is held on libSQL over the states a walk of the
+engine leaves, after every command, with a floor under how many of each outcome the walks
+reach.
 
 - `enqueue <taskName> --key K [--params JSON] --queue Q --target T` is `spawn` under the
   idempotency key. `--key` is required, so the command run again after a lost answer finds
@@ -6409,15 +6423,21 @@ leaves, after every command, with a floor under how many of each outcome the wal
   payload's text is never printed, `--reveal` or not, because another caller may have
   written it. A name that starts with `$` is the engine's: it exits 3 with `reserved-name`,
   and no batch is sent.
-- `cancel <taskId> --yes [--halt-rollback] --queue Q --target T` is `cancelTask`. The task
-  is read first. A live task whose saga began is cancelled only with `--halt-rollback`:
-  cancelling a task that is rolling back halts its saga where it stands, and a step not yet
-  rolled back stays as it is (section 3.10). Without the flag the command exits 2 with
-  `confirmation-required` and prints the rollback facts `taskFacts` carries: the attempts,
-  the budget and every run. When the port answers false it wrote nothing, and the task as
-  it stands after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`),
-  ended another way (exit 3, `already-terminal`), or live with a run in another queue,
-  which no engine path writes (exit 3, `run-in-another-queue`).
+- `cancel <taskId> --yes [--halt-rollback] --queue Q --target T` is `cancelTask`. With
+  `--yes` the port is always called: no read stops the call. Cancelling a task that is
+  rolling back halts its saga where it stands, and a step not yet rolled back stays as it
+  is (section 3.10), so that takes `--halt-rollback`. Without the flag the command passes
+  `unlessSagaBegan`, and the store cancels only a task whose saga has not begun, in the
+  statement that cancels. A saga that begins beside the command is therefore not halted,
+  whatever the command read before. The task is read before the call for what the answer
+  prints: its name, `stateBefore`, and `sagaBegan` beside the outcome `cancelled`, each as
+  of that read. When the port answers false it wrote nothing, and the task as it stands
+  after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`), rolling
+  back with no `--halt-rollback` (exit 2, `confirmation-required`, with the rollback facts
+  `taskFacts` carries: the attempts, the budget and every run), ended another way (exit 3,
+  `already-terminal`), or live with a run in another queue, which no engine path writes
+  (exit 3, `run-in-another-queue`). Without `--yes` the command changes nothing, and says
+  from the one read what it would do and which flags it would take.
 - `retry <taskId> --yes --queue Q --target T` is `retryTask`. The one read it makes is
   `taskAdmission`, before the call and after it. When the port answers null it wrote
   nothing, and the read after names why from the guard's own conjuncts. A task that is live

@@ -646,20 +646,23 @@ describe('cancel on libSQL', () => {
       )
       const answer = JSON.parse(run.stdout) as JsonAnswer
       const after = await drive(db, ['inspect', taskId, '--queue', QUEUE])
-      expect({
-        began,
-        exit: run.exit,
-        kind: answer.error?.kind,
-        namesTheFlag: answer.error?.message?.includes('--halt-rollback'),
-        sagaBegan: answer.sagaBegan,
-        rollback: answer.rollback,
-        // The task is as its worker left it: rolling back, with the pass still to run.
-        taskAfter: (after.answer.task as { state?: string } | undefined)?.state,
-        runsAfter: (after.answer.runs as { attempt: number; state: string }[]).map((one) => [
-          one.attempt,
-          one.state,
-        ]),
-      }).toEqual({
+      expect(
+        {
+          began,
+          exit: run.exit,
+          kind: answer.error?.kind,
+          namesTheFlag: answer.error?.message?.includes('--halt-rollback'),
+          sagaBegan: answer.sagaBegan,
+          rollback: answer.rollback,
+          // The task is as its worker left it: rolling back, with the pass still to run.
+          taskAfter: (after.answer.task as { state?: string } | undefined)?.state,
+          runsAfter: (after.answer.runs as { attempt: number; state: string }[]).map((one) => [
+            one.attempt,
+            one.state,
+          ]),
+        },
+        'mutation-verdict:behavior:cli-cancel-names-a-saga-the-store-spared',
+      ).toEqual({
         began: true,
         exit: 2,
         kind: 'confirmation-required',

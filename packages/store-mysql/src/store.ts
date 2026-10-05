@@ -1,6 +1,7 @@
 import {
   type Buggify,
   CHECKPOINT_INTEGER_BOUNDS,
+  type CancelOptions,
   type Checkpoint,
   type CheckpointWrite,
   type ClaimedRun,
@@ -29,6 +30,7 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   RUN_INTEGER_BOUNDS,
+  type RetryConjuncts,
   RunTaskMemo,
   SAGA_PHASE_CHECKPOINT,
   SWEEP_PIPELINE_WIDTH,
@@ -69,9 +71,9 @@ import {
   emitEventCas,
   emittedEventRead,
   endingTask,
-  failedRollbackRecord,
   failCas,
   failClaimTimeoutCas,
+  failedRollbackRecord,
   heartbeatCas,
   heartbeatRemainingRead,
   mapLimit,
@@ -88,13 +90,12 @@ import {
   registerWaitCas,
   reopenLostLaunchCas,
   requireDerivedInteger,
-  requireFailedRollback,
-  requireSagaStepFits,
   requireEpochMs,
+  requireFailedRollback,
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
-  type RetryConjuncts,
+  requireSagaStepFits,
   retryAdmission,
   revivalRunInsert,
   reviveCas,
@@ -143,12 +144,12 @@ import {
   sagaBeganOf,
   singletonAggregate,
   soleLiveRun,
+  storedAtAll,
   storedCurrentRunAccounting,
   storedHighestOwnedOrdinal,
   storedIncrementableClaimGeneration,
   storedIncrementableInteger,
   storedInteger,
-  storedAtAll,
   storedIntegerWithin,
   storedPositiveClaimGeneration,
   successorOwned,
@@ -1188,7 +1189,10 @@ export class MysqlSchedulerStore extends HeldPort implements SchedulerStore {
             now: NOW_MS,
             tree: TREE_DIALECT,
           })
-          return this.cancelTransition(batch, queue, item.taskId, true).then((won) =>
+          return this.cancelTransition(batch, queue, item.taskId, {
+            deadlineOnly: true,
+            unlessSagaBegan: false,
+          }).then((won) =>
             won ? { kind: 'cancelled', taskId: item.taskId, runId: item.runId } : null,
           )
         }
@@ -1597,18 +1601,25 @@ export class MysqlSchedulerStore extends HeldPort implements SchedulerStore {
     return { runId, attempt: Number(row.attempt) }
   }
 
-  async cancelTask(queue: string, taskId: string): Promise<boolean> {
+  async cancelTask(queue: string, taskId: string, options?: CancelOptions): Promise<boolean> {
     const batch = new FencedBatch('cancel-task', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    return this.cancelTransition(batch, queue, taskId, false)
+    return this.cancelTransition(batch, queue, taskId, {
+      deadlineOnly: false,
+      unlessSagaBegan: options?.unlessSagaBegan === true,
+    })
   }
 
   /**
    * Shared cancel transition. Two labels, 'cancel-task' (explicit API) and
    * 'sweep:cancel' (deadline enforcement), because a label is the crash
-   * injection/tracing address and one label must not cover two SQL shapes.
+   * injection/tracing address and one label must not cover two transitions.
+   *
+   * A caller of the explicit label may ask that a saga be spared (`unlessSagaBegan`). The
+   * compare-and-set then carries one more conjunct, that the saga has not begun, and every
+   * follow-on is the same. The corpus holds it as the label's second variant.
    *
    * The stamp used to be packed into failure_reason as JSON, because tasks
    * had no column of their own; the follow-ons then read it back out with
@@ -1619,7 +1630,7 @@ export class MysqlSchedulerStore extends HeldPort implements SchedulerStore {
     b: FencedBatch,
     queue: string,
     taskId: string,
-    deadlineOnly: boolean,
+    { deadlineOnly, unlessSagaBegan }: { deadlineOnly: boolean; unlessSagaBegan: boolean },
   ): Promise<boolean> {
     const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
     b.casTree(
@@ -1628,6 +1639,7 @@ export class MysqlSchedulerStore extends HeldPort implements SchedulerStore {
         queue,
         taskId,
         admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),
+        sagaNotBegun: unlessSagaBegan ? sqlFragment(`NOT ${sagaBegan('tasks')}`) : null,
       }),
     )
     b.derived('runs', {

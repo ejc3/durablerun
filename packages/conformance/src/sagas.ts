@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import {
   type ClaimedRun,
   type FailedRollback,
@@ -23,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from './engine-history.js'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { snapshot } from './poison-matrix.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -632,6 +634,43 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         finished: { outcome: 'complete' },
         states: ['cancelled', 'cancelled'],
       })
+    })
+
+    // Cancel, under "refused", which a caller asks for: the model checks it in
+    // SagasCancelRefused.cfg, where no task is cancelled while it is rolling back.
+    it('a cancellation that spares a saga cancels a task whose saga has not begun, and leaves one that is rolling back as it is', async () => {
+      // A registered step started, and the task has not failed: its saga has not begun.
+      const forward = await f.store.spawn(Q, 'saga', '{}')
+      await startStep(f, await claimActivated(f.store, Q, 'w-forward'), 'a', 1)
+      expect(await f.store.cancelTask(Q, forward.taskId, { unlessSagaBegan: true })).toBe(true)
+      const { taskId, pass } = await rollingBack(f)
+      const before = await snapshot(f.raw)
+      expect(
+        {
+          cancelled: await f.store.cancelTask(Q, taskId, { unlessSagaBegan: true }),
+          wroteNothing: isDeepStrictEqual(await snapshot(f.raw), before),
+          task: (await taskRow(f, taskId))?.state,
+        },
+        'mutation-verdict:behavior:cancel-spares-a-saga-that-began',
+      ).toEqual({ cancelled: false, wroteNothing: true, task: 'running' })
+      // The pass still holds its claim: it runs the rollback and ends the task.
+      await checkpointOwned(f.store, Q, pass, rollbackOf('a'), 'null', 60)
+      expect(await f.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)).toEqual({
+        rollingBack: false,
+      })
+      expect(await f.store.getTaskResult(Q, taskId)).toEqual({
+        state: 'failed',
+        failureReasonJson: CAUSE,
+        rollback: { outcome: 'complete' },
+      })
+      // The option left out, empty, or false asks for nothing: the cancellation halts.
+      for (const options of [undefined, {}, { unlessSagaBegan: false }]) {
+        const halted = await rollingBack(f)
+        expect([options, await f.store.cancelTask(Q, halted.taskId, options)]).toEqual([
+          options,
+          true,
+        ])
+      }
     })
 
     // FailedOutcomeHonest, for the error beside the outcome. `errorJson` is the failure of

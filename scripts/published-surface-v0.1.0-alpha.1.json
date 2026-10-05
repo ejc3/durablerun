@@ -48,8 +48,8 @@
           "declarationSha256": "5fa9839ef7ae07c1759aa4c8607282574bb0013a7b8f0acc153a795cbd842a2d"
         },
         "SchedulerStore": {
-          "reason": "The port grew with the engine. PR #28 added claimedTaskName and deferLaunch and removed reschedule's wakeDisposition; PR #29 added retryTask; PR #49 added awaitTaskDone; PR #56 added failRollback and made fail answer FailOutcome; PR #79 made failRollback take the step and the failure of the rollback, FailedRollback, in place of the attempt record, which the store now names and counts; PR #25 named the wake and checkpoint shapes WakeSpec and CheckpointWrite, with the same members, and renamed heartbeat's last parameter. A consumer that calls a published store stops passing wakeDisposition and otherwise changes nothing. A consumer that implements the port adds the five methods, answers FailOutcome from fail, and takes a FailedRollback in failRollback.",
-          "declarationSha256": "f234ab0a8f9dd5db539073b8ffb0a3585a4aa3cdc96d358dcd9d60cb9b5b06e7"
+          "reason": "The port grew with the engine. PR #28 added claimedTaskName and deferLaunch and removed reschedule's wakeDisposition; PR #29 added retryTask; PR #49 added awaitTaskDone; PR #56 added failRollback and made fail answer FailOutcome; PR #79 made failRollback take the step and the failure of the rollback, FailedRollback, in place of the attempt record, which the store now names and counts; PR #25 named the wake and checkpoint shapes WakeSpec and CheckpointWrite, with the same members, and renamed heartbeat's last parameter. A consumer that calls a published store stops passing wakeDisposition and otherwise changes nothing. A consumer that implements the port adds the five methods, answers FailOutcome from fail, and takes a FailedRollback in failRollback. PR5.3d gave cancelTask an optional third parameter, CancelOptions: with unlessSagaBegan the store cancels only a task whose saga has not begun, and decides that in the statement that cancels, so the operator CLI's cancel halts no saga it was not told to halt. A consumer that calls cancelTask changes nothing. A consumer that implements the port adds that conjunct to its cancel when the option is set: an implementation that ignores it halts a saga the caller asked it to spare.",
+          "declarationSha256": "218cf97a5e06ae31b2162004cb5a8b98eb77bb813b27b78a7c9c28e005e651e4"
         },
         "SpawnOptions": {
           "reason": "The optional childOf was added (PR #49): the parent and call site from which the store builds a child task's idempotency key. A consumer changes nothing; ctx.spawn sets it, and it is refused together with idempotencyKey.",
@@ -120,8 +120,8 @@
           "declarationSha256": "1f5e19e8dab2168b846fdff86b196a62cb16a05fcdaf995a3a3ce3d0a711ce90"
         },
         "LibsqlSchedulerStore": {
-          "reason": "It implements SchedulerStore, and its public methods changed with the port, for the reasons under that name: claimedTaskName, deferLaunch, retryTask, awaitTaskDone and failRollback were added, fail answers FailOutcome, failRollback takes a FailedRollback (PR #79), and reschedule lost wakeDisposition. It extends HeldPort, the class in core that checks every string the port takes, where each store checked its own (PR #86). A consumer stops passing wakeDisposition and otherwise changes nothing.",
-          "declarationSha256": "eb05d12fcd35f8fac7cea07c862093e8aacbfdb0096951b80db9c879f0224bf0"
+          "reason": "It implements SchedulerStore, and its public methods changed with the port, for the reasons under that name: claimedTaskName, deferLaunch, retryTask, awaitTaskDone and failRollback were added, fail answers FailOutcome, failRollback takes a FailedRollback (PR #79), and reschedule lost wakeDisposition. It extends HeldPort, the class in core that checks every string the port takes, where each store checked its own (PR #86). cancelTask takes the optional CancelOptions (PR5.3d), under which it cancels only a task whose saga has not begun. A consumer stops passing wakeDisposition and otherwise changes nothing.",
+          "declarationSha256": "5badd736c8333b0049a88032dc95b713a737ea55bef9cf341da334efc4fb8542"
         }
       },
       "./testing": {
