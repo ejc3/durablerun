@@ -385,7 +385,7 @@ describe('tick --url against a hosted router on the loopback address', () => {
     for (const verb of VERBS) {
       if (verb === 'tick') continue
       const run = await runCli([verb, '--url', 'https://deployment.example'], {
-        DURABLERUN_STORE_URL: 'mysql://root@127.0.0.1:1/never',
+        DURABLERUN_STORE_URL: 'mysql://root@db.invalid/never',
       })
       expect({ verb, exit: run.exit }).toEqual({ verb, exit: 2 })
     }
