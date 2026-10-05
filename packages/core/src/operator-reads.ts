@@ -38,6 +38,7 @@ import {
   RETRY_GUARD,
   type RetryConjuncts,
   type RetryGuardConjunct,
+  retryConjunctAskedUnder,
 } from './statements/retry-task.js'
 import { QUEUE_TABLES, type QueueTable, STORE_TABLE_COLUMNS } from './store-tables.js'
 import { decodeTaskResult } from './task-result.js'
@@ -223,6 +224,9 @@ const EVENT = PERSISTED_INTEGER_BOUNDS.events
 /** A flag a statement computes: the integer 1 or 0. */
 const FLAG = freeze({ min: 0, max: 1 })
 
+/** A conjunct asked only of some rows: 1 or 0 where it was asked, and 2 where it was not. */
+const ASKED_FLAG = freeze({ min: 0, max: 2 })
+
 /** The row an integer was read from, as a corrupt entry names it. */
 type RowIdentity = Pick<CorruptInteger, 'taskId' | 'runId' | 'stepName' | 'eventName'>
 
@@ -331,6 +335,20 @@ function flagOf(what: string, value: unknown): boolean {
     )
   }
   return decoded.value === 1
+}
+
+/**
+ * A conjunct that is asked only where its counters are in range. Its statement answers 2
+ * for a row it was not asked of, which is neither that it holds nor that it does not.
+ */
+function askedFlag(what: string, value: unknown): boolean | 'not-asked' {
+  const decoded = decodeBoundedInteger(value, ASKED_FLAG)
+  if (!decoded.ok) {
+    throw new TrustedRangeError(
+      `${what} must be the integer 0, 1 or 2, got ${storageValueKind(value)}`,
+    )
+  }
+  return decoded.value === 2 ? 'not-asked' : decoded.value === 1
 }
 
 const textOf = (value: unknown): string | null =>
@@ -1146,19 +1164,23 @@ async function taskAdmission(
   // One snapshot answers both reads of the task, so it is in both or in neither.
   if (guard === undefined || task === undefined) return null
   const corrupt: CorruptInteger[] = []
-  const retry = createObject(null) as Record<RetryGuardConjunct, boolean>
-  for (const name of RETRY_GUARD) retry[name] = flagOf(`task-admission ${name}`, guard[name])
+  const retry = createObject(null) as Record<RetryGuardConjunct, boolean | 'not-asked'>
+  for (const name of RETRY_GUARD) {
+    const what = `task-admission ${name}`
+    retry[name] =
+      name !== 'failed' && retryConjunctAskedUnder(name).length > 0
+        ? askedFlag(what, guard[name])
+        : flagOf(what, guard[name])
+  }
   const runs = readRows(b, ran, 'runs').map((row): RunAdmission => {
     const runId = stringFrom(row.run_id)
     const int = integersOf(row, corrupt, { runId })
-    const ordinal = int(RUN.attempt)
     const claims = int(RUN.claim_gen)
     const availableAt = int(RUN.available_at_ms)
     const leaseEndsAt = int(RUN.claim_expires_at_ms)
     return {
       runId,
       state: stringFrom(row.state),
-      attempt: ordinal,
       claimGen: claims,
       availableAtMs: availableAt,
       claimExpiresAtMs: leaseEndsAt,
@@ -1169,10 +1191,8 @@ async function taskAdmission(
       sweepReclaims: flagOf('task-admission sweepReclaims', row.sweepReclaims),
     }
   })
-  // By ordinal and then by id, as a task's facts list its runs.
-  const byOrdinal = (left: RunAdmission, right: RunAdmission): number =>
-    absentLast(left.attempt, right.attempt) || byCodePoints(left.runId, right.runId)
-  runs.sort(byOrdinal)
+  // By id. The read hands no ordinal over: one at the edge of its column is no number.
+  runs.sort((left, right) => byCodePoints(left.runId, right.runId))
   return {
     state: stringFrom(task.state),
     cancelAtMs: integersOf(task, corrupt, { taskId })(TASK.cancel_at_ms),

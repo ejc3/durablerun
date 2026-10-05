@@ -105,6 +105,8 @@ export interface RetryRefusal {
   readonly causes: readonly RetryCause[]
   /** Every conjunct of the guard that is false, by core's name for it. */
   readonly conjunctsNotHeld: readonly RetryGuardConjunct[]
+  /** Every conjunct the read did not ask, because a counter it computes with is out of range. */
+  readonly conjunctsNotAsked: readonly RetryGuardConjunct[]
   readonly message: string
 }
 
@@ -115,7 +117,8 @@ export interface RetryRefusal {
  * between the call and the read, and the answer says so and names no cause.
  */
 export function retryRefusal(taskId: string, admission: TaskAdmission): RetryRefusal {
-  const conjunctsNotHeld = RETRY_GUARD.filter((name) => !admission.retry[name])
+  const conjunctsNotHeld = RETRY_GUARD.filter((name) => admission.retry[name] === false)
+  const conjunctsNotAsked = RETRY_GUARD.filter((name) => admission.retry[name] === 'not-asked')
   const causes = [...new Set(conjunctsNotHeld.map((name) => CAUSE_OF_CONJUNCT[name]))]
   const [cause] = causes
   if (cause === undefined) {
@@ -123,6 +126,7 @@ export function retryRefusal(taskId: string, admission: TaskAdmission): RetryRef
       cause: 'none-as-of-this-read',
       causes,
       conjunctsNotHeld,
+      conjunctsNotAsked,
       message: `retry of task ${taskId} was refused, and every conjunct of the retry guard holds as of this read: the task changed between the call and the read. Run it again. Nothing was changed`,
     }
   }
@@ -130,6 +134,7 @@ export function retryRefusal(taskId: string, admission: TaskAdmission): RetryRef
     cause,
     causes,
     conjunctsNotHeld,
+    conjunctsNotAsked,
     message: `retry of task ${taskId} was refused. As of this read: ${causes.map((one) => CAUSE_SAYS[one]).join('; ')}. Nothing was changed`,
   }
 }

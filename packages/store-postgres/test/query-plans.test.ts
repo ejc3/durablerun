@@ -659,14 +659,18 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
       // What the engine's guards say of one task. The retry guard's conjuncts, over the
       // task by its key: each reads the task's runs or its saga marker. The read of the
       // task's live runs goes through the queue's runs by state on a table of one run,
-      // which is the planner's choice between two indexes that both hold the row.
+      // which is the planner's choice between two indexes that both hold the row. Each of the
+      // two conjuncts that compute the charge is asked only where the ordinals of the task's
+      // runs are in range, so those runs are read once more for each.
       'task-admission#0': [
         'tasks_pkey on tasks: (task_id = $1)',
         'runs_task_attempt on runs ownership_run: (task_id = tasks.task_id)',
         'runs_task_attempt on runs r: (task_id = tasks.task_id)',
         "runs_poll on runs r_1: ((queue = tasks.queue) AND (state = ANY ('{pending,running,sleeping}'::text[])))",
         'runs_task_attempt on runs r_2: (task_id = tasks.task_id)',
+        'runs_task_attempt on runs r_3: (task_id = tasks.task_id)',
         `checkpoints_pkey on checkpoints sp: ${sagaPhase}`,
+        'runs_task_attempt on runs r_5: (task_id = tasks.task_id)',
       ],
       // Whether the sweep cancels the task: the task by its key, and that it owns every run.
       'task-admission#1': [

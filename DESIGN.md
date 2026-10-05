@@ -5697,8 +5697,8 @@ one name.
   and never prints it. A stored value that is not text is not answered as a payload, and
   the answer names its kind by the dialect's own name for the type of what is stored.
 - `taskAdmission(queue, taskId)` answers what the engine's own guards say of one task as of
-  the read: each conjunct of the retry guard as a boolean, whether the sweep's scan of due
-  cancellations takes the task, and for each run whether a claim takes it and whether the
+  the read: each conjunct of the retry guard, as true, false or not asked, whether the
+  sweep's scan of due cancellations takes the task, and for each run whether a claim takes it and whether the
   sweep's scan of expired claims does, each beside the state and the instants it was read
   with. `retry` reads it to name a refusal, and `explain` reads it to tell a move the driver
   is late for from a move the engine does not take.
@@ -5713,7 +5713,24 @@ flags of the read from the same record, one `CASE WHEN <conjunct> THEN 1 ELSE 0 
 each. So a conjunct the guard gains is a key the record must hold, the read selects it, and
 the CLI must give it a cause, or the build stops. The flags of a run are the fragments the
 claim and the sweep hold their own rows to, which are the ones `stuckRuns` lists by. A flag
-is 0 when its predicate is false or NULL, because a guard takes NULL for a refusal too. A
+is 0 when its predicate is false or NULL, because a guard takes NULL for a refusal too.
+
+Two conjuncts of the retry guard subtract counters: the charge is the top ordinal less the
+infrastructure retries, compared with the attempts and with the budget. Each is asked only
+where the conjuncts that hold those counters to their range are true. Core names them once
+(`RETRY_CONJUNCT_COMPUTES_WITH`): the guard holds such a conjunct inside a CASE on those
+ranges, because a CASE computes a result only where its condition holds and AND does not
+promise that, and the read answers `not-asked` where a range is false. On a row whose
+counter is at the edge of what its column stores, the subtraction overflows the column's
+type. PostgreSQL and MySQL answer that with an error and SQLite with a value that is no
+integer, so asked of every row the guard could fail where it refuses, and the read would
+fail where it exists to name the counter. For the same reason the read selects no counter
+and no run's ordinal: it answers for a row whose counter no JavaScript number holds, which
+the libSQL driver refuses to hand over. Eight states hold this on each dialect, the
+attempts, the infrastructure retries, the budget and a run's ordinal, each at the least and
+the greatest 64-bit integer.
+
+A
 conformance case plants a state for every conjunct and requires the read to name it and the
 revival to be refused. Another holds the read to the guard, to a claim and to a sweep on
 every state a walk of the engine leaves, with a floor under how many of each it reaches.
@@ -6401,11 +6418,14 @@ leaves, after every command, with a floor under how many of each outcome the wal
   it stands after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`),
   ended another way (exit 3, `already-terminal`), or live with a run in another queue,
   which no engine path writes (exit 3, `run-in-another-queue`).
-- `retry <taskId> --yes --queue Q --target T` is `retryTask`. When the port answers null it
-  wrote nothing, and `taskAdmission`, read after, names why from the guard's own conjuncts.
-  A task that is live at that read, with a live run, exits 0 and prints that run. Its
-  outcome is `revived` when the task was failed before the write, which is this call
-  delivered twice or another caller's revival, and `already-live` when it was not.
+- `retry <taskId> --yes --queue Q --target T` is `retryTask`. The one read it makes is
+  `taskAdmission`, before the call and after it. When the port answers null it wrote
+  nothing, and the read after names why from the guard's own conjuncts. A task that is live
+  at that read, with a live run, exits 0 and prints that run. Its outcome is `revived` when
+  the task was failed before the call, which is this call delivered twice or another
+  caller's revival. It is `already-live` when the task was live before the call: a repeat
+  that finds its revival made, or a task that never failed. The read cannot tell those two
+  apart, and neither is revived.
 - `sweep --queue Q --target T [--limit N]` is `sweep`, and then a read of the queue's next
   wake. It cancels the tasks past their deadline and takes back the runs whose lease
   lapsed, as a tick's first step does, up to the limit (20 by default, at most 1,000), and
@@ -6439,7 +6459,9 @@ Thirteen conjuncts give nine causes, and a task that is not there is the tenth.
 | saga-began | sagaNotBegun | the task's saga began, and a task whose steps were rolled back is not revived (section 3.10) |
 
 The answer prints every conjunct that is false under `conjunctsNotHeld` and every cause
-they give, and it names the first, in the guard's order, as the cause. The CLI's map from a
+they give, and it names the first, in the guard's order, as the cause. A conjunct that was
+not asked, because a counter it computes with is out of range, prints under
+`conjunctsNotAsked` and gives no cause: the counter's own conjunct is the false one. The CLI's map from a
 conjunct to its cause is keyed by core's list of the conjuncts, so a conjunct the guard
 gains stops the build until it has a cause. When every conjunct holds at the read, the task
 changed between the call and the read, and the answer says that and names no cause. A test

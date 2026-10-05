@@ -925,28 +925,31 @@ const cancel: Handler = async (context) => {
 }
 
 /**
- * Revive a failed task. It is the store's `retryTask` and nothing else. When the port
- * answers null it wrote nothing, and why is read from the retry guard's own conjuncts,
- * each as a boolean, as the task stands after. A task that is live at that read is
- * reported with its live run and the command exits `done`: the task was read as failed
- * before the write, so the revival is this call's own, delivered twice, or another
- * caller's, and a task that was live before it is one a repeat finds already revived.
+ * Revive a failed task. It is the store's `retryTask` and nothing else. The one read the
+ * command makes is of the retry guard's own conjuncts (`taskAdmission`), before the call
+ * and after it. With --yes the port is always called: no read stops the call. When the
+ * port answers null it wrote nothing, and why is read from the conjuncts as the task
+ * stands after. A task that is live at that read is reported with its live run, and the
+ * command exits `done`. It says `revived` when the task was failed before the call: the
+ * revival is then this call's, delivered twice, or another caller's. It says
+ * `already-live` when the task was live before the call, which is a repeat that finds its
+ * revival made, or a task that never failed. The read cannot tell those two apart, and
+ * neither is revived.
  */
 const retry: Handler = async (context) => {
   const { invocation, store, reveal } = context
   const taskId = invocation.args.taskId ?? ''
   const queue = await readableQueue(context)
   if (typeof queue !== 'string') return { ...queue, view: { taskId, ...queue.view } }
-  const before = await store.operator.taskFacts(queue, taskId)
-  if (before === null) return noSuchTask(queue, taskId)
-  const wasFailed = before.task.state === 'failed'
+  const before = await store.operator.taskAdmission(queue, taskId)
+  const wasFailed = before?.state === 'failed'
   const named = {
     queue,
     taskId,
-    taskName: before.task.taskName,
-    stateBefore: stateView(before.task.state, reveal),
+    stateBefore: before === null ? null : stateView(before.state, reveal),
   }
   if (invocation.booleans.yes !== true) {
+    if (before === null) return noSuchTask(queue, taskId)
     return notConfirmed(
       named,
       wasFailed
@@ -972,7 +975,6 @@ const retry: Handler = async (context) => {
         outcome: wasFailed ? 'revived' : 'already-live',
         state: admission.state,
         runId: liveRun.runId,
-        attempt: liveRun.attempt,
       },
     }
   }
@@ -984,6 +986,7 @@ const retry: Handler = async (context) => {
       state: stateView(admission.state, reveal),
       causes: refusal.causes,
       conjunctsNotHeld: refusal.conjunctsNotHeld,
+      conjunctsNotAsked: refusal.conjunctsNotAsked,
       corrupt: admission.corrupt.map(corruptView),
       error: { kind: 'refused', cause: refusal.cause, message: refusal.message },
     },

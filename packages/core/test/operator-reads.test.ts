@@ -6,8 +6,8 @@ import {
   OPERATOR_LIST_CAP,
   OPERATOR_READ_METHODS,
   OPERATOR_READ_STRINGS,
-  type OperatorReadsDialect,
   OPERATOR_TABLE_ROWS_CAP,
+  type OperatorReadsDialect,
   PORT_STRING_RULES,
   QUEUE_TABLES,
   RETRY_CONJUNCTS,
@@ -1607,7 +1607,6 @@ describe('how the reads a drive verb asks decode a row', () => {
   const task: SqlRow = { state: 'failed', cancel_at_ms: null, sweepCancels: 0 }
   const admitted = (row: Partial<SqlRow> & { run_id: string }): SqlRow => ({
     state: 'pending',
-    attempt: 1,
     claim_gen: 0,
     available_at_ms: 1000,
     claim_expires_at_ms: null,
@@ -1682,13 +1681,32 @@ describe('how the reads a drive verb asks decode a row', () => {
     }
   })
 
-  it('says a claim takes a run when the predicate of either state holds, and lists the runs by ordinal and then by id', async () => {
+  it('reads a conjunct that was not asked as not asked, and refuses that answer of a conjunct asked of every row', async () => {
+    // The attempts are out of range, so the conjunct that subtracts them was not asked.
+    const notAsked = { ...guard('attemptsInRange'), chargeIsTheAttemptsOrOneMore: 2 }
+    const read = await readsAnswering(admission(notAsked, task)).reads.taskAdmission('q', 't')
+    expect(
+      [
+        read?.retry.attemptsInRange,
+        read?.retry.chargeIsTheAttemptsOrOneMore,
+        read?.retry.chargeWithinBudget,
+      ],
+      'mutation-verdict:behavior:operator-reads-read-a-conjunct-that-was-not-asked',
+    ).toEqual([false, 'not-asked', true])
+    // A conjunct asked of every row answers 1 or 0 and nothing else.
+    const refusing = readsAnswering(admission({ ...guard(), hasARun: 2 }, task)).reads
+    await expect(refusing.taskAdmission('q', 't')).rejects.toThrow(
+      'task-admission hasARun must be the integer 0 or 1',
+    )
+  })
+
+  it('says a claim takes a run when the predicate of either state holds, and lists the runs by id', async () => {
     const { reads } = readsAnswering(
       admission(guard(), task, [
-        admitted({ run_id: 'r-b', attempt: 2, state: 'sleeping', claimTakesSleeping: 1 }),
-        admitted({ run_id: 'r-c', attempt: 2, state: 'running', claim_gen: 3, sweepReclaims: 1 }),
-        admitted({ run_id: 'r-a', attempt: 1, claimTakesPending: 1 }),
-        admitted({ run_id: 'r-d', attempt: 3, claim_expires_at_ms: -4 }),
+        admitted({ run_id: 'r-b', state: 'sleeping', claimTakesSleeping: 1 }),
+        admitted({ run_id: 'r-c', state: 'running', claim_gen: 3, sweepReclaims: 1 }),
+        admitted({ run_id: 'r-a', claimTakesPending: 1 }),
+        admitted({ run_id: 'r-d', claim_expires_at_ms: -4 }),
       ]),
     )
     const read = await reads.taskAdmission('q', 't')

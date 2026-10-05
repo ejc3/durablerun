@@ -489,9 +489,10 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: true,
     repeat: 'settles',
-    // The task is read before the write. What the guard says of it is read only when the
-    // port answers null.
-    ports: [SCHEMA_VERSION, TASK_FACTS, RETRY_TASK, TASK_ADMISSION],
+    // What the guard says of the task is read before the write, and again when the port
+    // answers null. It is the command's one read: it selects none of the counters the guard
+    // holds to a range, so it answers for a counter no number holds.
+    ports: [SCHEMA_VERSION, TASK_ADMISSION, RETRY_TASK],
     exits: [...DRIVE_EXITS, 'not-found'],
     faults: DRIVE_FAULTS,
   },

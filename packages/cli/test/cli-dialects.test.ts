@@ -6,6 +6,7 @@ import {
 import { SCHEMA_VERSION_NOTES as MYSQL_NOTES } from '@durablerun/store-mysql'
 import { SCHEMA_VERSION_NOTES as POSTGRES_NOTES } from '@durablerun/store-postgres'
 import { describe, expect, it } from 'vitest'
+import { RETRY_COUNTER_EXTREMES } from '../../conformance/src/operator-admission.js'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import type { SchemaVersionNotes } from '../src/open-store.js'
@@ -324,6 +325,35 @@ describe('the CLI on every selected dialect', () => {
           )
         }
       })
+
+      it('retry names the counter of a failed task that is at the least or the greatest value its column holds', async () => {
+        const db = await openCliDb(dialect, 'retry-at-a-bound')
+        try {
+          const named: unknown[] = []
+          for (const extreme of RETRY_COUNTER_EXTREMES) {
+            const taskId = await extreme.build(db)
+            const run = await runCli(
+              ['retry', taskId, '--yes', ...writeFlags(db), '--json'],
+              db.env,
+            )
+            const answer = JSON.parse(run.stdout) as {
+              error?: { cause?: string }
+              conjunctsNotHeld?: string[]
+            }
+            named.push([extreme.what, run.exit, answer.error?.cause, answer.conjunctsNotHeld])
+          }
+          expect(named).toEqual(
+            RETRY_COUNTER_EXTREMES.map((extreme) => [
+              extreme.what,
+              exitCode('refused'),
+              'counter-out-of-range',
+              extreme.leavesFalse,
+            ]),
+          )
+        } finally {
+          await db.close()
+        }
+      }, 120_000)
 
       it('every store command exits 5 on a database a newer build migrated, and changes no table', async () => {
         const db = await openCliDb(dialect, 'newer')

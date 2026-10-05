@@ -10,7 +10,12 @@ import {
 import { type QueueTable, type StoreTables, treeBuilder } from '../store-tables.js'
 import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
 import { admittedRuns, dueCancelRows, rollbackSelections } from './reads.js'
-import { RETRY_CONJUNCTS, type RetryConjuncts } from './retry-task.js'
+import {
+  RETRY_CONJUNCTS,
+  type RetryConjunct,
+  type RetryConjuncts,
+  retryConjunctAskedUnder,
+} from './retry-task.js'
 
 /**
  * The reads of the operator's port (`OperatorReads`), each one SELECT of a batch that only
@@ -365,7 +370,31 @@ const flagOf = <Alias extends string>(predicate: SqlFragment, alias: Alias) =>
     .as(alias)
 
 /**
- * `task-admission`'s first read: every conjunct of the retry guard as a flag of its own,
+ * A conjunct of the retry guard as a value of a SELECT list. One asked of every row is a
+ * flag. One that computes with counters is asked only where those counters are in range,
+ * as the guard asks it (`retryAdmission`), and answers 2 where it was not asked.
+ */
+const askedFlagOf = (conjuncts: RetryConjuncts, name: RetryConjunct) => {
+  const under = retryConjunctAskedUnder(name)
+  if (under.length === 0) return flagOf(conjuncts[name], name)
+  return ofTheTask
+    .case()
+    .when(ofTheTask.and(under.map((counter) => rawSql<boolean>(conjuncts[counter], 'predicate'))))
+    .then(
+      ofTheTask
+        .case()
+        .when(rawSql<boolean>(conjuncts[name], 'predicate'))
+        .then(literalValue(1))
+        .else(literalValue(0))
+        .end(),
+    )
+    .else(literalValue(2))
+    .end()
+    .as(name)
+}
+
+/**
+ * `task-admission`'s first read: every conjunct of the retry guard as a value of its own,
  * over the one task of the queue. `failed` is the conjunct `reviveCas` holds itself, and
  * the rest are the store's, the predicates its admission is built from (`retryAdmission`).
  */
@@ -382,7 +411,7 @@ export const taskAdmissionRetryRead = defineStatement(
           .else(literalValue(0))
           .end()
           .as('failed'),
-        ...RETRY_CONJUNCTS.map((name) => flagOf(binds.conjuncts[name], name)),
+        ...RETRY_CONJUNCTS.map((name) => askedFlagOf(binds.conjuncts, name)),
       ])
       .where('task_id', '=', binds.taskId)
       .where('queue', '=', binds.queue),
@@ -409,7 +438,9 @@ export const taskAdmissionSweepRead = defineStatement(
  * takes it now and whether the sweep's scan of expired claims does, and with the state, the
  * generation and the instants those answers were read beside. Each flag is the predicate
  * the engine's own statement holds, over the run `r` and the task `t` that owns it. A run
- * whose task is not in its queue joins no task, and every flag of it is 0.
+ * whose task is not in its queue joins no task, and every flag of it is 0. The run's
+ * ordinal is not selected: the retry guard reads it, and a read that names why the guard
+ * refuses must answer for an ordinal no number holds.
  */
 export const taskAdmissionRunsRead = defineStatement(
   'task-admission runs',
@@ -424,14 +455,7 @@ export const taskAdmissionRunsRead = defineStatement(
     treeBuilder
       .selectFrom('runs as r')
       .leftJoin('tasks as t', (join) => join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')))
-      .select([
-        'r.run_id',
-        'r.state',
-        'r.attempt',
-        'r.claim_gen',
-        'r.available_at_ms',
-        'r.claim_expires_at_ms',
-      ])
+      .select(['r.run_id', 'r.state', 'r.claim_gen', 'r.available_at_ms', 'r.claim_expires_at_ms'])
       .select(() => [
         flagOf(binds.pendingRuns, 'claimTakesPending'),
         flagOf(binds.sleepingRuns, 'claimTakesSleeping'),

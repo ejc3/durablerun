@@ -654,7 +654,6 @@ describe('retry on libSQL', () => {
           exit: again.out.exit,
           outcome: again.out.answer.outcome,
           runId: again.out.answer.runId,
-          attempt: again.out.answer.attempt,
           unchanged: again.unchanged,
         },
         'mutation-verdict:behavior:cli-retry-reports-the-live-run-a-repeat-finds',
@@ -662,7 +661,6 @@ describe('retry on libSQL', () => {
         exit: 0,
         outcome: 'already-live',
         runId: revived.answer.runId,
-        attempt: 2,
         unchanged: true,
       })
       const absent = await drive(db, ['retry', 'no-such-task', '--yes', ...writeFlags(db)])

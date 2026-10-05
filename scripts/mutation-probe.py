@@ -16315,6 +16315,9 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "operator-reads-read-a-conjunct-that-was-not-asked": (
+        "replacement removes TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
     "cli-store-url-has-no-fallback": (
         "replacement adds TypeScript conditional, optional-chaining or default operators, not a SQL bind"
     ),
@@ -20389,8 +20392,8 @@ MUTATION_SPECS.extend(
         (
             "cli-retry-changes-nothing-without-yes",
             "packages/cli/src/main.ts",
-            "  if (invocation.booleans.yes !== true) {\n    return notConfirmed(\n      named,\n      wasFailed\n",
-            "  if (false) { // MUTATION: retry writes without --yes\n    return notConfirmed(\n      named,\n      wasFailed\n",
+            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noSuchTask(queue, taskId)\n    return notConfirmed(\n      named,\n      wasFailed\n",
+            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noSuchTask(queue, taskId)\n    return notConfirmed(\n      named,\n      wasFailed\n",
             "retry revives a failed task with no confirmation",
         ),
         (
@@ -20452,7 +20455,7 @@ MUTATION_SPECS.extend(
         (
             "cli-retry-names-the-conjunct-that-refuses",
             "packages/cli/src/drive.ts",
-            "  const conjunctsNotHeld = RETRY_GUARD.filter((name) => !admission.retry[name])\n",
+            "  const conjunctsNotHeld = RETRY_GUARD.filter((name) => admission.retry[name] === false)\n",
             "  const conjunctsNotHeld = RETRY_GUARD.filter(() => false) // MUTATION: the refusal is named without the read of the guard's conjuncts\n",
             "a refused revival names no cause: the operator is told the task changed between the call and the read, whatever refused it",
         ),
@@ -20641,9 +20644,9 @@ MUTATION_SPECS.extend(
         (
             "operator-reads-read-each-conjunct-as-its-own-flag",
             "packages/core/src/operator-reads.ts",
-            "  for (const name of RETRY_GUARD) retry[name] = flagOf(`task-admission ${name}`, guard[name])\n",
-            "  for (const name of RETRY_GUARD) retry[name] = flagOf(`task-admission ${name}`, guard.failed) // MUTATION: every conjunct is read from the first flag\n",
-            "every conjunct of the retry guard is answered with whether the task is failed, so a refused revival of a failed task names no cause",
+            "        : flagOf(what, guard[name])\n",
+            "        : flagOf(what, guard.failed) // MUTATION: every conjunct asked of every row is read from the first flag\n",
+            "every conjunct of the retry guard that is asked of every row is answered with whether the task is failed, so a refused revival of a failed task names no cause",
         ),
         (
             "operator-reads-a-claim-takes-a-run-of-either-state",
@@ -20662,7 +20665,7 @@ MUTATION_SPECS.extend(
         (
             "operator-admission-names-the-conjunct-that-refuses",
             "packages/core/src/statements/operator.ts",
-            "        ...RETRY_CONJUNCTS.map((name) => flagOf(binds.conjuncts[name], name)),\n",
+            "        ...RETRY_CONJUNCTS.map((name) => askedFlagOf(binds.conjuncts, name)),\n",
             "        ...RETRY_CONJUNCTS.map((name, index) => flagOf(binds.conjuncts[name], RETRY_CONJUNCTS[(index + 1) % RETRY_CONJUNCTS.length] as typeof name)), // MUTATION: each conjunct is answered under the next one's name\n",
             "each conjunct of the retry guard is answered under the name of the next, so a refused revival is named by a conjunct that holds",
         ),
@@ -20908,7 +20911,7 @@ VERDICTS.update(
         "operator-reads-a-claim-takes-a-run-of-either-state": ExpectedVerdict(
             "behavior",
             "packages/core/test/operator-reads.test.ts",
-            "how the reads a drive verb asks decode a row says a claim takes a run when the predicate of either state holds, and lists the runs by ordinal and then by id",
+            "how the reads a drive verb asks decode a row says a claim takes a run when the predicate of either state holds, and lists the runs by id",
             "mutation-verdict:behavior:operator-reads-a-claim-takes-a-run-of-either-state",
         ),
         "operator-admission-reads-every-conjunct-of-the-guard": ExpectedVerdict(
@@ -20968,6 +20971,58 @@ for _name in (
     "cli-retry-changes-nothing-without-yes",
 ):
     VERDICTS[_name] = VERDICTS["cli-emit-changes-nothing-without-yes"]
+
+# A charge of the retry guard is computed only where its counters are in range, by the guard and
+# by the operator's read of it alike, and the read says where it was not asked.
+MUTATION_SPECS.extend(
+    (
+        (
+            "operator-admission-asks-a-charge-only-where-its-counters-are-in-range",
+            "packages/core/src/statements/retry-task.ts",
+            "  chargeIsTheAttemptsOrOneMore: [\n    'attemptsInRange',\n    'infraRetriesInRange',\n    'everyRunOrdinalInRange',\n  ],\n",
+            "  chargeIsTheAttemptsOrOneMore: [], // MUTATION: the charge is compared with the attempts on every row\n",
+            "the guard and the read subtract the attempts from the charge on a row whose attempts are at the edge of their column, where the subtraction overflows: the read lists a second conjunct or fails, and the guard can fail where it refused",
+        ),
+        (
+            "operator-admission-asks-the-budget-charge-only-where-its-counters-are-in-range",
+            "packages/core/src/statements/retry-task.ts",
+            "  chargeWithinBudget: ['infraRetriesInRange', 'everyRunOrdinalInRange'],\n",
+            "  chargeWithinBudget: [], // MUTATION: the charge is compared with the budget on every row\n",
+            "the guard and the read compute the charge on a row whose infrastructure retries or top ordinal are at the edge of their column, where the subtraction overflows: the read lists a second conjunct or fails, and the guard can fail where it refused",
+        ),
+        (
+            "operator-reads-read-a-conjunct-that-was-not-asked",
+            "packages/core/src/operator-reads.ts",
+            "  return decoded.value === 2 ? 'not-asked' : decoded.value === 1\n",
+            "  return decoded.value >= 1 // MUTATION: a conjunct that was not asked reads as one that holds\n",
+            "a conjunct the read did not ask is answered as one that holds, so nothing says the charge of a task was never computed",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "operator-admission-asks-a-charge-only-where-its-counters-are-in-range": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] a counter at the least or the greatest value its column holds is read, and the revival is refused a failed task whose attempts is then set to the least 64-bit integer, fixture-built",
+            "mutation-verdict:behavior:operator-admission-asks-a-charge-only-where-its-counters-are-in-range",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-admission-asks-the-budget-charge-only-where-its-counters-are-in-range": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] a counter at the least or the greatest value its column holds is read, and the revival is refused a failed task whose infrastructure retries is then set to the least 64-bit integer, fixture-built",
+            "mutation-verdict:behavior:operator-admission-asks-a-charge-only-where-its-counters-are-in-range",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-reads-read-a-conjunct-that-was-not-asked": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how the reads a drive verb asks decode a row reads a conjunct that was not asked as not asked, and refuses that answer of a conjunct asked of every row",
+            "mutation-verdict:behavior:operator-reads-read-a-conjunct-that-was-not-asked",
+        ),
+    }
+)
 
 MUTATIONS = [
     Mutation(
@@ -24895,7 +24950,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1391:
+        if len(MUTATIONS) != 1394:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

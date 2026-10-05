@@ -399,12 +399,14 @@ jobs:
                   "mutation-verdict:behavior:cli-tick-sends-over-https-or-to-loopback-alone",
                   "mutation-verdict:behavior:operator-admission-agrees-with-the-finder-on-a-walk",
                   "mutation-verdict:behavior:operator-admission-agrees-with-the-guard-on-a-walk",
+                  "mutation-verdict:behavior:operator-admission-asks-a-charge-only-where-its-counters-are-in-range",
                   "mutation-verdict:behavior:operator-admission-flags-are-what-the-engine-does",
                   "mutation-verdict:behavior:operator-admission-names-the-conjunct-that-refuses",
                   "mutation-verdict:behavior:operator-admission-reads-every-conjunct-of-the-guard",
                   "mutation-verdict:behavior:operator-event-payload-is-what-the-first-emit-stored",
                   "mutation-verdict:behavior:operator-reads-a-claim-takes-a-run-of-either-state",
                   "mutation-verdict:behavior:operator-reads-answer-a-payload-only-as-text",
+                  "mutation-verdict:behavior:operator-reads-read-a-conjunct-that-was-not-asked",
                   "mutation-verdict:behavior:operator-reads-read-each-conjunct-as-its-own-flag",
               ))
               for name in (

@@ -47,17 +47,48 @@ export const RETRY_GUARD = ['failed', ...RETRY_CONJUNCTS] as const
 export type RetryGuardConjunct = (typeof RETRY_GUARD)[number]
 
 /**
+ * The conjuncts that compute with counters, each beside the conjuncts that hold those
+ * counters to their range. The computation is made only where they hold. On a row whose
+ * counter is at the edge of what its column stores, the subtraction overflows the column's
+ * type, which one dialect answers with an error and another with a value that is no
+ * integer. The guard and the operator's read of it are both built from this table, so
+ * neither computes where the other does not.
+ */
+export const RETRY_CONJUNCT_COMPUTES_WITH = {
+  chargeIsTheAttemptsOrOneMore: [
+    'attemptsInRange',
+    'infraRetriesInRange',
+    'everyRunOrdinalInRange',
+  ],
+  chargeWithinBudget: ['infraRetriesInRange', 'everyRunOrdinalInRange'],
+} as const satisfies Partial<Record<RetryConjunct, readonly RetryConjunct[]>>
+
+/** The conjuncts a computing conjunct is asked under, and none for a conjunct asked of every row. */
+export function retryConjunctAskedUnder(name: RetryConjunct): readonly RetryConjunct[] {
+  const table: Partial<Record<RetryConjunct, readonly RetryConjunct[]>> =
+    RETRY_CONJUNCT_COMPUTES_WITH
+  return table[name] ?? []
+}
+
+/**
  * The admission `reviveCas` takes: the store's conjuncts, every one of them, joined by AND
  * in the list's order. A store builds its admission here, so the guard cannot hold a
- * conjunct the list does not name, or leave one out.
+ * conjunct the list does not name, or leave one out. A conjunct that computes with
+ * counters is held inside a CASE on their ranges: a CASE computes a result only where its
+ * condition holds, which AND does not promise.
  */
 export function retryAdmission(conjuncts: RetryConjuncts): SqlFragment {
-  const held: string[] = []
-  for (const name of RETRY_CONJUNCTS) {
+  const written = (name: RetryConjunct): string => {
     const { sql, args } = conjuncts[name]
     if (args.length > 0) throw new TypeError(`the retry guard's ${name} carries a bind`)
-    held.push(sql)
+    return sql
   }
+  const held = RETRY_CONJUNCTS.map((name) => {
+    const under = retryConjunctAskedUnder(name)
+    if (under.length === 0) return written(name)
+    const inRange = under.map((counter) => `(${written(counter)})`).join(' AND ')
+    return `CASE WHEN ${inRange} THEN CASE WHEN ${written(name)} THEN 1 ELSE 0 END ELSE 0 END = 1`
+  })
   return sqlFragment(held.join('\n         AND '))
 }
 

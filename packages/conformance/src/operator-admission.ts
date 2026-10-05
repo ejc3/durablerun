@@ -79,7 +79,7 @@ const planted = (db: Planting, statements: { sql: string; args: (string | number
 
 /** The conjuncts of the guard that an answer says are false, in the guard's order. */
 const falseOf = (admission: TaskAdmission | null): RetryGuardConjunct[] =>
-  admission === null ? [] : RETRY_GUARD.filter((name) => !admission.retry[name])
+  admission === null ? [] : RETRY_GUARD.filter((name) => admission.retry[name] === false)
 
 /**
  * Plant a task that failed for good, then write to it what no engine path writes, and
@@ -457,11 +457,14 @@ export function operatorAdmissionConformance(
             const admission = await f.operatorReadsOver(f.raw).taskAdmission(Q, taskId)
             const before = await untouched(f.raw, taskId)
             const revived = await f.store.retryTask(Q, taskId)
-            expect({
-              false: falseOf(admission),
-              revived,
-              wroteNothing: isDeepStrictEqual(await untouched(f.raw, taskId), before),
-            }).toEqual({ false: extreme.leavesFalse, revived: null, wroteNothing: true })
+            expect(
+              {
+                false: falseOf(admission),
+                revived,
+                wroteNothing: isDeepStrictEqual(await untouched(f.raw, taskId), before),
+              },
+              'mutation-verdict:behavior:operator-admission-asks-a-charge-only-where-its-counters-are-in-range',
+            ).toEqual({ false: extreme.leavesFalse, revived: null, wroteNothing: true })
           }))
       }
     })
@@ -504,7 +507,6 @@ export function operatorAdmissionConformance(
         const run = (runId: string, over: Record<string, unknown>) => ({
           runId,
           state: 'pending',
-          attempt: 1,
           claimGen: 0,
           availableAtMs: START,
           claimExpiresAtMs: null,
@@ -592,7 +594,6 @@ export function operatorAdmissionConformance(
             {
               runId: task.runId,
               state: 'pending',
-              attempt: 1,
               claimGen: null,
               availableAtMs: START,
               claimExpiresAtMs: null,

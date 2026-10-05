@@ -373,7 +373,6 @@ export type StoredEventPayload =
 export interface RunAdmission {
   readonly runId: string
   readonly state: string
-  readonly attempt: number | null
   readonly claimGen: number | null
   readonly availableAtMs: number | null
   readonly claimExpiresAtMs: number | null
@@ -394,11 +393,16 @@ export interface RunAdmission {
 export interface TaskAdmission {
   readonly state: string
   readonly cancelAtMs: number | null
-  /** Each conjunct of the retry guard, true when it holds of the task. A revival is refused when any is false. */
-  readonly retry: Readonly<Record<RetryGuardConjunct, boolean>>
+  /**
+   * Each conjunct of the retry guard: true when it holds of the task, and false when it
+   * does not. A conjunct that computes with counters is asked only where those counters
+   * are in range. Where one is not, it is `not-asked`, and the counter's own conjunct is
+   * the false one. A revival is refused when any conjunct is false.
+   */
+  readonly retry: Readonly<Record<RetryGuardConjunct, boolean | 'not-asked'>>
   /** A sweep at that instant cancels the task: it is live and past its deadline, and the sweep's scan answers it. */
   readonly sweepCancels: boolean
-  /** Every run that names the task, by its ordinal and then by its id. */
+  /** Every run that names the task, by its id. */
   readonly runs: readonly RunAdmission[]
   readonly corrupt: readonly CorruptInteger[]
 }
