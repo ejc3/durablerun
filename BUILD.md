@@ -687,14 +687,18 @@ accepts it.
     is the `retention` surface, the fourteenth behind the one enrollment door,
     which line 42 extends. A label is not a path, so the stamp cases are
     generated from the shapes `corpus/labels.json` declares for the labels of
-    `TERMINAL_BATCH_LABELS`, nine shapes today, and "ends a task through every
+    `TERMINAL_BATCH_LABELS`, nine shapes when this line was met and ten since PR5.3d gave
+    `cancel-task` a second, and "ends a task through every
     shape a terminal label compiles to" fails by name when a shape has no case.
     On each dialect, "<label>/<shape>, <path>: the batch stamps the task it ends
-    with the ending instant" runs eleven paths: a completion; a failure no retry
+    with the ending instant" ran eleven paths when this line was met, and runs thirteen
+    since PR5.3d: a completion; a failure no retry
     follows, outside the rolling-back phase and inside it; a failure whose retry
     the attempt cap refuses; a failed rollback no retry follows, and one whose
     retry cannot be placed; a cancellation of a task no worker has claimed and
-    of one a worker is running; and the three sweeps. The task is made ready at
+    of one a worker is running; a cancellation asked to spare a saga, of a task no
+    worker has claimed and of one whose registered step started and whose saga has
+    not begun; and the three sweeps. The task is made ready at
     one instant and ended at least 2.5 seconds later. The batch sent must be of
     the shape, the ended row must name the statement the path names, and the
     row's stamp and the completion event's instant must both read the ending
@@ -6745,6 +6749,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that holds them and let core's decoder refuse the value. Trigger: the first report of
     exit 6 from a database that answers, or the next change to how the libSQL executor
     reads integers.
+  - Option for a number a double cannot hold in a hosted route's JSON, not built, with its
+    trigger: `enqueue` and `emit` of the CLI refuse a document that holds a number which is
+    not finite once it is read, or an integer a double cannot hold. The hosted routes parse
+    and write a document with the same two functions and refuse neither, so a task
+    enqueued over HTTP with `1e400` in its parameters holds `null` there. The check would
+    move into the function that parses a task's JSON, for every caller. Trigger: the first
+    report of a value a hosted enqueue rewrote, or the next change to that function.
 - **PR5.2c1 the terminal stamp and the retention row checks**: DONE (#116). Exit test line
   41 of the operable alpha milestone. No statement, no batch and no schema version is added,
   no released declaration changes, and core, the stores, the SDK and the CLI are unchanged
