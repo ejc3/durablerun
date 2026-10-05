@@ -241,7 +241,9 @@ jobs:
         # and so does a tree that leaves the file as the base has it. A tree that
         # changes the file to anything but the pinned head file is refused, so a later
         # edit to that file must re-pin it in the same reviewed change. A row is dead
-        # once its pull request is the base, and is deleted then. No row is live.
+        # once its pull request is the base, and is deleted then. One row is live: the
+        # released-surface snapshot, two entries of whose changed table this pull request
+        # rewrites.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -249,6 +251,12 @@ jobs:
           from pathlib import Path
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
+              (
+                  'scripts/published-surface-v0.1.0-alpha.1.json',
+                  '0d45318203826fa3ef5c7e9dd3fc3d061b359dad2413ef43cb7a62b97902bc9d',
+                  'dad0f5ca4450cf395c5c161d9626c2a85d43afb577eee573b952beb3cdbfeb4f',
+                  'SchedulerStore and LibsqlSchedulerStore are recorded with the optional argument cancelTask gains',
+              ),
           )
           def sha(data):
               return hashlib.sha256(data).hexdigest()
