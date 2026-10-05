@@ -241,7 +241,8 @@ accepts it.
     and `sizes` (`table-rows`), each from the current version and each after
     the read of the schema version that every read sends. PR5.3d adds the five drive
     verbs, each from the current version over seeded tasks: `enqueue` under a key no task
-    has, `emit` of an event a run awaits, `cancel` of a pending task, `retry` of a failed
+    has and under a key a task holds, which makes it read the task it found, `emit` of an
+    event a run awaits, `cancel` of a pending task, `retry` of a failed
     task and of a live one, which makes it read the guard, and `sweep` of a queue with a
     deadline passed, a launch lost and a lease lapsed. A drive verb mints ids and its
     repeat is another process, so the repeat's ids go on from where the first run's stopped
@@ -571,8 +572,8 @@ accepts it.
     calls with the same seeded ids, and after each step the two dumps are equal and the
     command's answer is the port's. "leaves the dump its port call leaves on a twin the
     same walk built, after every command" does the same on libSQL over ten walks of 100
-    steps, with floors under the 241 commands it ran (9 revivals, 61 cancellations, 12
-    transitions swept, 10 spawns and 22 emits). The version gate is data: "every drive verb
+    steps, with floors under the 241 commands it ran (9 revivals, 60 cancellations, one saga
+    spared, 12 transitions swept, 10 spawns and 22 emits). The version gate is data: "every drive verb
     leaves the dump its port call leaves on a twin, at every version from 5 to the build's"
     runs each verb's twin at each version of the libSQL window. Every verb passes at every
     version, so all five are allowed from version 5, and the list of the verbs is the list
@@ -592,7 +593,12 @@ accepts it.
     `cli-retry-names-the-conjunct-that-refuses` drops the naming read and fails the retry
     cases, `cli-emit-changes-nothing-without-yes`, `cli-cancel-changes-nothing-without-yes`
     and `cli-retry-changes-nothing-without-yes` fail the dump control, and
-    `cli-a-drive-verb-names-its-store` fails the target case.
+    `cli-a-drive-verb-names-its-store` fails the target case. The fold of the review moved
+    the `--halt-rollback` refusal into the store's own statement: without the flag `cancel`
+    passes `unlessSagaBegan` to `cancelTask`, and "leaves a task uncancelled when its saga
+    begins between the read and the write, and prints the rollback facts" holds a saga that
+    begins after the command's read. The twin of `cancel` runs both shapes of the call, and
+    each step of each twin also holds that the command sent a batch of its port call.
 39. PR5.3d: the operator drill. A script holding only `runCli(argv, env)`, a
     store URL and a loopback hosted-router URL finds each planted cause without
     being handed a task id, and `explain` names the cause the builder wrote down
@@ -610,7 +616,8 @@ accepts it.
     `packages/cli/test/drill.test.ts` runs the drill on each dialect, in "finds each
     planted cause without a task id, clears what is stuck by the command explain suggests,
     and cancels what waits on nothing". The script holds a function that runs one command
-    line, and the store's URL. It asks `stuck --older-than 2m`, asks `explain` about each
+    line, and the store's URL. It learns which commands take `--yes` from `help --json`. It
+    asks `stuck --older-than 2m`, asks `explain` about each
     task listed, runs what `explain` suggests for a verdict of `stuck`, and cancels the two
     that wait on nothing. One `sweep` clears the lapsed lease and the overdue cancellation,
     one `tick --url` against the router completes the due run, and the two cancels end the
@@ -6332,7 +6339,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     member. PR5.3c adds to what is written three times: the `owed`, `overdue` and
     `counted` wiring of those files, and in each store's `store.ts` the fragments
     `dueRuns`, `claimOwed`, `LEASES_LAPSED`, `DEADLINES_PASSED` and `countedRuns` with the
-    constants made from them. The text is the same in the three, but for
+    constants made from them. PR5.3d adds, in each store's `store.ts`, the record of the
+    retry guard's conjuncts and what it is built from: `RETRY_ADMITS`, `topOrdinal`,
+    `noLiveRunOf` and `RETRY_CHARGED`, with their comment. The text is the same in the three, but for
     `DEADLINES_PASSED`, which is one fragment on libSQL and PostgreSQL and one to a live
     state on MySQL. The registered mutations of those fragments aim at the libSQL copy only,
     so a change to PostgreSQL's or MySQL's copy is held by the conformance cases on that
@@ -6649,16 +6658,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   --url`, one bounded pass of a hosted deployment over HTTP. `OperatorReads` gains
   `eventPayload` and `taskAdmission`, in the batches `event-payload` and `task-admission`,
   both read-only. `explain` gains three causes and fills the commands it suggests. No
-  schema version is added and no released declaration changes. One engine statement
+  schema version is added. Two declarations the release alpha.1 published change, by one
+  optional argument: `cancelTask` of core's `SchedulerStore` and of `LibsqlSchedulerStore`
+  takes `CancelOptions`, which the fold of the review added and the published-surface file
+  records with its reason. One engine statement
   changes its text and nothing else: each store's retry guard is now built by core from a
   record of the guard's conjuncts, so the corpus of `retry-task` differs by the one
   separator between two conjuncts. DESIGN.md section 3.11 holds each verb, the write
   window, `--yes`, `--target`, `--halt-rollback`, the retry causes, `tick` and the exit
-  table. The registry holds 1391 mutations where main held 1344: twenty-one for what the
-  five verbs require, send and answer, eight for `tick`, three for the drill, six for
-  `explain`, three for how core decodes the two reads, and six for what the reads answer
-  on libSQL against the engine. The base gate's arm is keyed on main's digest and exempts
-  their forty-one markers. It re-aims nine entries of main's registry, whose lines moved
+  table. The registry holds 1406 mutations where main held 1344: twenty-eight for what the
+  five verbs require, send and answer, eleven for `tick`, three for the drill, seven for
+  `explain`, four for how core decodes the two reads, eight for what the reads answer on
+  libSQL against the engine, and one for the store's cancel that spares a saga. The base
+  gate's arm is keyed on main's digest and exempts their fifty-five markers. It re-aims nine entries of main's registry, whose lines moved
   out of the libSQL store's `retryTask` into the record of the guard's conjuncts.
   - Where the build differs from the plan, and why. (1) The version gate has no list of
     its own. Every verb's twin passes at every version of the libSQL window, 5 to 11, so
@@ -6673,7 +6685,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     is still a write. It changes no payload and wakes nothing, and the engine stamps the
     event's row, so the answer says `already-emitted` and the twin holds the stamp.
     (4) `explain` asks the engine's predicates before it calls the driver late, in a
-    second snapshot, and reads a row that moved between the two as it stood. (5) The
+    second snapshot, and reads a row that moved between the two as it stood. When an
+    instant the predicates depend on passed between the two, it reads the facts again. (5) The
     never-started run of the drill is parked 130 seconds before the script runs, to wake
     15 to 24 seconds later, as a live driver would leave it. Its wake is then past by less
     than the grace of 120 seconds, so no owed move lists it and only its age finds it. A run parked longer ago than the grace is in the leg of runs past their
@@ -6683,7 +6696,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     without blocking, because the listener it calls is in the test's own process.
     (8) `retry` of a task that is live at the read after a null answer exits 0, as
     `revived` when the task was failed before the write and as `already-live` when it was
-    not. (9) `enqueue` hides a port refusal that quotes the key unless `--reveal` is given.
+    not. (9) `enqueue` prints a port's refusal only when it is of the queue or of the task name,
+    and hides any other unless `--reveal` is given, because it may quote the key.
   - What each suggestion `explain` withheld now prints. `cancellation-deadline-passed` and
     `lease-lapsed-unswept`, once `stuck`, print `sweep --queue=<queue> --target=<target>`,
     where the target is the one of the store `explain` opened. `woken-unclaimed`,
@@ -6702,6 +6716,35 @@ these three things; nothing else in the system does I/O, time, or randomness.
     replaces three reads whose plans PR5.3c pinned, which is a pull request of its own.
     Trigger now: the first wrong answer the inference gives, or the next pull request that
     changes `stuck-runs`.
+  - The fold of the one review (`postmortems/pr5.3d-drive-verbs-review.md`). It found 20
+    things, none HIGH, two MEDIUM and 18 LOW, and 18 count. `cancel` decided its
+    `--halt-rollback` refusal from a read made before the write. The store decides it now:
+    `cancelTask` takes `CancelOptions`, and with `unlessSagaBegan` the cancel
+    compare-and-set carries the saga conjunct on three stores, under the label
+    `cancel-task`, whose second variant the corpus holds. With `--yes` the command always
+    calls the port, and names a saga the store spared from the read after. The read of the
+    retry guard asks a conjunct that computes only where its counters are in range, on
+    three stores, with the least and the greatest 64-bit value of four counters planted on
+    each. `tick` refuses a wait a timer cannot hold, reads its answer under a cap of 4 MiB
+    as it arrives, and exits 6 for an answer that says try later. `explain` reads the facts
+    again when an instant passes between its two reads, from the database time
+    `taskAdmission` now answers. `enqueue` says what a repeat found, refuses a number a
+    double cannot hold and an empty task name, and prints a refusal's words only when it
+    is of the queue or of the task name. The drill learns `--yes` from `help --json`.
+    One thing differs from what the review asked. It listed the router's own 500 among
+    the answers of `tick` that should exit 6. Section 3.5 of DESIGN.md defines a hosted
+    route's 500 with the code `internal_error` as its answer to a failure no retry cures,
+    so that answer stays at exit 7 and every other 5xx exits 6. The libSQL plan reader's
+    measured surface counts one more write without its WHERE, 80, for the new variant.
+  - Option for a stored integer past what a JavaScript number holds, on libSQL, not built,
+    with its trigger: the libSQL client refuses to hand such an integer over, so a read
+    that selects one fails as a store outage. `inspect`, `explain` and the read `cancel`
+    makes then exit 6, where PostgreSQL and MySQL list the value as corrupt and exit 10.
+    No engine path writes such a value, main behaves the same, and the read of the retry
+    guard selects no such column. The read would ask the client for integers in a form
+    that holds them and let core's decoder refuse the value. Trigger: the first report of
+    exit 6 from a database that answers, or the next change to how the libSQL executor
+    reads integers.
 - **PR5.2c1 the terminal stamp and the retention row checks**: DONE (#116). Exit test line
   41 of the operable alpha milestone. No statement, no batch and no schema version is added,
   no released declaration changes, and core, the stores, the SDK and the CLI are unchanged
