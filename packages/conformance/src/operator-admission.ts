@@ -318,11 +318,7 @@ export const RETRY_COUNTER_EXTREMES: readonly RetryRefusalState[] = (
   (Object.keys(INT64) as (keyof typeof INT64)[]).map((end) => ({
     what: `a failed task whose ${counter} is then set to the ${end} 64-bit integer, fixture-built`,
     leavesFalse: COUNTERS[counter].leavesFalse[end],
-    build: async (db: Planting) => {
-      const task = await failedTask(db)
-      await planted(db, [COUNTERS[counter].plant(task, INT64[end])])
-      return task.taskId
-    },
+    build: failedThen((task) => [COUNTERS[counter].plant(task, INT64[end])]),
   })),
 )
 

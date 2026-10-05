@@ -1304,22 +1304,29 @@ describe('explain while the clock moves between its two reads', () => {
   })
 
   it('tells an instant that passed between the reads from a row that moved, and takes the guards only when neither happened', () => {
-    // A sleeping run that wakes in 20 ms, under a lease field of 30 ms and a deadline of 10.
-    const facts = factsOf(
-      { state: 'sleeping', availableAtMs: NOW_MS + 20, claimExpiresAtMs: NOW_MS + 30 },
-      { task: { cancelAtMs: NOW_MS + 10 } },
-    )
+    // A sleeping run that wakes in 20 ms, under a lease field of 30 ms and a deadline of 10,
+    // with what a state clears or changes.
+    const factsWith = (
+      task: Partial<TaskFacts['task']> = {},
+      run: Partial<TaskFacts['runs'][number]> = {},
+    ) =>
+      factsOf(
+        { state: 'sleeping', availableAtMs: NOW_MS + 20, claimExpiresAtMs: NOW_MS + 30, ...run },
+        { task: { cancelAtMs: NOW_MS + 10, ...task } },
+      )
+    // What the guards answer beside the same rows, read at `nowMs`, with what a state moves.
     const guards = (
+      given: TaskFacts,
       nowMs: number | null,
       task: Partial<TaskAdmission> = {},
       run: Partial<TaskAdmission['runs'][number]> = {},
     ): TaskAdmission => ({
       nowMs,
-      state: facts.task.state,
-      cancelAtMs: facts.task.cancelAtMs,
+      state: given.task.state,
+      cancelAtMs: given.task.cancelAtMs,
       retry: {} as TaskAdmission['retry'],
       sweepCancels: false,
-      runs: facts.runs.map((one) => ({
+      runs: given.runs.map((one) => ({
         runId: one.runId,
         state: one.state,
         claimGen: one.claimGen,
@@ -1333,44 +1340,28 @@ describe('explain while the clock moves between its two reads', () => {
       ...task,
     })
     const taken = { claimTakes: false, sweepReclaims: false, sweepCancels: false }
-    const without = (
-      cleared: Partial<TaskFacts['task']>,
-      run: Partial<TaskFacts['runs'][number]>,
-    ) =>
-      factsOf(
-        { state: 'sleeping', availableAtMs: NOW_MS + 20, claimExpiresAtMs: NOW_MS + 30, ...run },
-        { task: { cancelAtMs: NOW_MS + 10, ...cleared } },
-      )
-    const onlyTheWake = without({ cancelAtMs: null }, { claimExpiresAtMs: null })
-    const onlyTheLease = without({ cancelAtMs: null }, { availableAtMs: null })
-    const of = (given: TaskFacts, nowMs: number | null) =>
-      admissionOf(given, {
-        ...guards(nowMs),
-        cancelAtMs: given.task.cancelAtMs,
-        runs: guards(nowMs).runs.map((one) => ({
-          ...one,
-          availableAtMs: given.runs[0]?.availableAtMs ?? null,
-          claimExpiresAtMs: given.runs[0]?.claimExpiresAtMs ?? null,
-        })),
-      })
+    const facts = factsWith()
+    const onlyTheWake = factsWith({ cancelAtMs: null }, { claimExpiresAtMs: null })
+    const onlyTheLease = factsWith({ cancelAtMs: null }, { availableAtMs: null })
+    const at = (given: TaskFacts, nowMs: number | null) => admissionOf(given, guards(given, nowMs))
     expect({
       // Read at one instant, and a moment later with every instant still ahead.
-      atOnce: admissionOf(facts, guards(NOW_MS)),
-      before: admissionOf(facts, guards(NOW_MS + 9)),
+      atOnce: at(facts, NOW_MS),
+      before: at(facts, NOW_MS + 9),
       // The deadline is passed at its own millisecond, as the engine holds it.
-      atTheDeadline: admissionOf(facts, guards(NOW_MS + 10)),
-      afterTheDeadline: admissionOf(facts, guards(NOW_MS + 11)),
+      atTheDeadline: at(facts, NOW_MS + 10),
+      afterTheDeadline: at(facts, NOW_MS + 11),
       // A wake and the end of a lease are instants the guards read too.
-      beforeTheWake: of(onlyTheWake, NOW_MS + 19),
-      atTheWake: of(onlyTheWake, NOW_MS + 20),
-      beforeTheLeaseEnds: of(onlyTheLease, NOW_MS + 29),
-      whenTheLeaseEnds: of(onlyTheLease, NOW_MS + 30),
+      beforeTheWake: at(onlyTheWake, NOW_MS + 19),
+      atTheWake: at(onlyTheWake, NOW_MS + 20),
+      beforeTheLeaseEnds: at(onlyTheLease, NOW_MS + 29),
+      whenTheLeaseEnds: at(onlyTheLease, NOW_MS + 30),
       // A row that differs is a row that moved, whatever the clock did.
-      rowMoved: admissionOf(facts, guards(NOW_MS + 11, { state: 'cancelled' })),
-      generationMoved: admissionOf(facts, guards(NOW_MS, {}, { claimGen: 2 })),
+      rowMoved: admissionOf(facts, guards(facts, NOW_MS + 11, { state: 'cancelled' })),
+      generationMoved: admissionOf(facts, guards(facts, NOW_MS, {}, { claimGen: 2 })),
       gone: admissionOf(facts, null),
       // With no database time to compare, the rows alone decide, as they did.
-      noClock: admissionOf(facts, guards(null)),
+      noClock: at(facts, null),
     }).toEqual({
       atOnce: taken,
       before: taken,

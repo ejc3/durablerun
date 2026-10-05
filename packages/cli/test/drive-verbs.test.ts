@@ -806,38 +806,42 @@ describe('cancel on libSQL', () => {
 
   it('leaves a task uncancelled when its saga begins between the read and the write, and prints the rollback facts', () =>
     onDb('drive-cancel-saga-begins', async (db) => {
-      const { taskId, forward, fail } = await sagaStepStarted(db)
       // The store as the command opens it, but for one thing: once the command has read the
       // task, and before it writes, the task's worker fails it, and the saga begins.
-      let began = false
-      const sagaBeginsAfterTheRead: StoreOpener = async (url, token, ids, options) => {
-        const opened = await openStore(url, token, ids, options)
-        return {
-          ...opened,
-          operator: {
-            ...opened.operator,
-            taskFacts: async (queue, id) => {
-              const facts = await opened.operator.taskFacts(queue, id)
-              if (!began) {
-                began = true
-                await fail()
-              }
-              return facts
+      const beginsAfterTheRead = (fail: () => Promise<void>) => {
+        let began = false
+        const opener: StoreOpener = async (url, token, ids, options) => {
+          const opened = await openStore(url, token, ids, options)
+          return {
+            ...opened,
+            operator: {
+              ...opened.operator,
+              taskFacts: async (queue, id) => {
+                const facts = await opened.operator.taskFacts(queue, id)
+                if (!began) {
+                  began = true
+                  await fail()
+                }
+                return facts
+              },
             },
-          },
+          }
         }
+        return { opener, began: () => began }
       }
+      const { taskId, forward, fail } = await sagaStepStarted(db)
+      const spared = beginsAfterTheRead(fail)
       const run = await runCli(
         ['cancel', taskId, '--yes', ...writeFlags(db), '--json'],
         db.env,
-        sagaBeginsAfterTheRead,
+        spared.opener,
         testIdSource('saga-begins'),
       )
       const answer = JSON.parse(run.stdout) as JsonAnswer
       const after = await drive(db, ['inspect', taskId, '--queue', QUEUE])
       expect(
         {
-          began,
+          began: spared.began(),
           exit: run.exit,
           kind: answer.error?.kind,
           namesTheFlag: answer.error?.message?.includes('--halt-rollback'),
@@ -875,28 +879,10 @@ describe('cancel on libSQL', () => {
       expect(await db.store.cancelTask(QUEUE, taskId)).toBe(true)
       // With the flag the same interleaving cancels the task: the operator said to halt it.
       const told = await sagaStepStarted(db)
-      began = false
-      const haltedAnyway: StoreOpener = async (url, token, ids, options) => {
-        const opened = await openStore(url, token, ids, options)
-        return {
-          ...opened,
-          operator: {
-            ...opened.operator,
-            taskFacts: async (queue, id) => {
-              const facts = await opened.operator.taskFacts(queue, id)
-              if (!began) {
-                began = true
-                await told.fail()
-              }
-              return facts
-            },
-          },
-        }
-      }
       const halted = await runCli(
         ['cancel', told.taskId, '--yes', '--halt-rollback', ...writeFlags(db), '--json'],
         db.env,
-        haltedAnyway,
+        beginsAfterTheRead(told.fail).opener,
         testIdSource('saga-halted'),
       )
       expect([halted.exit, (JSON.parse(halted.stdout) as JsonAnswer).outcome]).toEqual([

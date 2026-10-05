@@ -20455,7 +20455,7 @@ MUTATION_SPECS.extend(
         (
             "cancel-spares-a-saga-that-began",
             "packages/store-libsql/src/store.ts",
-            "        sagaNotBegun: unlessSagaBegan ? sqlFragment(`NOT ${sagaBegan('tasks')}`) : null,\n",
+            "        sagaNotBegun: unlessSagaBegan ? RETRY_ADMITS.sagaNotBegun : null,\n",
             "        sagaNotBegun: unlessSagaBegan ? sqlFragment('1 = 1') : null, // MUTATION: the conjunct asks nothing\n",
             "a cancellation asked to spare a saga cancels a task that is rolling back, and halts its saga",
         ),

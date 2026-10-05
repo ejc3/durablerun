@@ -12,9 +12,9 @@ import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
 import { admittedRuns, dueCancelRows, rollbackSelections } from './reads.js'
 import {
   RETRY_CONJUNCTS,
+  RETRY_CONJUNCT_COMPUTES_WITH,
   type RetryConjunct,
   type RetryConjuncts,
-  retryConjunctAskedUnder,
 } from './retry-task.js'
 
 /**
@@ -375,7 +375,7 @@ const flagOf = <Alias extends string>(predicate: SqlFragment, alias: Alias) =>
  * as the guard asks it (`retryAdmission`), and answers 2 where it was not asked.
  */
 const askedFlagOf = (conjuncts: RetryConjuncts, name: RetryConjunct) => {
-  const under = retryConjunctAskedUnder(name)
+  const under = RETRY_CONJUNCT_COMPUTES_WITH[name] ?? []
   if (under.length === 0) return flagOf(conjuncts[name], name)
   return ofTheTask
     .case()

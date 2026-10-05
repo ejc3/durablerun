@@ -54,20 +54,15 @@ export type RetryGuardConjunct = (typeof RETRY_GUARD)[number]
  * integer. The guard and the operator's read of it are both built from this table, so
  * neither computes where the other does not.
  */
-export const RETRY_CONJUNCT_COMPUTES_WITH = {
+export const RETRY_CONJUNCT_COMPUTES_WITH: Partial<
+  Record<RetryGuardConjunct, readonly RetryConjunct[]>
+> = {
   chargeIsTheAttemptsOrOneMore: [
     'attemptsInRange',
     'infraRetriesInRange',
     'everyRunOrdinalInRange',
   ],
   chargeWithinBudget: ['infraRetriesInRange', 'everyRunOrdinalInRange'],
-} as const satisfies Partial<Record<RetryConjunct, readonly RetryConjunct[]>>
-
-/** The conjuncts a computing conjunct is asked under, and none for a conjunct asked of every row. */
-export function retryConjunctAskedUnder(name: RetryConjunct): readonly RetryConjunct[] {
-  const table: Partial<Record<RetryConjunct, readonly RetryConjunct[]>> =
-    RETRY_CONJUNCT_COMPUTES_WITH
-  return table[name] ?? []
 }
 
 /**
@@ -84,7 +79,7 @@ export function retryAdmission(conjuncts: RetryConjuncts): SqlFragment {
     return sql
   }
   const held = RETRY_CONJUNCTS.map((name) => {
-    const under = retryConjunctAskedUnder(name)
+    const under = RETRY_CONJUNCT_COMPUTES_WITH[name] ?? []
     if (under.length === 0) return written(name)
     const inRange = under.map((counter) => `(${written(counter)})`).join(' AND ')
     return `CASE WHEN ${inRange} THEN CASE WHEN ${written(name)} THEN 1 ELSE 0 END ELSE 0 END = 1`

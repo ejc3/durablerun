@@ -7,6 +7,7 @@ import {
   PermanentStoreError,
   SchemaMismatchError,
   SchemaNotInitializedError,
+  type SpawnResult,
   StoreUnavailableError,
   type TaskFacts,
   isLiveState,
@@ -781,7 +782,7 @@ const enqueue: Handler = async (context) => {
     idempotencyKey: userValue(key, reveal),
     params: userValue(params.json, reveal),
   }
-  let found: Awaited<ReturnType<typeof store.scheduler.spawn>>
+  let found: SpawnResult
   try {
     const spawned = await store.scheduler.spawn(queue, taskName, params.json, {
       idempotencyKey: key,

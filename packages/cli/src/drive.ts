@@ -18,41 +18,30 @@ import { stateView } from './inspect.js'
  * port does, and these functions read what it left.
  */
 
-/** A JSON number, as the grammar writes one. Sticky, so it is matched where a scan stands. */
-const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y
+/**
+ * A JSON string or a JSON number, as the grammar writes each. A string is matched so that
+ * the digits inside one are not read as a number.
+ */
+const JSON_STRING_OR_NUMBER =
+  /"(?:[^"\\]|\\.)*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/g
 
 /**
  * Why a JSON text cannot be stored as it was written, or null when it can. Reading a number
  * makes it a double. One that is past what a double holds is read as no finite number and
  * would be written as `null`, and an integer with more digits than a double keeps would be
  * written as another integer. Either is a document other than the one the caller passed.
- * The text is one JSON value already, so a digit outside a string starts a number.
+ * The text is one JSON value already, so every digit outside a string is part of a number.
  */
 function numberNotHeld(text: string): string | null {
-  let at = 0
-  while (at < text.length) {
-    const char = text.charAt(at)
-    if (char === '"') {
-      // To the quote that closes the string, past each escaped character.
-      at += 1
-      while (at < text.length && text.charAt(at) !== '"') at += text.charAt(at) === '\\' ? 2 : 1
-      at += 1
-      continue
-    }
-    JSON_NUMBER.lastIndex = at
-    const literal = (char === '-' || (char >= '0' && char <= '9')) && JSON_NUMBER.exec(text)?.[0]
-    if (typeof literal !== 'string') {
-      at += 1
-      continue
-    }
-    const read = Number(literal)
+  for (const [token] of text.matchAll(JSON_STRING_OR_NUMBER)) {
+    if (token.startsWith('"')) continue
+    const read = Number(token)
     if (!Number.isFinite(read)) {
       return 'holds a number that is not finite once it is read, as 1e400 is, so it would be stored as null'
     }
-    if (/^-?[0-9]+$/.test(literal) && BigInt(literal) !== BigInt(read)) {
+    if (/^-?[0-9]+$/.test(token) && BigInt(token) !== BigInt(read)) {
       return 'holds an integer a double cannot hold, as 12345678901234567890 is, so it would be stored as another number: pass it as a string'
     }
-    at += literal.length
   }
   return null
 }
@@ -72,7 +61,7 @@ export function jsonArgument(
   try {
     // The label is for a message this function never lets out: its refusal says nothing of the text.
     const value = text === undefined ? null : parseTaskValueJson(text)
-    const notHeld = text === undefined ? null : numberNotHeld(text)
+    const notHeld = numberNotHeld(text ?? 'null')
     if (notHeld !== null) return { refused: `${notHeld}. What it was given is not printed` }
     return { json: serializeTaskValue('a JSON argument', value) }
   } catch {

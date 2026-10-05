@@ -1577,7 +1577,7 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
         queue,
         taskId,
         admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),
-        sagaNotBegun: unlessSagaBegan ? sqlFragment(`NOT ${sagaBegan('tasks')}`) : null,
+        sagaNotBegun: unlessSagaBegan ? RETRY_ADMITS.sagaNotBegun : null,
       }),
     )
     b.derived('runs', {

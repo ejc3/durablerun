@@ -35,10 +35,10 @@ import {
   taskIdByKeyRead,
 } from './statements/operator.js'
 import {
+  RETRY_CONJUNCT_COMPUTES_WITH,
   RETRY_GUARD,
   type RetryConjuncts,
   type RetryGuardConjunct,
-  retryConjunctAskedUnder,
 } from './statements/retry-task.js'
 import { QUEUE_TABLES, type QueueTable, STORE_TABLE_COLUMNS } from './store-tables.js'
 import { decodeTaskResult } from './task-result.js'
@@ -1170,7 +1170,7 @@ async function taskAdmission(
   for (const name of RETRY_GUARD) {
     const what = `task-admission ${name}`
     retry[name] =
-      name !== 'failed' && retryConjunctAskedUnder(name).length > 0
+      RETRY_CONJUNCT_COMPUTES_WITH[name] !== undefined
         ? askedFlag(what, guard[name])
         : flagOf(what, guard[name])
   }
