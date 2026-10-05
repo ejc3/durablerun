@@ -20392,8 +20392,8 @@ MUTATION_SPECS.extend(
         (
             "cli-retry-changes-nothing-without-yes",
             "packages/cli/src/main.ts",
-            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noSuchTask(queue, taskId)\n    return notConfirmed(\n      named,\n      wasFailed\n",
-            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noSuchTask(queue, taskId)\n    return notConfirmed(\n      named,\n      wasFailed\n",
+            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noSuchTask(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
+            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noSuchTask(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
             "retry revives a failed task with no confirmation",
         ),
         (
@@ -21223,6 +21223,13 @@ MUTATION_SPECS.extend(
             "    const said = namedAt(before) // MUTATION: a cancellation prints the saga as the read before the call found it\n",
             "cancel --halt-rollback of a task whose saga began beside the command halts the rollback and prints sagaBegan false, so the operator cannot see that a rollback was halted",
         ),
+        (
+            "cli-retry-says-what-yes-would-do",
+            "packages/cli/src/drive.ts",
+            "  if (refusal.cause !== 'none-as-of-this-read') {\n    return {\n      view: {\n        wouldBe: 'refused',\n",
+            "  if (false) { // MUTATION: a retry that is not confirmed reads no conjunct of the guard\n    return {\n      view: {\n        wouldBe: 'refused',\n",
+            "retry without --yes says it would revive a failed task whose saga began, which retry --yes refuses with saga-began",
+        ),
     )
 )
 VERDICTS.update(
@@ -21257,6 +21264,12 @@ VERDICTS.update(
             "packages/cli/test/drive-verbs.test.ts",
             "cancel on libSQL says of the task it cancelled whether its saga had begun, from a read after the write, so a rollback that was halted shows in the answer",
             "mutation-verdict:behavior:cli-cancel-says-whether-it-halted-a-rollback",
+        ),
+        "cli-retry-says-what-yes-would-do": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "retry on libSQL a revival the guard refuses is named by the conjunct that is false, from a read after the refusal sagaNotBegun: a task whose saga began and whose rollback pass then ended it",
+            "mutation-verdict:behavior:cli-retry-says-what-yes-would-do",
         ),
     }
 )
@@ -25187,7 +25200,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1411:
+        if len(MUTATIONS) != 1412:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

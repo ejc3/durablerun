@@ -6488,7 +6488,11 @@ reach.
   the task was failed before the call, which is this call delivered twice or another
   caller's revival. It is `already-live` when the task was live before the call: a repeat
   that finds its revival made, or a task that never failed. The read cannot tell those two
-  apart, and neither is revived.
+  apart, and neither is revived. Without `--yes` nothing is called, and the command says
+  what `--yes` would do, from the read before the call and by the reading it makes of a
+  refusal: `wouldBe` is `revived`, `already-live` with the live run, or `refused` with the
+  cause, the causes and the conjuncts a refusal prints. So a failed task whose saga began
+  is told `saga-began` before it is confirmed, and not that it would be revived.
 - `sweep --queue Q --target T [--limit N]` is `sweep`, and then a read of the queue's next
   wake. It cancels the tasks past their deadline and takes back the runs whose lease
   lapsed, as a tick's first step does, up to the limit (20 by default, at most 1,000), and

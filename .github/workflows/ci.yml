@@ -410,6 +410,7 @@ jobs:
                   "mutation-verdict:behavior:cli-refuses-a-number-by-its-value",
                   "mutation-verdict:behavior:cli-retry-names-the-conjunct-that-refuses",
                   "mutation-verdict:behavior:cli-retry-reports-the-live-run-a-repeat-finds",
+                  "mutation-verdict:behavior:cli-retry-says-what-yes-would-do",
                   "mutation-verdict:behavior:cli-store-url-has-no-fallback",
                   "mutation-verdict:behavior:cli-tick-ends-its-wait-through-the-clock",
                   "mutation-verdict:behavior:cli-tick-exits-4-for-a-refused-token",

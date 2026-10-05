@@ -3,6 +3,7 @@ import {
   type RetryGuardConjunct,
   type TaskAdmission,
   type TaskFacts,
+  isLiveState,
   isPortRefusal,
   parseTaskValueJson,
   refuseReservedEventName,
@@ -210,6 +211,48 @@ export function retryRefusal(taskId: string, admission: TaskAdmission): RetryRef
     conjunctsNotHeld,
     conjunctsNotAsked,
     message: `retry of task ${taskId} was refused. As of this read: ${causes.map((one) => CAUSE_SAYS[one]).join('; ')}. Nothing was changed`,
+  }
+}
+
+/** The live run of a task that is live, which a retry reports and does not revive. */
+export const liveRunOf = (admission: TaskAdmission) =>
+  isLiveState(admission.state) ? admission.runs.find((run) => isLiveState(run.state)) : undefined
+
+/**
+ * What `retry --yes` would do with a task, from the read of the guard's conjuncts the
+ * command makes before the call: report the live run of a task that is live, be refused
+ * for the causes the false conjuncts give, or revive the task. It is the reading the
+ * command makes of the same read after a call the port refused, so one state has one
+ * cause whether the command was confirmed or not. The task can move between this read and
+ * a call, and the message says the read is what it speaks of.
+ */
+export function retryForecast(
+  taskId: string,
+  admission: TaskAdmission,
+): { readonly view: Record<string, unknown>; readonly message: string } {
+  const liveRun = liveRunOf(admission)
+  if (liveRun !== undefined) {
+    return {
+      view: { wouldBe: 'already-live', runId: liveRun.runId },
+      message: `task ${taskId} is live as of this read, and only a failed task is revived: retry would change nothing, and would report its live run. Nothing was changed`,
+    }
+  }
+  const refusal = retryRefusal(taskId, admission)
+  if (refusal.cause !== 'none-as-of-this-read') {
+    return {
+      view: {
+        wouldBe: 'refused',
+        cause: refusal.cause,
+        causes: refusal.causes,
+        conjunctsNotHeld: refusal.conjunctsNotHeld,
+        conjunctsNotAsked: refusal.conjunctsNotAsked,
+      },
+      message: `retry would be refused for task ${taskId}, with or without --yes. As of this read: ${refusal.causes.map((one) => CAUSE_SAYS[one]).join('; ')}. Nothing was changed`,
+    }
+  }
+  return {
+    view: { wouldBe: 'revived' },
+    message: `retry would revive task ${taskId}: a new pending run, due now, one ordinal past its top run, and one more attempt in its budget. Run it again with --yes. Nothing was changed`,
   }
 }
 

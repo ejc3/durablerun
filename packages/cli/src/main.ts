@@ -34,7 +34,9 @@ import {
 import {
   isReservedEventName,
   jsonArgument,
+  liveRunOf,
   refusesAnArgumentThatPrints,
+  retryForecast,
   retryRefusal,
   rollbackFacts,
   runsInAnotherQueue,
@@ -1050,7 +1052,9 @@ const cancel: Handler = async (context) => {
  * revival is then this call's, delivered twice, or another caller's. It says
  * `already-live` when the task was live before the call, which is a repeat that finds its
  * revival made, or a task that never failed. The read cannot tell those two apart, and
- * neither is revived.
+ * neither is revived. Without --yes nothing is called, and the command says what --yes
+ * would do, from the read before the call and by the reading it makes of a refusal
+ * (`retryForecast`): revive the task, report its live run, or be refused, with the cause.
  */
 const retry: Handler = async (context) => {
   const { invocation, store, reveal } = context
@@ -1066,12 +1070,8 @@ const retry: Handler = async (context) => {
   }
   if (invocation.booleans.yes !== true) {
     if (before === null) return noSuchTask(queue, taskId)
-    return notConfirmed(
-      named,
-      wasFailed
-        ? `retry would revive task ${taskId}: a new pending run, due now, one ordinal past its top run, and one more attempt in its budget. Run it again with --yes. Nothing was changed`
-        : `task ${taskId} is not failed as of this read, and only a failed task is revived: retry would change nothing. Nothing was changed`,
-    )
+    const forecast = retryForecast(taskId, before)
+    return notConfirmed({ ...named, ...forecast.view }, forecast.message)
   }
   const revived = await store.scheduler.retryTask(queue, taskId)
   if (revived !== null) {
@@ -1082,8 +1082,8 @@ const retry: Handler = async (context) => {
   }
   const admission = await store.operator.taskAdmission(queue, taskId)
   if (admission === null) return noSuchTask(queue, taskId)
-  const liveRun = admission.runs.find((run) => isLiveState(run.state))
-  if (isLiveState(admission.state) && liveRun !== undefined) {
+  const liveRun = liveRunOf(admission)
+  if (liveRun !== undefined) {
     return {
       exit: 'done',
       view: {
