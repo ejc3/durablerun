@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import {
   INFRA_RETRY_CAP,
   MAX_COUNT,
@@ -229,6 +230,102 @@ export const RETRY_REFUSALS: Readonly<Record<RetryGuardConjunct, RetryRefusalSta
   },
 }
 
+/**
+ * What a revival would change of a task, read without the task's counters: its state, the
+ * stamp of the batch that last wrote it, and how many runs name it. A snapshot of every
+ * table selects the counters, and one driver refuses to hand over an integer a number
+ * cannot hold, so the planted row is read around.
+ */
+async function untouched(raw: SqlExecutor, taskId: string) {
+  const [task, runs] = await raw.batch(
+    'fixture:admission-untouched',
+    [
+      { sql: 'SELECT state, fence_stamp FROM tasks WHERE task_id = ?', args: [taskId] },
+      { sql: 'SELECT COUNT(*) AS runs FROM runs WHERE task_id = ?', args: [taskId] },
+    ],
+    'read',
+  )
+  return {
+    task: task?.rows.map((row) => [String(row.state), String(row.fence_stamp)]),
+    runs: runs?.rows.map((row) => Number(row.runs)),
+  }
+}
+
+/**
+ * The least and the greatest integer a 64-bit column holds, as text, because a number
+ * holds neither. Every dialect stores a counter in such a column.
+ */
+const INT64 = { least: '-9223372036854775808', greatest: '9223372036854775807' } as const
+
+/** A counter the retry guard reads, with the statement that plants a value in it for a failed task. */
+const COUNTERS = {
+  attempts: {
+    plant: (task: Awaited<ReturnType<typeof failedTask>>, value: string) => ({
+      sql: 'UPDATE tasks SET attempts = ? WHERE task_id = ?',
+      args: [value, task.taskId],
+    }),
+    // The charge is compared with the attempts, so that conjunct is not asked.
+    leavesFalse: { least: ['attemptsInRange'], greatest: ['attemptsInRange'] },
+  },
+  'infrastructure retries': {
+    plant: (task: Awaited<ReturnType<typeof failedTask>>, value: string) => ({
+      sql: 'UPDATE tasks SET infra_retries = ? WHERE task_id = ?',
+      args: [value, task.taskId],
+    }),
+    // The charge is the top ordinal less these, so neither conjunct of the charge is asked.
+    leavesFalse: { least: ['infraRetriesInRange'], greatest: ['infraRetriesInRange'] },
+  },
+  'attempt budget': {
+    plant: (task: Awaited<ReturnType<typeof failedTask>>, value: string) => ({
+      sql: 'UPDATE tasks SET max_attempts = ? WHERE task_id = ?',
+      args: [value, task.taskId],
+    }),
+    // The charge of one attempt is within the greatest budget and past the least.
+    leavesFalse: {
+      least: ['budgetTakesOneMore', 'chargeWithinBudget'],
+      greatest: ['budgetTakesOneMore'],
+    },
+  },
+  'ordinal of its one run': {
+    plant: (task: Awaited<ReturnType<typeof failedTask>>, value: string) => ({
+      sql: 'UPDATE runs SET attempt = ? WHERE run_id = ?',
+      args: [value, task.firstRunId],
+    }),
+    // The charge is the top ordinal less the retries, so neither conjunct of the charge is asked.
+    leavesFalse: { least: ['everyRunOrdinalInRange'], greatest: ['everyRunOrdinalInRange'] },
+  },
+} as const satisfies Record<
+  string,
+  {
+    plant(
+      task: Awaited<ReturnType<typeof failedTask>>,
+      value: string,
+    ): { sql: string; args: (string | number)[] }
+    leavesFalse: Record<keyof typeof INT64, readonly RetryGuardConjunct[]>
+  }
+>
+
+/**
+ * A failed task with one counter at the least or the greatest value its column holds, which
+ * no engine path writes. The guard refuses each for the counter's range. A conjunct that
+ * computes with a counter is asked only where that counter is in range: at these values
+ * the subtraction overflows the column's type, which one dialect answers with an error
+ * and another with a value that is no integer. Each state is fixture-built.
+ */
+export const RETRY_COUNTER_EXTREMES: readonly RetryRefusalState[] = (
+  Object.keys(COUNTERS) as (keyof typeof COUNTERS)[]
+).flatMap((counter) =>
+  (Object.keys(INT64) as (keyof typeof INT64)[]).map((end) => ({
+    what: `a failed task whose ${counter} is then set to the ${end} 64-bit integer, fixture-built`,
+    leavesFalse: COUNTERS[counter].leavesFalse[end],
+    build: async (db: Planting) => {
+      const task = await failedTask(db)
+      await planted(db, [COUNTERS[counter].plant(task, INT64[end])])
+      return task.taskId
+    },
+  })),
+)
+
 /** The instant the seeded queue is read at: every lease of it has lapsed and both deadlines have passed. */
 const LATER = START + 70_000
 
@@ -348,6 +445,23 @@ export function operatorAdmissionConformance(
               revived: null,
               wroteNothing: true,
             })
+          }))
+      }
+    })
+
+    describe('a counter at the least or the greatest value its column holds is read, and the revival is refused', () => {
+      for (const extreme of RETRY_COUNTER_EXTREMES) {
+        it(extreme.what, () =>
+          inWorld('refused-at-a-bound', async ({ f }) => {
+            const taskId = await extreme.build(f)
+            const admission = await f.operatorReadsOver(f.raw).taskAdmission(Q, taskId)
+            const before = await untouched(f.raw, taskId)
+            const revived = await f.store.retryTask(Q, taskId)
+            expect({
+              false: falseOf(admission),
+              revived,
+              wroteNothing: isDeepStrictEqual(await untouched(f.raw, taskId), before),
+            }).toEqual({ false: extreme.leavesFalse, revived: null, wroteNothing: true })
           }))
       }
     })
