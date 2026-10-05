@@ -9,6 +9,7 @@ import { Q as PLANTED_IN } from '../../conformance/src/operator-reads.js'
 import { COMMANDS, SWEEP_DEFAULT_LIMIT, VERBS } from '../src/commands.js'
 import { CAUSE_OF_CONJUNCT, RETRY_CAUSES } from '../src/drive.js'
 import { exitCode } from '../src/exit.js'
+import { type StoreOpener, openStore } from '../src/open-store.js'
 import { userValue } from '../src/render.js'
 import { fixture, parkedOnAnEvent } from './explain-seeds.js'
 import { owedToASweep } from './queue-seeds.js'
@@ -23,6 +24,7 @@ import {
   recordingOpener,
   rollingBack,
   runCli,
+  sagaStepStarted,
   seedTasks,
   writeFlags,
 } from './support.js'
@@ -611,6 +613,104 @@ describe('cancel on libSQL', () => {
         ...writeFlags(db),
       ])
       expect([withFlag.exit, withFlag.answer.outcome]).toEqual([0, 'cancelled'])
+    }))
+
+  it('leaves a task uncancelled when its saga begins between the read and the write, and prints the rollback facts', () =>
+    onDb('drive-cancel-saga-begins', async (db) => {
+      const { taskId, forward, fail } = await sagaStepStarted(db)
+      // The store as the command opens it, but for one thing: once the command has read the
+      // task, and before it writes, the task's worker fails it, and the saga begins.
+      let began = false
+      const sagaBeginsAfterTheRead: StoreOpener = async (url, token, ids, options) => {
+        const opened = await openStore(url, token, ids, options)
+        return {
+          ...opened,
+          operator: {
+            ...opened.operator,
+            taskFacts: async (queue, id) => {
+              const facts = await opened.operator.taskFacts(queue, id)
+              if (!began) {
+                began = true
+                await fail()
+              }
+              return facts
+            },
+          },
+        }
+      }
+      const run = await runCli(
+        ['cancel', taskId, '--yes', ...writeFlags(db), '--json'],
+        db.env,
+        sagaBeginsAfterTheRead,
+        testIdSource('saga-begins'),
+      )
+      const answer = JSON.parse(run.stdout) as JsonAnswer
+      const after = await drive(db, ['inspect', taskId, '--queue', QUEUE])
+      expect({
+        began,
+        exit: run.exit,
+        kind: answer.error?.kind,
+        namesTheFlag: answer.error?.message?.includes('--halt-rollback'),
+        sagaBegan: answer.sagaBegan,
+        rollback: answer.rollback,
+        // The task is as its worker left it: rolling back, with the pass still to run.
+        taskAfter: (after.answer.task as { state?: string } | undefined)?.state,
+        runsAfter: (after.answer.runs as { attempt: number; state: string }[]).map((one) => [
+          one.attempt,
+          one.state,
+        ]),
+      }).toEqual({
+        began: true,
+        exit: 2,
+        kind: 'confirmation-required',
+        namesTheFlag: true,
+        sagaBegan: true,
+        rollback: {
+          attempts: 1,
+          maxAttempts: 2,
+          runs: [
+            { runId: forward.runId, attempt: 1, state: 'failed' },
+            { runId: expect.any(String), attempt: 2, state: 'pending' },
+          ],
+        },
+        taskAfter: 'pending',
+        runsAfter: [
+          [1, 'failed'],
+          [2, 'pending'],
+        ],
+      })
+      // The first task leaves the queue, so the next claim takes the second task's run.
+      expect(await db.store.cancelTask(QUEUE, taskId)).toBe(true)
+      // With the flag the same interleaving cancels the task: the operator said to halt it.
+      const told = await sagaStepStarted(db)
+      began = false
+      const haltedAnyway: StoreOpener = async (url, token, ids, options) => {
+        const opened = await openStore(url, token, ids, options)
+        return {
+          ...opened,
+          operator: {
+            ...opened.operator,
+            taskFacts: async (queue, id) => {
+              const facts = await opened.operator.taskFacts(queue, id)
+              if (!began) {
+                began = true
+                await told.fail()
+              }
+              return facts
+            },
+          },
+        }
+      }
+      const halted = await runCli(
+        ['cancel', told.taskId, '--yes', '--halt-rollback', ...writeFlags(db), '--json'],
+        db.env,
+        haltedAnyway,
+        testIdSource('saga-halted'),
+      )
+      expect([halted.exit, (JSON.parse(halted.stdout) as JsonAnswer).outcome]).toEqual([
+        0,
+        'cancelled',
+      ])
     }))
 
   it('names a live task one of whose runs is in another queue, which the port refuses, fixture-built', () =>

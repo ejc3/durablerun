@@ -531,6 +531,18 @@ export async function claimActivated(
  * failed. Call it when the queue holds no other run that is due.
  */
 export async function rollingBack(db: CliDb) {
+  const { taskId, forward, fail } = await sagaStepStarted(db)
+  await fail()
+  return { taskId, forward }
+}
+
+/**
+ * A running task whose registered saga step has started, and whose saga has not begun: its
+ * one attempt has not failed yet. `fail` fails it as its worker would, which places the
+ * rollback pass, so a test decides the instant the saga begins. Call it when the queue holds
+ * no other run that is due.
+ */
+export async function sagaStepStarted(db: CliDb) {
   const task = await db.store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
   const forward = await claimActivated(db, 'w-forward', task.taskId)
   await db.store.setCheckpoint(
@@ -542,15 +554,17 @@ export async function rollingBack(db: CliDb) {
     '1',
     60,
   )
-  const entered = await db.store.fail(
-    QUEUE,
-    forward.runId,
-    forward.claimToken,
-    '{"name":"E"}',
-    null,
-  )
-  if (!entered.rollingBack) throw new Error('the failure placed no rollback pass')
-  return { taskId: task.taskId, forward }
+  const fail = async (): Promise<void> => {
+    const entered = await db.store.fail(
+      QUEUE,
+      forward.runId,
+      forward.claimToken,
+      '{"name":"E"}',
+      null,
+    )
+    if (!entered.rollingBack) throw new Error('the failure placed no rollback pass')
+  }
+  return { taskId: task.taskId, forward, fail }
 }
 
 export interface SeededSagas {
