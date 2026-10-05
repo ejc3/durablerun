@@ -1,6 +1,6 @@
 # Postmortem: PR3.5b store simplification review (PR #26)
 
-PR3.5b is the store slice of the PR3.5 simplification sweep. It names the successor columns once, binds the spawn cancellation deadline once, hoists `mapLimit` and `clampLimit` into core, and makes every reader of a task's outcome refuse a row that contradicts its state. Fable `/code-review` rounds ran over the branch and over each round's fixes, and a Fable `/simplify` pass ran over the whole branch. Round one reported eight findings, two of them correctness findings in this repository's sense, meaning a reachable contract or release-safety violation. Round two judged the round-one fixes as new code and reported nine findings, one a correctness finding that a round-one fix introduced. Round three judged the round-two fixes as new code and reported ten findings, none a correctness finding and every one introduced by a round-two fix. Round four judged the round-three fixes and reported six findings, none a correctness finding and all introduced by round-three fixes. Round five judged the round-four fixes and reported five findings, none a correctness finding and all introduced by round-four fixes. Review rounds stopped there. Every finding is resolved on the branch.
+PR3.5b is the store slice of the PR3.5 simplification sweep. It names the successor columns once, binds the spawn cancellation deadline once, hoists `mapLimit` and `clampLimit` into core, and makes every reader of a task's outcome refuse a row that contradicts its state. `/code-review` rounds ran over the branch and over each round's fixes, and a `/simplify` pass ran over the whole branch. Round one reported eight findings, two of them correctness findings in this repository's sense, meaning a reachable contract or release-safety violation. Round two judged the round-one fixes as new code and reported nine findings, one a correctness finding that a round-one fix introduced. Round three judged the round-two fixes as new code and reported ten findings, none a correctness finding and every one introduced by a round-two fix. Round four judged the round-three fixes and reported six findings, none a correctness finding and all introduced by round-three fixes. Round five judged the round-four fixes and reported five findings, none a correctness finding and all introduced by round-four fixes. Review rounds stopped there. Every finding is resolved on the branch.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -22,11 +22,11 @@ PR3.5b is the store slice of the PR3.5 simplification sweep. It names the succes
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Fable `/code-review` round one over `45992fb...32cbeed` (8 findings reported; 2 correctness findings) | 2 | No |
-| Fable `/code-review` round two over the round-one fix commits (9 findings reported; 1 correctness finding, introduced by a round-one fix) | 1 | No |
-| Fable `/code-review` round three over the round-two fix commits (10 findings reported; none a correctness finding; all introduced by round-two fixes) | 0 | No |
-| Fable `/code-review` round four over the round-three fix commits (6 findings reported; none a correctness finding; all introduced by round-three fixes) | 0 | No |
-| Fable `/code-review` round five over the round-four fix commits (5 findings reported; none a correctness finding; all introduced by round-four fixes) | 0 | No |
+| `/code-review` round one over `45992fb...32cbeed` (8 findings reported; 2 correctness findings) | 2 | No |
+| `/code-review` round two over the round-one fix commits (9 findings reported; 1 correctness finding, introduced by a round-one fix) | 1 | No |
+| `/code-review` round three over the round-two fix commits (10 findings reported; none a correctness finding; all introduced by round-two fixes) | 0 | No |
+| `/code-review` round four over the round-three fix commits (6 findings reported; none a correctness finding; all introduced by round-three fixes) | 0 | No |
+| `/code-review` round five over the round-four fix commits (5 findings reported; none a correctness finding; all introduced by round-four fixes) | 0 | No |
 
 Self-catch rate: 0 of 3, or 0% (previous round: 0%, `pr3.5a-simplification-review.md`).
 

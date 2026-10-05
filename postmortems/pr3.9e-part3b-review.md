@@ -52,7 +52,7 @@ code or gave a wrong count.
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| One Fable `/code-review` and `/simplify` run over `69be7f9..7caf7ea`, which reproduced findings 1, 2, and 3 with scripts outside the worktree | 7 | no |
+| One `/code-review` and `/simplify` run over `69be7f9..7caf7ea`, which reproduced findings 1, 2, and 3 with scripts outside the worktree | 7 | no |
 
 Self-catch rate: 0 of 7, or 0% (previous round on this work, PR3.9e part 3a's: 4 of 16, or 25%).
 
@@ -122,7 +122,7 @@ not re-reviewed, as one review round was the budget for this PR.
 - Red tests: commit `0b53901`, run and seen failing (1 test) against `7d08d8c`'s code: "reads a value fragment for a function call, as it reads nodes for one" accepted `pg_catalog.max(f.task_id)`.
 - Fixes: commit `978cc94` for finding 1, `8fc7768` for finding 2, `409b18b` for finding 3, and `8325425` for findings 4 to 7. Gate after the fixes: the registry self-test, typecheck, lint, the core suite, the corpus test, the package smoke, the base gate, and a filtered mutation run over the tree rules, recorded with exit codes in the PR body.
 - Finding 2's controls were seen red: with each refusal in `scripts/package-surface.mjs` replaced by `if (false) {`, `bash scripts/package-smoke.sh` exits 1 with "package-surface accepted a withdrawal of a name that is still exported", "of a name the release never exported", and "with no reason". Finding 3's test was seen red with the refusal removed: "expected [Function] to throw an error".
-- Finder: one Fable `/code-review` and `/simplify` run, quoted verdict: "Two MEDIUM findings, both reproduced: `fragmentCalls` accepts a schema-qualified call, and the two new withdrawal controls in `package-smoke.sh` cannot fail. There is no HIGH finding and nothing shipped is broken."
+- Finder: one `/code-review` and `/simplify` run, quoted verdict: "Two MEDIUM findings, both reproduced: `fragmentCalls` accepts a schema-qualified call, and the two new withdrawal controls in `package-smoke.sh` cannot fail. There is no HIGH finding and nothing shipped is broken."
 - Claims that did not reproduce. The review asked five questions and answered "no finding" to each: lost checks beyond finding 3, the withdrawal mechanism hiding a removal, behaviour of the deadline commit, the scoping of the bridge, and the two plan documents beyond findings 1 and 6. One simplify candidate did not hold up as behaviour-preserving when read against the corpus: feeding the sweep's headroom guard from one numeric constant changes the compiled guard from `(5 * 1000)` to `(5000)`, which the corpus records and two registered finds quote. It is declined in the PR body.
 
 ## Root cause

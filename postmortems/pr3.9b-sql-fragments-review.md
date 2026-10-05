@@ -1,6 +1,6 @@
 # Postmortem: PR3.9b SQL fragments in statement trees, review rounds 1 and 2 (PR #38)
 
-PR3.9b moves claim, activation, and the launch deferral onto shared statement trees. A dialect's predicates reach those trees as SQL fragments: store-owned text plus binds, which core turns into nodes. One Fable `/code-review` round and one Fable `/simplify` round found three defects in that fragment mechanism. A fragment compiled without parentheses, so an OR inside it could void every conjunct before it. A bind or clock token inside a string literal was split as if it were SQL. And a statement declared its fragments as two counts, which a fragment could move between unnoticed and which counted raw nodes the builder makes for itself. Our own gates caught two more defects before merge: four generated mutations whose text had moved, and a fragment check that built a `Map` task code can replace. A second `/code-review` round, over round one's fixes, then found six more: five in those fixes, and one older line on the worker path. The automated PR review then found two more, one in a check round two had just added and one in that check's repair. No shipped fragment used any of these shapes. All thirteen are fixed.
+PR3.9b moves claim, activation, and the launch deferral onto shared statement trees. A dialect's predicates reach those trees as SQL fragments: store-owned text plus binds, which core turns into nodes. One `/code-review` round and one `/simplify` round found three defects in that fragment mechanism. A fragment compiled without parentheses, so an OR inside it could void every conjunct before it. A bind or clock token inside a string literal was split as if it were SQL. And a statement declared its fragments as two counts, which a fragment could move between unnoticed and which counted raw nodes the builder makes for itself. Our own gates caught two more defects before merge: four generated mutations whose text had moved, and a fragment check that built a `Map` task code can replace. A second `/code-review` round, over round one's fixes, then found six more: five in those fixes, and one older line on the worker path. The automated PR review then found two more, one in a check round two had just added and one in that check's repair. No shipped fragment used any of these shapes. All thirteen are fixed.
 
 **This document is adversarial toward the MACHINERY and blameless toward people.**
 
@@ -38,9 +38,9 @@ Nothing wrote a wrong row: every fragment the stores ship is parenthesized and h
 |----------|----------|-------|
 | CI `verify`, `mutations`, and `base-gate`, reproduced with the registry self-test | 1 | yes |
 | The SDK's ambient-global tests, run before push | 1 | yes |
-| Fable `/code-review` round 1 over `65000b2...4e2e24d` and `b0b152c` | 3 | no |
-| Fable `/simplify` round 1 over `65000b2...4e2e24d` | 0 | no |
-| Fable `/code-review` round 2 over `b0b152c...e975c19` | 6 | no |
+| `/code-review` round 1 over `65000b2...4e2e24d` and `b0b152c` | 3 | no |
+| `/simplify` round 1 over `65000b2...4e2e24d` | 0 | no |
+| `/code-review` round 2 over `b0b152c...e975c19` | 6 | no |
 | Greptile PR review over `054273a` and `c70c3b2` | 2 | no |
 
 Self-catch rate: 2 of 13, or 15% (previous round: 0%, `pr3.9a-statement-trees-review.md`).
@@ -93,7 +93,7 @@ Six. Findings 8, 9, and 10 were introduced by round one's fixes in `ac0c9dc`, an
 - Finding 5's red was two SDK tests failing at `fbe223c`: "task initialization cannot replace replay map construction" and "uses stored Map entries under subclass and prototype pollution". Fix: commit `e975c19`.
 - Gate after `5792924`: typecheck, Biome lint and format, and the determinism, user boundary, ledger, fragment, batch, clock, outcome, deferral, gate, and review-bot lints pass. Core, SDK, driver, harness, and dogfood tests pass (46 files, 472 tests), and store and non-fuzz conformance tests pass on libSQL and PostgreSQL (38 files, 6,338 tests). The registry self-test passes with 439 live mutations, and a local reproduction of base-gate passes.
 - Gate after `e975c19`: typecheck, Biome lint and format, and the determinism, user boundary, ledger, fragment, batch, clock, outcome, deferral, gate, and review-bot lints pass. Core, SDK, driver, harness, and dogfood tests pass (46 files, 465 tests), and store and non-fuzz conformance tests pass on libSQL and PostgreSQL (38 files, 6,338 tests). The registry self-test passes with 439 live mutations, and a local reproduction of base-gate passes.
-- Finders: Fable `/code-review` rounds 1 and 2, and Fable `/simplify` round 1. Quoted verdicts:
+- Finders: `/code-review` rounds 1 and 2, and `/simplify` round 1. Quoted verdicts:
   - "`rawSql` emits the fragment with no parentheses, and the tree path has no top-level-OR check";
   - "It splits fragment text on every `?` and `$NOW$` without parsing SQL";
   - "`rawValues = rawFragmentCount(tree) - rawBooleans` counts nodes the store did not write";

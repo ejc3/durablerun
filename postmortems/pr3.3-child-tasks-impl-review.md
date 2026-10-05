@@ -79,13 +79,13 @@ Without the review and CI, these would have shipped. The worst is first.
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| One Fable `/code-review` and `/simplify` run over `93a9557..5c422d8`, which read the code and ran no test | 11 | no |
+| One `/code-review` and `/simplify` run over `93a9557..5c422d8`, which read the code and ran no test | 11 | no |
 | CI's `verify` job on the first push, a test past its 120 s | 1 | yes |
 | TLC, on the model change that finding 2 required | 1 | yes |
 | The filtered mutation runs over the first fold's new lock sites and conditions | 2 | yes |
 | The deterministic lock-order case written for finding 4, aimed at a second pair | 1 | yes |
 | The runs this document's mechanism audit demands | 4 | yes |
-| A second Fable run of `/code-review` with eight finder lenses and `/simplify`, over `69be7f9..a232eee`, which ran no test | 20 | no |
+| A second run of `/code-review` with eight finder lenses and `/simplify`, over `69be7f9..a232eee`, which ran no test | 20 | no |
 | The coordinator's reading of the fold against the rolling-deploy promise, measured on PostgreSQL 17 with a control for each lock | 1 | yes |
 | The gate driver on the fold's head: the filtered mutation probe, and the driver's own exit codes | 3 | yes |
 | Main's tree-rule coverage check, during the second fold | 1 | yes |
@@ -176,10 +176,10 @@ The first fold was not re-reviewed before it was reported as done. It was re-tes
   - 39 and 45: `48dc954`, then `8e9058e` and `615fb2c`.
   - 26 and 27: the model first, `b2829a9`, TLC at CI scope 30 of 30 mutants caught and ten probes witnessed. Then `bfe9479`, red on both dialects, then `290ce0f`.
   - 43: `0404a42`. 33: `be13d14`. 36 and 41: `def3a14`. 47 and 48: `596b099`, after the whole verify failed six tests by name. 49: `676bfd9`. 50: `223767d`. 46: `7081df2`, after `package-surface: 1 name(s) exported by v0.1.0-alpha.1 are gone`.
-- Second finder: a Fable run of the built-in `/code-review` with eight finder lenses and `/simplify`, over `69be7f9..a232eee`. The coordinator relayed it with the words "NONE of these was reproduced by a run: each lens read the a232eee snapshot only."
+- Second finder: a run of the built-in `/code-review` with eight finder lenses and `/simplify`, over `69be7f9..a232eee`. The coordinator relayed it with the words "NONE of these was reproduced by a run: each lens read the a232eee snapshot only."
 - The lock hole, as the coordinator measured it on PostgreSQL 17.11 before any fix: with an older build holding the row lock of an event, a second older build asking for the same row lock was refused (55P03), a new build asking for the advisory lock of the same event was granted, and a second new build asking for that advisory lock was refused. Each lock excludes itself, and the two do not exclude each other.
 - Measured, finding 21, on the real compiled statements, one `complete` on libSQL with nobody waiting. Before: 6 to 10 ms beside 2,000 pending runs of its queue against 4 ms with the backlog in another queue, and 215 ms beside 100,000 against 55 ms. After, timed for each statement beside 100,000: the three wake follow-ons 0.2, 0.1, and 0.2 ms. The review's own figures, from a hand-reduced schema, were 0.7 ms and 31 ms for the three together.
-- Finder: one Fable subagent that invoked the built-in `/code-review` at high effort and `/simplify` in report-only mode. Its quoted verdict: "`/code-review` was run at high effort; it used six finder agents and then its own single verifier pass over the whole list, which refuted none of its ten findings." And: "I ran no vitest files, no `pnpm verify`, no fuzz and no mutation probe."
+- Finder: one subagent that invoked the built-in `/code-review` at high effort and `/simplify` in report-only mode. Its quoted verdict: "`/code-review` was run at high effort; it used six finder agents and then its own single verifier pass over the whole list, which refuted none of its ten findings." And: "I ran no vitest files, no `pnpm verify`, no fuzz and no mutation probe."
 - Measured, finding 1, one `complete` on libSQL with nobody waiting, before and after: 250 pending runs 21.0 and 7.9 ms, 500 pending 66.7 and 6.0, 1,000 pending 242.9 and 12.2, 2,000 pending 1,062.5 and 7.8. The review's own figures were 15, 61, 258, and 1,098 ms. Before the fix the plan was `SCAN tasks`, `CORRELATED LIST SUBQUERY`, `SEARCH f USING INDEX runs_poll`.
 - Measured, findings 6 and 12, client queries for one operation on PostgreSQL, on main, on the first push, and after: `complete` 5, 12, 8. A terminal `fail` 5, 12, 8. `cancelTask` 5, 12, 8. `emitEvent` 10, 10, 6. Rows left in `event_locks` after three endings and one emit: 1, 4, 0. The review's estimate, which it marked as not measured, was 5 and 12.
 - Measured, the two slowest PostgreSQL tests, each run alone, on main, on the first push, and after the fix for 6: the wake witness 85.7, 95.9, and 32.2 s. The fault matrix's first starting state 58.8, 87.4, and 39.8 s. The first-push figures were taken with other load on the machine. CI measured 69 s on main and more than 120 s on the first push for the first, and 44 s and 86 s for the second.

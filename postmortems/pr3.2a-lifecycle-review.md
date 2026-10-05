@@ -2,13 +2,13 @@
 
 PR3.2a moved the rolling-deploy deferral before activation, taught every refused
 worker write to name a cancellation, pinned idempotency-key reuse, and added a
-wake floor to the driver loop. A Fable subagent running the built-in
+wake floor to the driver loop. A subagent running the built-in
 `/code-review` over `b8eb478...04b79b9` reported ten findings. Five are
 correctness defects in product code. An older driver's launches all failed
 against a newer worker, and the new deferral parked claims activation refuses.
 A mismatched or flapping task name latched the first start, and a duplicate
 delivery of an unknown task reported a lost lease. The wake floor could delay a
-due look or stall the loop for the size of a clock step. A second Fable `/code-review` over the fixes found two more correctness
+due look or stall the loop for the size of a clock step. A second `/code-review` over the fixes found two more correctness
 defects. A failed refusal read turned a definitely-refused write into a store
 outage, and the deferral still lacked two of activation's range guards. None had
 shipped, and all seven are fixed behind red commits.
@@ -57,8 +57,8 @@ Without the review, five defects would have shipped. Worst first:
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Fable `/code-review` round 1 (findings 1 to 5) | 5 | no |
-| Fable `/code-review` round 2 over the fixes (findings 6 and 7) | 2 | no |
+| `/code-review` round 1 (findings 1 to 5) | 5 | no |
+| `/code-review` round 2 over the fixes (findings 6 and 7) | 2 | no |
 | Existing conformance, fuzz, TLC, invariant, mutation, and lint gates before review | 0 | yes |
 
 Self-catch rate: 0 of 7, or 0% (previous round: 0%, `pr3.5b-store-simplification-review.md`).
@@ -158,7 +158,7 @@ code, which is where both were found; the re-testing alone passed them.
   with the out-of-range relaunch and lease claims reported as `parked`. Fix:
   commit `9e0fb03`, with the deferral slice (296, every poison `defer-launch`
   cell included) and both fault matrices passing.
-- Finders: Fable subagents running the built-in `/code-review`, over
+- Finders: subagents running the built-in `/code-review`, over
   `b8eb478...04b79b9` for findings 1 to 5 and over `04b79b9...1a15f62` for
   findings 6 and 7. Quoted verdicts:
   - "The worker server now returns 400 for any launch body without taskName, so
