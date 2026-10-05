@@ -955,8 +955,15 @@ reader's due columns, the metric definitions, that claim latency is
 `claimLagMs`, the wait of the head of the queue, and a task's start latency,
 with no `claimed_at_ms` column, no histogram and no rate, and `stuck` listing
 seven legs where the plan had four. `sizes` is a statement tree, so the entry it
-would have needed as a text statement was never written. Still held, the one
-released-surface change:
+would have needed as a text statement was never written. Still held, two
+released-surface changes. The first is made, and waits for the maintainer to
+confirm it: in PR5.3d `cancelTask` gained an optional third argument,
+`CancelOptions`, on core's `SchedulerStore` and on `LibsqlSchedulerStore`, the
+two declarations of it that the release alpha.1 published. It is recorded under
+`changed` in scripts/published-surface-v0.1.0-alpha.1.json with its reason, and
+the maintainer has been asked to confirm it. A caller that passes two arguments
+is unchanged, and a store outside this repository that ignores the third
+cancels a saga its caller asked it to spare. The second is not made:
 `FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
 checkpoints and to events, which needs a `changed` entry in
 scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
@@ -6752,11 +6759,49 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads integers.
   - Option for a number a double cannot hold in a hosted route's JSON, not built, with its
     trigger: `enqueue` and `emit` of the CLI refuse a document that holds a number which is
-    not finite once it is read, or an integer a double cannot hold. The hosted routes parse
+    not finite once it is read, reads as zero and is not zero as written, or is an integer
+    a double cannot hold in any spelling. The hosted routes parse
     and write a document with the same two functions and refuse neither, so a task
     enqueued over HTTP with `1e400` in its parameters holds `null` there. The check would
     move into the function that parses a task's JSON, for every caller. Trigger: the first
     report of a value a hosted enqueue rewrote, or the next change to that function.
+  - The fold of the narrow re-review of that fold (the same postmortem). It found no HIGH,
+    no MEDIUM and 11 LOW, and nine count, 27 in all. Seven of the nine were made by the
+    fold above. The options of `cancelTask` are held at the port's one check to an object
+    whose `unlessSagaBegan` is a boolean, on three stores, so the option no longer fails
+    open for `1` or `'true'`. `enqueue` and `emit` refuse a number by its value, in any
+    spelling, and a number that reads as zero and is not. `tick` exits 7 for a 500 that
+    carries a hosted route's error body, whatever its code, which withdraws the difference
+    recorded above: `authorization_invalid` is permanent as `internal_error` is, and the
+    refusal no longer says that a repeat does not cure it. `enqueue` answers a repeat when
+    the task its key found cannot be read back, and the command table declares a fault at
+    that read as `done`. `cancel` prints `sagaBegan` from a read after its call. `retry`
+    without `--yes` says what `--yes` would do, by the reading it makes of a refusal.
+    DESIGN.md section 3.10 says what makes the sparing cancel safe on each dialect, and a
+    race case holds the outcome on three: with the completion-event lock left out of the
+    cancel by hand it fails on PostgreSQL and passes on MySQL, and the section says both.
+    Half of every fuzz walk's cancels now spare a saga, with a check and a floor. The
+    registry holds six more mutations.
+  - Option for the retry guard's computing conjuncts, not built, with its trigger: a
+    conjunct that computes with counters repeats its range conjuncts inside its own CASE,
+    in the guard (`retryAdmission`) and in the read (`askedFlagOf`), though each range
+    conjunct is a conjunct of the guard already, and the wrapper that asks one is written
+    twice, once as text and once as a tree. It gives no wrong answer, on a statement that
+    reads one task. One place would name what a computing conjunct is asked under and
+    build both. Trigger: a measured cost on a hot path, or the next change to the retry
+    guard.
+  - Option for the race case's wait, not built, with its trigger: on PostgreSQL and MySQL
+    the fixtures give a batch 750 ms of real time to reach the held row or the lock in
+    front of it, because a server does not say which sessions of a shared database have
+    blocked. A host slow enough to miss that would run the cancel first, and the case
+    would fail for no fault of the code. The fixture would ask the server instead, by the
+    locks waited for on its own tables. Trigger: the first failure of the case that a
+    second run does not repeat.
+  - Option for the walk's sparing cancel, not built, with its trigger: a walk's sparing
+    cancel meets a live task that is rolling back in about one walk of seventy, so no
+    floor holds that a shard meets the state its check is for. The walk would aim some of
+    its sparing cancels at a task it saw begin its saga. Trigger: the next change to the
+    saga conjunct of the cancel, or to the statement that carries it.
 - **PR5.2c1 the terminal stamp and the retention row checks**: DONE (#116). Exit test line
   41 of the operable alpha milestone. No statement, no batch and no schema version is added,
   no released declaration changes, and core, the stores, the SDK and the CLI are unchanged
