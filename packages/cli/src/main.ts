@@ -33,7 +33,6 @@ import {
   retryRefusal,
   rollbackFacts,
   runsInAnotherQueue,
-  sweptView,
 } from './drive.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
 import {
@@ -740,7 +739,7 @@ const notConfirmed = (view: Record<string, unknown>, message: string): Answer =>
  */
 const enqueue: Handler = async (context) => {
   const { invocation, store, reveal } = context
-  const params = jsonArgument(invocation.strings.params, 'task parameters')
+  const params = jsonArgument(invocation.strings.params)
   if ('refused' in params) return flagRefused(`--params ${params.refused}`)
   const queue = await readableQueue(context)
   if (typeof queue !== 'string') return queue
@@ -789,7 +788,7 @@ const enqueue: Handler = async (context) => {
 const emitEvent: Handler = async (context) => {
   const { invocation, store, reveal } = context
   const eventName = invocation.args.eventName ?? ''
-  const payload = jsonArgument(invocation.strings.payload, 'event payload')
+  const payload = jsonArgument(invocation.strings.payload)
   if ('refused' in payload) return flagRefused(`--payload ${payload.refused}`)
   if (isReservedEventName(eventName)) {
     return {
@@ -1014,7 +1013,8 @@ const sweep: Handler = async (context) => {
       swept: swept.length,
       // A sweep that filled its limit may have left more: run it again.
       atLimit: swept.length >= most,
-      transitions: swept.map(sweptView),
+      // Each transition is a kind and the ids it names. None is a value a user wrote.
+      transitions: swept,
       nextWakeAtEpochMs: await scheduler.nextWakeAtEpochMs(queue),
     },
   }
@@ -1039,11 +1039,11 @@ async function tick(
       '--timeout takes a whole number above zero and a unit, s, m, h or d, as in 90s or 2m, of at most 100 years',
     )
   }
-  const request = tickRequest(
-    invocation.strings.url ?? '',
-    env.DURABLERUN_BASE_URL,
-    env.DURABLERUN_TICK_TOKEN,
-  )
+  const request = tickRequest({
+    url: invocation.strings.url ?? '',
+    baseUrl: env.DURABLERUN_BASE_URL,
+    token: env.DURABLERUN_TICK_TOKEN,
+  })
   if ('refused' in request) {
     return { exit: 'usage', view: { error: { kind: request.kind, message: request.refused } } }
   }

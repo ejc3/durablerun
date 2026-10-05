@@ -1,7 +1,6 @@
 import {
   RETRY_GUARD,
   type RetryGuardConjunct,
-  type SweptRun,
   type TaskAdmission,
   type TaskFacts,
   isPortRefusal,
@@ -27,10 +26,11 @@ import { stateView } from './inspect.js'
  */
 export function jsonArgument(
   text: string | undefined,
-  what: string,
 ): { readonly json: string } | { readonly refused: string } {
   try {
-    return { json: serializeTaskValue(what, text === undefined ? null : parseTaskValueJson(text)) }
+    // The label is for a message this function never lets out: its refusal says nothing of the text.
+    const value = text === undefined ? null : parseTaskValueJson(text)
+    return { json: serializeTaskValue('a JSON argument', value) }
   } catch {
     return { refused: 'takes one JSON value, as in {"a":1}. What it was given is not printed' }
   }
@@ -152,6 +152,3 @@ export const rollbackFacts = (facts: TaskFacts, reveal: boolean): Record<string,
     state: stateView(run.state, reveal),
   })),
 })
-
-/** One transition a sweep made, as `sweep` prints it: its kind and the ids it names. None is a value a user wrote. */
-export const sweptView = (swept: SweptRun): Record<string, unknown> => ({ ...swept })

@@ -1,10 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import {
-  type IdSource,
-  SAGA_STARTED_PREFIX,
-  type SchedulerStore,
-  type SqlExecutor,
-} from '@durablerun/core'
+import type { IdSource, SchedulerStore, SqlExecutor } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import {
   CURRENT_SCHEMA_VERSION,
@@ -21,19 +16,21 @@ import { COMMANDS, SWEEP_DEFAULT_LIMIT, VERBS } from '../src/commands.js'
 import { type ExitName, exitCode } from '../src/exit.js'
 import { type StoreOpener, storeTarget } from '../src/open-store.js'
 import { parkedOnAnEvent } from './explain-seeds.js'
+import { owedToASweep } from './queue-seeds.js'
 import {
   COMPLETED_KEY,
   type CliDb,
-  NOW_MS,
+  type JsonAnswer,
   QUEUE,
   SELECTED,
   type SeededTasks,
   type StartingSchema,
-  claimActivated,
   dumpOf,
   openCliDb,
+  rollingBack,
   runCli,
   seedTasks,
+  writeFlags,
 } from './support.js'
 
 /**
@@ -49,10 +46,6 @@ import {
  * at every version of the window its store's reads accept, the release alpha.1's version 5
  * among them, and on libSQL over the states a walk of the engine leaves.
  */
-
-type Answer = Readonly<Record<string, unknown>> & {
-  readonly error?: { readonly kind?: string; readonly message?: string }
-}
 
 /** A command line, without the flags every write takes, and the port call it is. */
 interface Call {
@@ -98,7 +91,9 @@ const WRITE_VERBS = Object.keys(CALLS) as WriteVerb[]
  * twin, as a pair that must be equal. `emit` answers from reads of its own, which the dump
  * and the cases of the verb hold, so its pair is empty.
  */
-const SAID: Readonly<Record<WriteVerb, (answer: Answer, ported: unknown) => [unknown, unknown]>> = {
+const SAID: Readonly<
+  Record<WriteVerb, (answer: JsonAnswer, ported: unknown) => [unknown, unknown]>
+> = {
   enqueue: (answer, ported) => {
     const spawned = ported as { taskId: string; runId: string; created: boolean }
     return [
@@ -131,34 +126,6 @@ interface Twin {
   prepare?(db: CliDb): Promise<string>
   /** The commands, run in this order against the one pair of databases. */
   readonly steps: readonly Step[]
-}
-
-/** A task whose saga began and that is rolling back, which only --halt-rollback cancels. */
-async function rollingBack(db: CliDb): Promise<string> {
-  const task = await db.store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
-  const forward = await claimActivated(db, 'w-forward', task.taskId)
-  await db.store.setCheckpoint(
-    QUEUE,
-    task.taskId,
-    forward.runId,
-    forward.claimToken,
-    `${SAGA_STARTED_PREFIX}charge`,
-    '1',
-    60,
-  )
-  await db.store.fail(QUEUE, forward.runId, forward.claimToken, '{"name":"E"}', null)
-  return task.taskId
-}
-
-/** A deadline passed, a launch lost and a lease lapsed: one of each transition a sweep makes. */
-async function owedToASweep(db: CliDb): Promise<string> {
-  const lost = await db.store.spawn(QUEUE, 'lost', '{}')
-  await db.store.claim(QUEUE, 'w-lost', { leaseSeconds: 60, limit: 1 })
-  const left = await db.store.spawn(QUEUE, 'left', '{}')
-  await claimActivated(db, 'w-gone', left.taskId)
-  await db.store.spawn(QUEUE, 'doomed', '{}', { cancellation: { maxDelaySeconds: 45 } })
-  await db.admin.setFakeNowEpochMs(NOW_MS + 61_000)
-  return lost.taskId
 }
 
 /** Each drive verb's commands over the seeded tasks, keyed by the verbs the calls above hold. */
@@ -223,7 +190,8 @@ const TWINS: Readonly<Record<WriteVerb, Twin>> = {
     ],
   },
   cancel: {
-    prepare: rollingBack,
+    // A task that is rolling back, which only --halt-rollback cancels.
+    prepare: async (db) => (await rollingBack(db)).taskId,
     steps: [
       {
         name: 'of a task that is pending',
@@ -292,7 +260,7 @@ const TWINS: Readonly<Record<WriteVerb, Twin>> = {
     ],
   },
   sweep: {
-    prepare: owedToASweep,
+    prepare: async (db) => (await owedToASweep(db)).lost.taskId,
     steps: [
       { name: 'of one transition', call: () => CALLS.sweep(1), changes: true, exit: 'done' },
       { name: 'of the rest', call: () => CALLS.sweep(), changes: true, exit: 'done' },
@@ -353,7 +321,7 @@ async function compared(
       // One seed to each side: an id the command mints is the id the port call mints.
       const seed = `drive-${index}`
       const run = await runCli(
-        [...call.line, '--queue', QUEUE, '--target', subject.target, '--json'],
+        [...call.line, ...writeFlags(subject), '--json'],
         subject.env,
         undefined,
         testIdSource(seed),
@@ -361,7 +329,7 @@ async function compared(
       const ported = await call.port(twin.storeWith(testIdSource(seed)))
       const after = await subject.dump()
       expect({ where, same: after === (await twin.dump()) }, marker).toEqual({ where, same: true })
-      const [said, did] = SAID[verb](JSON.parse(run.stdout) as Answer, ported)
+      const [said, did] = SAID[verb](JSON.parse(run.stdout) as JsonAnswer, ported)
       expect({ where, said }, marker).toEqual({ where, said: did })
       expect({ where, exit: run.exit, changed: after !== before }).toEqual({
         where,
@@ -421,10 +389,10 @@ describe('a drive verb is its port call and nothing else', () => {
             const [step] = TWINS[verb].steps
             if (step === undefined) throw new Error(`${verb} has no step`)
             const run = await runCli(
-              [...step.call(seeded, 'e').line, '--queue', QUEUE, '--target', db.target, '--json'],
+              [...step.call(seeded, 'e').line, ...writeFlags(db), '--json'],
               db.env,
             )
-            const answer = JSON.parse(run.stdout) as Answer
+            const answer = JSON.parse(run.stdout) as JsonAnswer
             const message = answer.error?.message ?? ''
             expect(
               {
@@ -586,13 +554,13 @@ describe('a drive verb over the states a walk of the engine leaves, on libSQL', 
           for (const [index, [verb, call]] of calls.entries()) {
             const seed = `walk-${index}`
             const run = await runCli(
-              [...call.line, '--queue', QUEUE, '--target', target, '--json'],
+              [...call.line, ...writeFlags({ target }), '--json'],
               env,
               over(subject),
               testIdSource(seed),
             )
             const ported = await call.port(new LibsqlSchedulerStore(twin.raw, testIdSource(seed)))
-            const answer = JSON.parse(run.stdout) as Answer
+            const answer = JSON.parse(run.stdout) as JsonAnswer
             const [said, did] = SAID[verb](answer, ported)
             const where = `walk ${walk}, command ${index}: ${call.line.join(' ')}`
             if ((await dumpOf('libsql', subject.raw)) !== (await dumpOf('libsql', twin.raw))) {

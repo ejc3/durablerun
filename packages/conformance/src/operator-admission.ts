@@ -80,6 +80,21 @@ const planted = (db: Planting, statements: { sql: string; args: (string | number
 const falseOf = (admission: TaskAdmission | null): RetryGuardConjunct[] =>
   admission === null ? [] : RETRY_GUARD.filter((name) => !admission.retry[name])
 
+/**
+ * Plant a task that failed for good, then write to it what no engine path writes, and
+ * answer the task. `budget` is the attempts the task is given, one when none is.
+ */
+const failedThen =
+  (
+    statements: (task: Awaited<ReturnType<typeof failedTask>>) => Parameters<typeof planted>[1],
+    ...budget: [attempts?: number]
+  ) =>
+  async (db: Planting): Promise<string> => {
+    const task = await failedTask(db, ...budget)
+    await planted(db, statements(task))
+    return task.taskId
+  }
+
 export interface RetryRefusalState {
   /** What the task is, as its case is titled. A state no engine path reaches says it is fixture-built. */
   readonly what: string
@@ -112,97 +127,71 @@ export const RETRY_REFUSALS: Readonly<Record<RetryGuardConjunct, RetryRefusalSta
   ownsEveryRun: {
     what: 'a task that failed twice, whose first run is then moved to another queue, fixture-built',
     leavesFalse: ['ownsEveryRun'],
-    build: async (f) => {
-      const task = await failedTask(f, 2)
-      await planted(f, [
+    build: failedThen(
+      (task) => [
         {
           sql: "UPDATE runs SET queue = 'another-queue' WHERE run_id = ?",
           args: [task.firstRunId],
         },
-      ])
-      return task.taskId
-    },
+      ],
+      2,
+    ),
   },
   hasAFailureReason: {
     what: 'a failed task whose reason is then set to NULL, fixture-built',
     leavesFalse: ['hasAFailureReason'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, [
-        { sql: 'UPDATE tasks SET failure_reason = NULL WHERE task_id = ?', args: [task.taskId] },
-      ])
-      return task.taskId
-    },
+    build: failedThen((task) => [
+      { sql: 'UPDATE tasks SET failure_reason = NULL WHERE task_id = ?', args: [task.taskId] },
+    ]),
   },
   hasNoCompletedPayload: {
     what: 'a failed task that is then given a completed payload, fixture-built',
     leavesFalse: ['hasNoCompletedPayload'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, [
-        {
-          sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
-          args: [task.taskId],
-        },
-      ])
-      return task.taskId
-    },
+    build: failedThen((task) => [
+      {
+        sql: `UPDATE tasks SET completed_payload = '{"forged":true}' WHERE task_id = ?`,
+        args: [task.taskId],
+      },
+    ]),
   },
   hasARun: {
     what: 'a failed task whose runs are then deleted, fixture-built',
     leavesFalse: ['hasARun', 'chargeIsTheAttemptsOrOneMore', 'chargeWithinBudget'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, [{ sql: 'DELETE FROM runs WHERE task_id = ?', args: [task.taskId] }])
-      return task.taskId
-    },
+    build: failedThen((task) => [
+      { sql: 'DELETE FROM runs WHERE task_id = ?', args: [task.taskId] },
+    ]),
   },
   hasNoLiveRun: {
     what: 'a failed task whose run is then set back to pending, fixture-built',
     leavesFalse: ['hasNoLiveRun'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, [
-        { sql: "UPDATE runs SET state = 'pending' WHERE run_id = ?", args: [task.lastRunId] },
-      ])
-      return task.taskId
-    },
+    build: failedThen((task) => [
+      { sql: "UPDATE runs SET state = 'pending' WHERE run_id = ?", args: [task.lastRunId] },
+    ]),
   },
   attemptsInRange: {
     what: 'a failed task whose attempts are then set below zero, fixture-built',
     leavesFalse: ['attemptsInRange'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      // Two infrastructure retries keep the charge equal to the attempts, so the counter's
-      // bounds are the one thing that refuses.
-      await planted(f, [
-        {
-          sql: 'UPDATE tasks SET attempts = -1, infra_retries = 2 WHERE task_id = ?',
-          args: [task.taskId],
-        },
-      ])
-      return task.taskId
-    },
+    // Two infrastructure retries keep the charge equal to the attempts, so the counter's
+    // bounds are the one thing that refuses.
+    build: failedThen((task) => [
+      {
+        sql: 'UPDATE tasks SET attempts = -1, infra_retries = 2 WHERE task_id = ?',
+        args: [task.taskId],
+      },
+    ]),
   },
   infraRetriesInRange: {
     what: 'a failed task set one infrastructure retry past the cap, with its run at the matching ordinal, fixture-built',
     leavesFalse: ['infraRetriesInRange'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, infraRetrySeed(task.taskId, task.firstRunId, INFRA_RETRY_CAP + 1))
-      return task.taskId
-    },
+    build: failedThen((task) => infraRetrySeed(task.taskId, task.firstRunId, INFRA_RETRY_CAP + 1)),
   },
   everyRunOrdinalInRange: {
     what: 'a task that failed twice, whose first run is then set to ordinal zero, fixture-built',
     leavesFalse: ['everyRunOrdinalInRange'],
-    build: async (f) => {
-      const task = await failedTask(f, 2)
-      await planted(f, [
-        { sql: 'UPDATE runs SET attempt = 0 WHERE run_id = ?', args: [task.firstRunId] },
-      ])
-      return task.taskId
-    },
+    build: failedThen(
+      (task) => [{ sql: 'UPDATE runs SET attempt = 0 WHERE run_id = ?', args: [task.firstRunId] }],
+      2,
+    ),
   },
   budgetTakesOneMore: {
     what: 'a task spawned with the largest budget the store holds, failed for good on its first attempt',
@@ -212,13 +201,9 @@ export const RETRY_REFUSALS: Readonly<Record<RetryGuardConjunct, RetryRefusalSta
   chargeIsTheAttemptsOrOneMore: {
     what: 'a failed task then given three infrastructure retries its runs do not show, fixture-built',
     leavesFalse: ['chargeIsTheAttemptsOrOneMore'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, [
-        { sql: 'UPDATE tasks SET infra_retries = 3 WHERE task_id = ?', args: [task.taskId] },
-      ])
-      return task.taskId
-    },
+    build: failedThen((task) => [
+      { sql: 'UPDATE tasks SET infra_retries = 3 WHERE task_id = ?', args: [task.taskId] },
+    ]),
   },
   sagaNotBegun: {
     what: 'a task whose saga began and whose rollback pass then ended it',
@@ -238,13 +223,9 @@ export const RETRY_REFUSALS: Readonly<Record<RetryGuardConjunct, RetryRefusalSta
   chargeWithinBudget: {
     what: 'a task that failed on its one attempt, whose run is then set to ordinal two, fixture-built',
     leavesFalse: ['chargeWithinBudget'],
-    build: async (f) => {
-      const task = await failedTask(f)
-      await planted(f, [
-        { sql: 'UPDATE runs SET attempt = 2 WHERE run_id = ?', args: [task.firstRunId] },
-      ])
-      return task.taskId
-    },
+    build: failedThen((task) => [
+      { sql: 'UPDATE runs SET attempt = 2 WHERE run_id = ?', args: [task.firstRunId] },
+    ]),
   },
 }
 
@@ -526,10 +507,11 @@ export function operatorAdmissionConformance(
       for (const seed of WALKS) {
         await runFuzzScenario(makeFixture, seed, WALK_STEPS, async (f) => {
           const reads = f.operatorReadsOver(f.raw)
-          const tasksOf = async (): Promise<string[]> =>
-            (await snapshot(f.raw)).tasks
-              .filter((task) => task.queue === Q)
-              .map((task) => String(task.task_id))
+          // The walk is over, and nothing below writes before the revivals at the end, so
+          // the queue's tasks are listed once.
+          const tasks = (await snapshot(f.raw)).tasks
+            .filter((task) => task.queue === Q)
+            .map((task) => String(task.task_id))
           let nowMs = await f.admin.nowEpochMs()
           for (const [round, ahead] of ROUNDS_AHEAD_MS.entries()) {
             nowMs += ahead
@@ -538,7 +520,7 @@ export function operatorAdmissionConformance(
             // What the finder lists as the engine's to take, with room for every row.
             const owed = await reads.stuckRuns(Q, { graceSeconds: 0, limit: OPERATOR_LIST_CAP })
             const said = { claim: [] as string[], reclaim: [] as string[], cancel: [] as string[] }
-            for (const taskId of await tasksOf()) {
+            for (const taskId of tasks) {
               const admission = await reads.taskAdmission(Q, taskId)
               if (admission === null)
                 throw new Error(`${where}: task ${taskId} is listed and not read`)
@@ -571,7 +553,7 @@ export function operatorAdmissionConformance(
           // Last, because it writes: every conjunct holds of a task exactly when the
           // revival takes it.
           const disagreed: string[] = []
-          for (const taskId of await tasksOf()) {
+          for (const taskId of tasks) {
             const admission = await reads.taskAdmission(Q, taskId)
             if (admission === null)
               throw new Error(`walk ${seed}: task ${taskId} is listed and not read`)

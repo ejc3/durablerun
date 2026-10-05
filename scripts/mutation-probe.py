@@ -20710,18 +20710,6 @@ VERDICTS.update(
             "the drive verbs on libSQL emit, cancel and retry without --yes exit 2 with confirmation-required, change nothing and say what they would do, and with --yes change the database",
             "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
         ),
-        "cli-cancel-changes-nothing-without-yes": ExpectedVerdict(
-            "behavior",
-            "packages/cli/test/drive-verbs.test.ts",
-            "the drive verbs on libSQL emit, cancel and retry without --yes exit 2 with confirmation-required, change nothing and say what they would do, and with --yes change the database",
-            "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
-        ),
-        "cli-retry-changes-nothing-without-yes": ExpectedVerdict(
-            "behavior",
-            "packages/cli/test/drive-verbs.test.ts",
-            "the drive verbs on libSQL emit, cancel and retry without --yes exit 2 with confirmation-required, change nothing and say what they would do, and with --yes change the database",
-            "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
-        ),
         "cli-store-url-has-no-fallback": ExpectedVerdict(
             "behavior",
             "packages/cli/test/drive-verbs.test.ts",
@@ -20783,30 +20771,6 @@ VERDICTS.update(
             "mutation-verdict:behavior:cli-enqueue-spawns-under-its-key",
         ),
         "cli-enqueue-is-the-spawn-and-nothing-else": ExpectedVerdict(
-            "behavior",
-            "packages/cli/test/drive-twin.test.ts",
-            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
-            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
-        ),
-        "cli-emit-is-the-emit-and-nothing-else": ExpectedVerdict(
-            "behavior",
-            "packages/cli/test/drive-twin.test.ts",
-            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
-            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
-        ),
-        "cli-cancel-is-the-cancel-and-nothing-else": ExpectedVerdict(
-            "behavior",
-            "packages/cli/test/drive-twin.test.ts",
-            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
-            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
-        ),
-        "cli-retry-is-the-revival-and-nothing-else": ExpectedVerdict(
-            "behavior",
-            "packages/cli/test/drive-twin.test.ts",
-            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
-            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
-        ),
-        "cli-sweep-is-the-sweep-and-nothing-else": ExpectedVerdict(
             "behavior",
             "packages/cli/test/drive-twin.test.ts",
             "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
@@ -20991,6 +20955,19 @@ VERDICTS.update(
         ),
     }
 )
+# Five mutations fail the twin of a drive verb, and three fail the confirmation of a write.
+for _name in (
+    "cli-emit-is-the-emit-and-nothing-else",
+    "cli-cancel-is-the-cancel-and-nothing-else",
+    "cli-retry-is-the-revival-and-nothing-else",
+    "cli-sweep-is-the-sweep-and-nothing-else",
+):
+    VERDICTS[_name] = VERDICTS["cli-enqueue-is-the-spawn-and-nothing-else"]
+for _name in (
+    "cli-cancel-changes-nothing-without-yes",
+    "cli-retry-changes-nothing-without-yes",
+):
+    VERDICTS[_name] = VERDICTS["cli-emit-changes-nothing-without-yes"]
 
 MUTATIONS = [
     Mutation(

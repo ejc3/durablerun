@@ -1436,7 +1436,7 @@ describe('diagnose', () => {
       pending: factsOf({ state: 'pending', availableAtMs: lateBy, activatedGen: 0, claimGen: 0 }),
       sleeping: factsOf({ state: 'sleeping', availableAtMs: lateBy }),
     }
-    const taken = { claimTakes: true, sweepReclaims: true, sweepCancels: true }
+    const taken = THE_ENGINE_TAKES_IT
     const read = (facts: TaskFacts, admission: NonNullable<Evidence['admission']>) => {
       const answer = answered(diagnose(facts, { admission, checkpoints: 1 }))
       return [answer.cause, answer.verdict, answer.facts.owedAtMs ?? answer.facts.dueAtMs]

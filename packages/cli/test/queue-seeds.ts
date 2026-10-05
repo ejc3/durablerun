@@ -99,3 +99,35 @@ export async function deferralTick(
   }
   return run.runId
 }
+
+/** What `owedToASweep` leaves, each by the ids the sweep's transition names. */
+export interface OwedToASweep {
+  /** The launch that is lost: claimed, and never started. */
+  readonly lost: { readonly taskId: string; readonly runId: string }
+  /** The started run whose worker is gone, under a lease of 60 seconds. */
+  readonly left: { readonly taskId: string; readonly runId: string }
+  /** The task that must start within 45 seconds, which no claim takes. */
+  readonly doomed: { readonly taskId: string; readonly runId: string }
+}
+
+/**
+ * One of each transition a sweep makes: a launch lost, a lease lapsed and a deadline
+ * passed. Call it on a database at NOW_MS whose queue holds no other run that is due. It
+ * leaves the clock 61 seconds on, where all three are owed.
+ */
+export async function owedToASweep(db: CliDb): Promise<OwedToASweep> {
+  const lost = await db.store.spawn(QUEUE, 'lost', '{}')
+  const [claimed] = await db.store.claim(QUEUE, 'w-lost', { leaseSeconds: 60, limit: 1 })
+  if (claimed?.taskId !== lost.taskId) throw new Error('the lost launch was not claimed')
+  const left = await db.store.spawn(QUEUE, 'left', '{}')
+  const gone = await claimActivated(db, 'w-gone', left.taskId)
+  const doomed = await db.store.spawn(QUEUE, 'doomed', '{}', {
+    cancellation: { maxDelaySeconds: 45 },
+  })
+  await db.admin.setFakeNowEpochMs(NOW_MS + 61_000)
+  return {
+    lost: { taskId: lost.taskId, runId: claimed.runId },
+    left: { taskId: left.taskId, runId: gone.runId },
+    doomed: { taskId: doomed.taskId, runId: await runOf(db, doomed.taskId) },
+  }
+}

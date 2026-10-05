@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RETRY_GUARD, type RetryGuardConjunct, SAGA_STARTED_PREFIX } from '@durablerun/core'
+import { RETRY_GUARD, type RetryGuardConjunct } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { RETRY_REFUSALS } from '../../conformance/src/operator-admission.js'
@@ -11,17 +11,20 @@ import { CAUSE_OF_CONJUNCT, RETRY_CAUSES } from '../src/drive.js'
 import { exitCode } from '../src/exit.js'
 import { userValue } from '../src/render.js'
 import { fixture, parkedOnAnEvent } from './explain-seeds.js'
+import { owedToASweep } from './queue-seeds.js'
 import {
   type CliDb,
+  type JsonAnswer,
   NOW_MS,
   QUEUE,
   SENTINEL,
   type SeededTasks,
-  claimActivated,
-  openCliDb,
+  onDb,
   recordingOpener,
+  rollingBack,
   runCli,
   seedTasks,
+  writeFlags,
 } from './support.js'
 
 /**
@@ -31,29 +34,16 @@ import {
  * store's port call and nothing else is held on every dialect by drive-twin.test.ts.
  */
 
-type Answer = Readonly<Record<string, unknown>> & {
-  readonly error?: { readonly kind?: string; readonly cause?: string; readonly message?: string }
-}
-
-/** One database of these tests, closed whatever the body does. */
-async function onDb<T>(name: string, body: (db: CliDb) => Promise<T>): Promise<T> {
-  const db = await openCliDb('libsql', name)
-  try {
-    return await body(db)
-  } finally {
-    await db.close()
-  }
-}
-
-/** The flags every write to a queue takes: the queue, and the store named again. */
-const named = (db: CliDb): string[] => ['--queue', QUEUE, '--target', db.target]
+/** A command line without one flag and its value. */
+const without = (line: readonly string[], flag: string): string[] =>
+  line.filter((word, index) => word !== flag && line[index - 1] !== flag)
 
 let driven = 0
 /** Run a command with --json. Each run is a process of its own, so each mints ids of its own. */
 async function drive(db: CliDb, argv: readonly string[], env: CliDb['env'] = db.env) {
   driven += 1
   const run = await runCli([...argv, '--json'], env, undefined, testIdSource(`driven-${driven}`))
-  return { exit: run.exit, stderr: run.stderr, answer: JSON.parse(run.stdout) as Answer }
+  return { exit: run.exit, stderr: run.stderr, answer: JSON.parse(run.stdout) as JsonAnswer }
 }
 
 /** What a run changed: its answer, and whether a dump of every table is as it was before. */
@@ -84,23 +74,29 @@ async function seeded(db: CliDb): Promise<Seeded> {
  */
 const WRITES = {
   enqueue: {
-    line: (db: CliDb, _seeded: Seeded) => ['enqueue', 'report', '--key', 'order-7', ...named(db)],
+    line: (db: CliDb, _seeded: Seeded) => [
+      'enqueue',
+      'report',
+      '--key',
+      'order-7',
+      ...writeFlags(db),
+    ],
     yes: false,
   },
   emit: {
-    line: (db: CliDb, _seeded: Seeded) => ['emit', 'approval', '--yes', ...named(db)],
+    line: (db: CliDb, _seeded: Seeded) => ['emit', 'approval', '--yes', ...writeFlags(db)],
     yes: true,
   },
   cancel: {
-    line: (db: CliDb, tasks: Seeded) => ['cancel', tasks.pending, '--yes', ...named(db)],
+    line: (db: CliDb, tasks: Seeded) => ['cancel', tasks.pending, '--yes', ...writeFlags(db)],
     yes: true,
   },
   retry: {
-    line: (db: CliDb, tasks: Seeded) => ['retry', tasks.failed, '--yes', ...named(db)],
+    line: (db: CliDb, tasks: Seeded) => ['retry', tasks.failed, '--yes', ...writeFlags(db)],
     yes: true,
   },
   sweep: {
-    line: (db: CliDb, _seeded: Seeded) => ['sweep', ...named(db)],
+    line: (db: CliDb, _seeded: Seeded) => ['sweep', ...writeFlags(db)],
     yes: false,
   },
 } as const
@@ -159,17 +155,14 @@ describe('the drive verbs on libSQL', () => {
           {
             verb,
             exit: refused.exit,
-            kind: (JSON.parse(refused.stdout) as Answer).error?.kind,
+            kind: (JSON.parse(refused.stdout) as JsonAnswer).error?.kind,
             sent: sent().length,
             unchanged: (await db.dump()) === before,
           },
           'mutation-verdict:behavior:cli-a-drive-verb-names-its-store',
         ).toEqual({ verb, exit: 2, kind: 'target-mismatch', sent: 0, unchanged: true })
         // With no --target at all the command line is refused as the table refuses it.
-        const without = line.filter(
-          (word, index) => word !== '--target' && line[index - 1] !== '--target',
-        )
-        const unnamed = await changedBy(db, () => drive(db, without))
+        const unnamed = await changedBy(db, () => drive(db, without(line, '--target')))
         expect({ verb, exit: unnamed.out.exit, unchanged: unnamed.unchanged }).toEqual({
           verb,
           exit: 2,
@@ -243,11 +236,7 @@ describe('the drive verbs on libSQL', () => {
         // No DURABLERUN_STORE_URL: the store another variable names is not opened.
         const noStore = await drive(db, line, elsewhere)
         // No --queue: the queue another variable names is not written to.
-        const noQueue = await drive(
-          db,
-          line.filter((word, index) => word !== '--queue' && line[index - 1] !== '--queue'),
-          { ...db.env, ...elsewhere },
-        )
+        const noQueue = await drive(db, without(line, '--queue'), { ...db.env, ...elsewhere })
         answers.push({
           verb,
           noStore: [noStore.exit, noStore.answer.error?.message],
@@ -300,7 +289,7 @@ describe('enqueue on libSQL', () => {
         'order-7',
         '--params',
         '{ "a" : 1 }',
-        ...named(db),
+        ...writeFlags(db),
       ])
       expect({ exit: first.exit, created: first.answer.created }).toEqual({
         exit: 0,
@@ -323,7 +312,15 @@ describe('enqueue on libSQL', () => {
       // The same key again, from a process whose ids are its own, with other parameters:
       // nothing is created, and the answer names the task the first run made.
       const again = await changedBy(db, () =>
-        drive(db, ['enqueue', 'report', '--key', 'order-7', '--params', '{"b":2}', ...named(db)]),
+        drive(db, [
+          'enqueue',
+          'report',
+          '--key',
+          'order-7',
+          '--params',
+          '{"b":2}',
+          ...writeFlags(db),
+        ]),
       )
       expect({
         exit: again.out.exit,
@@ -339,14 +336,17 @@ describe('enqueue on libSQL', () => {
         unchanged: true,
       })
       // With no --params the parameters are null, as a hosted enqueue's are.
-      const bare = await drive(db, ['enqueue', 'report', '--key', 'order-8', ...named(db)])
+      const bare = await drive(db, ['enqueue', 'report', '--key', 'order-8', ...writeFlags(db)])
       const [second] = await db.store.claim(QUEUE, 'a-worker-2', { leaseSeconds: 60, limit: 1 })
       expect({ taskId: second?.taskId, params: second?.paramsJson }).toEqual({
         taskId: bare.answer.taskId,
         params: 'null',
       })
       // In text the answer prints on stdout, with the key and the parameters as digests.
-      const text = await runCli(['enqueue', 'report', '--key', 'order-9', ...named(db)], db.env)
+      const text = await runCli(
+        ['enqueue', 'report', '--key', 'order-9', ...writeFlags(db)],
+        db.env,
+      )
       const key = userValue('order-9', false)
       expect({ exit: text.exit, stderr: text.stderr }).toEqual({ exit: 0, stderr: '' })
       expect(text.stdout.split('\n')).toEqual(
@@ -362,20 +362,20 @@ describe('enqueue on libSQL', () => {
       const before = await db.dump()
       const { opener, sent } = recordingOpener()
       const noJson = await runCli(
-        ['enqueue', 'report', '--key', 'k', '--params', '{not json', ...named(db), '--json'],
+        ['enqueue', 'report', '--key', 'k', '--params', '{not json', ...writeFlags(db), '--json'],
         db.env,
         opener,
       )
       // Parameters that are no JSON are refused before anything opens.
       expect({ exit: noJson.exit, sent: sent().length }).toEqual({ exit: 2, sent: 0 })
-      const noKey = await drive(db, ['enqueue', 'report', ...named(db)])
+      const noKey = await drive(db, ['enqueue', 'report', ...writeFlags(db)])
       expect([noKey.exit, noKey.answer.error?.message?.split('\n')[0]]).toEqual([
         2,
         'enqueue requires --key',
       ])
       // A key that starts with $ is the engine's. The port refuses it in words that quote
       // the key, so they print only with --reveal.
-      const reserved = ['enqueue', 'report', '--key', '$spawn:forged', ...named(db)]
+      const reserved = ['enqueue', 'report', '--key', '$spawn:forged', ...writeFlags(db)]
       const hidden = await drive(db, reserved)
       const shown = await drive(db, [...reserved, '--reveal'])
       expect({
@@ -390,7 +390,7 @@ describe('emit on libSQL', () => {
   it('creates an event and wakes the runs parked on it, and a later emit is told the digest of the payload that stands', () =>
     onDb('drive-emit', async (db) => {
       const parked = await parkedOnAnEvent(db, null, {}, 'go-ahead')
-      const flags = named(db)
+      const flags = writeFlags(db)
       const first = await drive(db, [
         'emit',
         'go-ahead',
@@ -465,7 +465,7 @@ describe('emit on libSQL', () => {
         '--payload',
         '{"mine":"caller-text"}',
         '--yes',
-        ...named(db),
+        ...writeFlags(db),
       ]
       const printed: string[] = []
       for (const extra of [[], ['--json'], ['--reveal'], ['--json', '--reveal']]) {
@@ -490,21 +490,21 @@ describe('emit on libSQL', () => {
     onDb('drive-emit-reserved', async (db) => {
       const { opener, sent } = recordingOpener()
       const run = await runCli(
-        ['emit', '$task-done:a-task', '--yes', ...named(db), '--json'],
+        ['emit', '$task-done:a-task', '--yes', ...writeFlags(db), '--json'],
         db.env,
         opener,
       )
       expect(
         {
           exit: run.exit,
-          kind: (JSON.parse(run.stdout) as Answer).error?.kind,
+          kind: (JSON.parse(run.stdout) as JsonAnswer).error?.kind,
           sent: sent().length,
         },
         'mutation-verdict:behavior:cli-emit-refuses-a-reserved-name',
       ).toEqual({ exit: exitCode('refused'), kind: 'reserved-name', sent: 0 })
       // A payload that is no JSON is refused before anything opens, too.
       const noJson = await runCli(
-        ['emit', 'an-event', '--payload', '{not json', '--yes', ...named(db)],
+        ['emit', 'an-event', '--payload', '{not json', '--yes', ...writeFlags(db)],
         db.env,
         opener,
       )
@@ -516,7 +516,7 @@ describe('cancel on libSQL', () => {
   it('cancels a live task, reports a task cancelled already, and names a task that ended another way or is not there', () =>
     onDb('drive-cancel', async (db) => {
       const tasks = await seedTasks(db)
-      const cancelled = await drive(db, ['cancel', tasks.pending, '--yes', ...named(db)])
+      const cancelled = await drive(db, ['cancel', tasks.pending, '--yes', ...writeFlags(db)])
       expect(cancelled).toMatchObject({
         exit: 0,
         answer: { outcome: 'cancelled', stateBefore: 'pending', taskId: tasks.pending },
@@ -525,7 +525,7 @@ describe('cancel on libSQL', () => {
       expect(result.answer.state).toBe('cancelled')
       // Again: the port answers false, and the task as it stands says why.
       const again = await changedBy(db, () =>
-        drive(db, ['cancel', tasks.pending, '--yes', ...named(db)]),
+        drive(db, ['cancel', tasks.pending, '--yes', ...writeFlags(db)]),
       )
       expect({
         exit: again.out.exit,
@@ -533,9 +533,9 @@ describe('cancel on libSQL', () => {
         unchanged: again.unchanged,
       }).toEqual({ exit: 0, outcome: 'already-cancelled', unchanged: true })
       const ended = await changedBy(db, () =>
-        drive(db, ['cancel', tasks.completed, '--yes', ...named(db)]),
+        drive(db, ['cancel', tasks.completed, '--yes', ...writeFlags(db)]),
       )
-      const absent = await drive(db, ['cancel', 'no-such-task', '--yes', ...named(db)])
+      const absent = await drive(db, ['cancel', 'no-such-task', '--yes', ...writeFlags(db)])
       expect(
         {
           ended: [ended.out.exit, ended.out.answer.error?.cause, ended.out.answer.state],
@@ -551,7 +551,7 @@ describe('cancel on libSQL', () => {
         absent: [exitCode('not-found'), 'not-found'],
       })
       // In text a refusal prints on stderr.
-      const text = await runCli(['cancel', tasks.completed, '--yes', ...named(db)], db.env)
+      const text = await runCli(['cancel', tasks.completed, '--yes', ...writeFlags(db)], db.env)
       expect({
         exit: text.exit,
         stdout: text.stdout,
@@ -562,26 +562,8 @@ describe('cancel on libSQL', () => {
   it('refuses a task whose saga began without --halt-rollback, prints the rollback facts, and cancels it with the flag', () =>
     onDb('drive-cancel-saga', async (db) => {
       // A registered step started, and the task's failure placed a rollback pass.
-      const task = await db.store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
-      const forward = await claimActivated(db, 'w-forward', task.taskId)
-      await db.store.setCheckpoint(
-        QUEUE,
-        task.taskId,
-        forward.runId,
-        forward.claimToken,
-        `${SAGA_STARTED_PREFIX}charge`,
-        '1',
-        60,
-      )
-      const entered = await db.store.fail(
-        QUEUE,
-        forward.runId,
-        forward.claimToken,
-        '{"name":"E"}',
-        null,
-      )
-      expect(entered.rollingBack).toBe(true)
-      const line = ['cancel', task.taskId, '--yes', ...named(db)]
+      const { taskId, forward } = await rollingBack(db)
+      const line = ['cancel', taskId, '--yes', ...writeFlags(db)]
       const refused = await changedBy(db, () => drive(db, line))
       expect(
         {
@@ -611,7 +593,7 @@ describe('cancel on libSQL', () => {
         unchanged: true,
       })
       // Without --yes it says both flags are needed, and changes nothing either.
-      const asked = await changedBy(db, () => drive(db, ['cancel', task.taskId, ...named(db)]))
+      const asked = await changedBy(db, () => drive(db, ['cancel', taskId, ...writeFlags(db)]))
       expect([
         asked.out.exit,
         asked.out.answer.error?.message?.includes('--yes and --halt-rollback'),
@@ -626,7 +608,7 @@ describe('cancel on libSQL', () => {
         plain.taskId,
         '--yes',
         '--halt-rollback',
-        ...named(db),
+        ...writeFlags(db),
       ])
       expect([withFlag.exit, withFlag.answer.outcome]).toEqual([0, 'cancelled'])
     }))
@@ -637,7 +619,7 @@ describe('cancel on libSQL', () => {
       // Fixture-built: no engine path gives a task a run in another queue.
       await fixture(db, "UPDATE runs SET queue = 'elsewhere' WHERE task_id = ?", [task.taskId])
       const refused = await changedBy(db, () =>
-        drive(db, ['cancel', task.taskId, '--yes', ...named(db)]),
+        drive(db, ['cancel', task.taskId, '--yes', ...writeFlags(db)]),
       )
       expect({
         exit: refused.out.exit,
@@ -657,7 +639,7 @@ describe('retry on libSQL', () => {
   it('revives a failed task, and a repeat reports the live run it finds', () =>
     onDb('drive-retry', async (db) => {
       const tasks = await seedTasks(db)
-      const revived = await drive(db, ['retry', tasks.failed, '--yes', ...named(db)])
+      const revived = await drive(db, ['retry', tasks.failed, '--yes', ...writeFlags(db)])
       expect(revived).toMatchObject({
         exit: 0,
         answer: { outcome: 'revived', attempt: 2, stateBefore: 'failed' },
@@ -665,7 +647,7 @@ describe('retry on libSQL', () => {
       const explained = await drive(db, ['explain', tasks.failed, '--queue', QUEUE])
       expect(explained.answer.cause).toBe('pending-due-unclaimed')
       const again = await changedBy(db, () =>
-        drive(db, ['retry', tasks.failed, '--yes', ...named(db)]),
+        drive(db, ['retry', tasks.failed, '--yes', ...writeFlags(db)]),
       )
       expect(
         {
@@ -683,7 +665,7 @@ describe('retry on libSQL', () => {
         attempt: 2,
         unchanged: true,
       })
-      const absent = await drive(db, ['retry', 'no-such-task', '--yes', ...named(db)])
+      const absent = await drive(db, ['retry', 'no-such-task', '--yes', ...writeFlags(db)])
       expect([absent.exit, absent.answer.error?.kind]).toEqual([exitCode('not-found'), 'not-found'])
     }))
 
@@ -705,7 +687,7 @@ describe('retry on libSQL', () => {
         onDb(`drive-retry-${name}`, async (db) => {
           const taskId = await planted.build(db)
           const refused = await changedBy(db, () =>
-            drive(db, ['retry', taskId, '--yes', ...named(db)]),
+            drive(db, ['retry', taskId, '--yes', ...writeFlags(db)]),
           )
           expect(
             {
@@ -729,7 +711,7 @@ describe('retry on libSQL', () => {
             unchanged: true,
           })
           // In text the refusal prints on stderr, with its cause.
-          const text = await runCli(['retry', taskId, '--yes', ...named(db)], db.env)
+          const text = await runCli(['retry', taskId, '--yes', ...writeFlags(db)], db.env)
           expect({
             exit: text.exit,
             stdout: text.stdout,
@@ -743,18 +725,11 @@ describe('retry on libSQL', () => {
 describe('sweep on libSQL', () => {
   it("cancels what is past its deadline and takes back the runs whose lease lapsed, up to its limit, and prints the queue's next wake", () =>
     onDb('drive-sweep', async (db) => {
-      // A launch that is lost, a started run whose worker is gone, and a task that must
-      // start within 30 seconds.
-      const lost = await db.store.spawn(QUEUE, 'lost', '{}')
-      await db.store.claim(QUEUE, 'w-lost', { leaseSeconds: 60, limit: 1 })
-      const left = await db.store.spawn(QUEUE, 'left', '{}')
-      const gone = await claimActivated(db, 'w-gone', left.taskId)
-      const doomed = await db.store.spawn(QUEUE, 'doomed', '{}', {
-        cancellation: { maxDelaySeconds: 30 },
-      })
-      await db.admin.setFakeNowEpochMs(NOW_MS + 61_000)
+      // A launch that is lost, a started run whose worker is gone, and a task past the
+      // deadline it had to start by.
+      const { lost, left, doomed } = await owedToASweep(db)
       // One transition at a time: the sweep says it filled its limit.
-      const one = await drive(db, ['sweep', '--limit', '1', ...named(db)])
+      const one = await drive(db, ['sweep', '--limit', '1', ...writeFlags(db)])
       expect(one).toMatchObject({
         exit: 0,
         answer: {
@@ -764,7 +739,7 @@ describe('sweep on libSQL', () => {
           transitions: [{ kind: 'cancelled', taskId: doomed.taskId, runId: doomed.runId }],
         },
       })
-      const rest = await drive(db, ['sweep', ...named(db)])
+      const rest = await drive(db, ['sweep', ...writeFlags(db)])
       expect({
         exit: rest.exit,
         limit: rest.answer.limit,
@@ -778,20 +753,20 @@ describe('sweep on libSQL', () => {
         limit: SWEEP_DEFAULT_LIMIT,
         atLimit: false,
         transitions: [
-          ['claim-timeout', left.taskId, gone.runId],
+          ['claim-timeout', left.taskId, left.runId],
           ['lost-launch', lost.taskId, lost.runId],
         ].sort(),
         nextWake: await db.store.nextWakeAtEpochMs(QUEUE),
       })
       // Nothing is left for a sweep: it makes no transition, and says so.
-      const none = await changedBy(db, () => drive(db, ['sweep', ...named(db)]))
+      const none = await changedBy(db, () => drive(db, ['sweep', ...writeFlags(db)]))
       expect([none.out.answer.swept, none.out.answer.transitions, none.unchanged]).toEqual([
         0,
         [],
         true,
       ])
       // In text the answer prints on stdout.
-      const text = await runCli(['sweep', ...named(db)], db.env)
+      const text = await runCli(['sweep', ...writeFlags(db)], db.env)
       expect({
         exit: text.exit,
         stderr: text.stderr,
@@ -808,7 +783,7 @@ describe('sweep on libSQL', () => {
       for (const limit of ['0', '1001', 'ten', '-1']) {
         const { opener, sent } = recordingOpener()
         const run = await runCli(
-          ['sweep', `--limit=${limit}`, ...named(db), '--json'],
+          ['sweep', `--limit=${limit}`, ...writeFlags(db), '--json'],
           db.env,
           opener,
         )

@@ -18,7 +18,7 @@ import {
   NOW_MS,
   QUEUE,
   claimActivated,
-  openCliDb,
+  onDb,
   recordingOpener,
   runCli,
   seedTasks,
@@ -86,16 +86,6 @@ const NO_ROW: Readonly<Record<Leg, string[]>> = {
   lapsedNotReclaimed: [],
   cancelOverdue: [],
   deadlineNotCancelled: [],
-}
-
-/** One database of these tests, closed whatever the body does. */
-async function onDb<T>(name: string, body: (db: CliDb) => Promise<T>): Promise<T> {
-  const db = await openCliDb('libsql', name)
-  try {
-    return await body(db)
-  } finally {
-    await db.close()
-  }
 }
 
 describe('stuck on libSQL', () => {

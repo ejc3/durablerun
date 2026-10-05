@@ -137,16 +137,19 @@ const BY_ID_OR_KEY = {
   },
 } as const satisfies Pick<CommandSpec, 'positionals' | 'alternative' | 'flags'>
 
+/** The flag every command that writes names its store again with. */
+const TARGET_FLAG = {
+  type: 'string',
+  required: true,
+  value: 'T',
+  description: "the store URL's host, or the path of a file: URL, named again",
+} as const satisfies FlagSpec
+
 /** The flags of a command that writes to a queue: the store named again, and the queue from the arguments alone. */
 const DRIVE_FLAGS = {
   ...OUTPUT_FLAGS,
   queue: { type: 'string', required: true, value: 'Q', description: 'the queue to write to' },
-  target: {
-    type: 'string',
-    required: true,
-    value: 'T',
-    description: "the store URL's host, or the path of a file: URL, named again",
-  },
+  target: TARGET_FLAG,
   reveal: READ_FLAGS.reveal,
 } as const satisfies Record<string, FlagSpec>
 
@@ -272,12 +275,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     flags: {
       ...OUTPUT_FLAGS,
       yes: { type: 'boolean', description: 'confirm the change; without it nothing changes' },
-      target: {
-        type: 'string',
-        required: true,
-        value: 'T',
-        description: "the store URL's host, or the path of a file: URL, named again",
-      },
+      target: TARGET_FLAG,
     },
     opensStore: true,
     writes: true,

@@ -1,6 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { format, inspect } from 'node:util'
 import {
   REASON_CANCELLED,
@@ -13,15 +11,18 @@ import { VERBS, type Verb } from '../src/commands.js'
 import { type Io, lastCatch } from '../src/main.js'
 import { failureReason, resultView } from '../src/render.js'
 import {
+  BIN,
   COMPLETED_KEY,
   type CliDb,
   QUEUE,
+  ROOT,
   SENTINEL,
   type SeededTasks,
   openCliDb,
   recordingOpener,
   runCli,
   seedTasks,
+  writeFlags,
 } from './support.js'
 
 /**
@@ -114,15 +115,15 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
       const key = ['--key', `enqueue-${SENTINEL}`]
       const params = ['--params', JSON.stringify({ secret: SENTINEL })]
       return [
-        ['enqueue', 'report', ...key, ...params, ...written(db)],
+        ['enqueue', 'report', ...key, ...params, ...writeFlags(db)],
         // The same again, which finds the task under its key.
-        ['enqueue', 'report', ...key, ...params, ...written(db)],
+        ['enqueue', 'report', ...key, ...params, ...writeFlags(db)],
         // A key of the engine's own namespace, which the port refuses in words that quote it.
-        ['enqueue', 'report', '--key', `$${SENTINEL}`, ...written(db)],
+        ['enqueue', 'report', '--key', `$${SENTINEL}`, ...writeFlags(db)],
         // Parameters that are no JSON, another store named, and no task name.
-        ['enqueue', 'report', ...key, '--params', `{"not json ${SENTINEL}`, ...written(db)],
+        ['enqueue', 'report', ...key, '--params', `{"not json ${SENTINEL}`, ...writeFlags(db)],
         ['enqueue', 'report', ...key, ...params, '--queue', QUEUE, '--target', 'elsewhere'],
-        ['enqueue', ...key, ...params, ...written(db)],
+        ['enqueue', ...key, ...params, ...writeFlags(db)],
       ]
     },
     shows: true,
@@ -134,12 +135,12 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
       const payload = ['--payload', JSON.stringify({ payload: SENTINEL })]
       return [
         // The seeded event, whose stored payload holds the sentinel: asked, and then sent.
-        ['emit', 'page-ready', ...payload, ...written(db)],
-        ['emit', 'page-ready', ...payload, '--yes', ...written(db)],
-        ['emit', 'a-new-event', ...payload, ...written(db)],
-        ['emit', 'a-new-event', ...payload, '--yes', ...written(db)],
-        ['emit', '$reserved', ...payload, '--yes', ...written(db)],
-        ['emit', 'a-new-event', '--payload', `{"not json ${SENTINEL}`, '--yes', ...written(db)],
+        ['emit', 'page-ready', ...payload, ...writeFlags(db)],
+        ['emit', 'page-ready', ...payload, '--yes', ...writeFlags(db)],
+        ['emit', 'a-new-event', ...payload, ...writeFlags(db)],
+        ['emit', 'a-new-event', ...payload, '--yes', ...writeFlags(db)],
+        ['emit', '$reserved', ...payload, '--yes', ...writeFlags(db)],
+        ['emit', 'a-new-event', '--payload', `{"not json ${SENTINEL}`, '--yes', ...writeFlags(db)],
       ]
     },
     shows: true,
@@ -148,28 +149,28 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
   // task's reason holds the sentinel, and neither prints it.
   cancel: {
     lines: (db, seeded) => [
-      ['cancel', seeded.pending, ...written(db)],
-      ['cancel', seeded.pending, '--yes', ...written(db)],
-      ['cancel', seeded.pending, '--yes', ...written(db)],
-      ['cancel', seeded.completed, '--yes', ...written(db)],
-      ['cancel', 'no-such-task', '--yes', ...written(db)],
+      ['cancel', seeded.pending, ...writeFlags(db)],
+      ['cancel', seeded.pending, '--yes', ...writeFlags(db)],
+      ['cancel', seeded.pending, '--yes', ...writeFlags(db)],
+      ['cancel', seeded.completed, '--yes', ...writeFlags(db)],
+      ['cancel', 'no-such-task', '--yes', ...writeFlags(db)],
     ],
     shows: false,
   },
   retry: {
     lines: (db, seeded) => [
-      ['retry', seeded.failed, ...written(db)],
-      ['retry', seeded.failed, '--yes', ...written(db)],
-      ['retry', seeded.failed, '--yes', ...written(db)],
-      ['retry', seeded.completed, '--yes', ...written(db)],
-      ['retry', 'no-such-task', '--yes', ...written(db)],
+      ['retry', seeded.failed, ...writeFlags(db)],
+      ['retry', seeded.failed, '--yes', ...writeFlags(db)],
+      ['retry', seeded.failed, '--yes', ...writeFlags(db)],
+      ['retry', seeded.completed, '--yes', ...writeFlags(db)],
+      ['retry', 'no-such-task', '--yes', ...writeFlags(db)],
     ],
     shows: false,
   },
   sweep: {
     lines: (db) => [
-      ['sweep', ...written(db)],
-      ['sweep', ...written(db), '--limit', SENTINEL],
+      ['sweep', ...writeFlags(db)],
+      ['sweep', ...writeFlags(db), '--limit', SENTINEL],
     ],
     shows: false,
   },
@@ -183,11 +184,6 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     ],
     shows: false,
   },
-}
-
-/** The flags every write to a queue takes: the queue, and the store named again. */
-function written(db: CliDb): string[] {
-  return ['--queue', QUEUE, '--target', db.target]
 }
 
 /**
@@ -338,9 +334,6 @@ function targetOf(url: string): string {
     return 'x'
   }
 }
-
-const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
 /** The bin as a child process, with only PATH and the store URL in its environment. */
 function runBin(url: string, argv: readonly string[]) {

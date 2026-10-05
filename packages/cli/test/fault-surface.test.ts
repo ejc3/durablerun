@@ -15,17 +15,16 @@ import {
 import { exitCode } from '../src/exit.js'
 import { openStore } from '../src/open-store.js'
 import { asleep, chainOfAwaits, parkedOnAnEvent } from './explain-seeds.js'
+import { owedToASweep } from './queue-seeds.js'
 import {
   COMPLETED_KEY,
   type CliDb,
   type FaultSite,
-  NOW_MS,
   QUEUE,
   SELECTED,
   SENTINEL,
   type SeededTasks,
   type StartingSchema,
-  claimActivated,
   faulting,
   openCliDb,
   openerWrapping,
@@ -34,6 +33,7 @@ import {
   runCli,
   seedTasks,
   withoutMinted,
+  writeFlags,
 } from './support.js'
 
 /**
@@ -99,7 +99,7 @@ const readAt = (line: (seeded: SeededTasks | undefined) => string[]): readonly S
 ]
 
 /** The flags every write to a queue takes: the queue, the store named again, and JSON. */
-const named = (db: CliDb): string[] => ['--queue', QUEUE, '--target', db.target, '--json']
+const named = (db: CliDb): string[] => [...writeFlags(db), '--json']
 
 /** A drive verb's one starting state: the current version, with tasks written on every dialect. */
 const writeAt = (name: string, line: (db: CliDb, seeded: SeededTasks) => string[]): Scenario => ({
@@ -223,18 +223,7 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
         'the current version, of a queue with a deadline passed, a launch lost and a lease lapsed',
         (db) => ['sweep', ...named(db)],
       ),
-      prepare: async (db) => {
-        // A launch that is lost: claimed, and never started.
-        const lost = await db.store.spawn(QUEUE, 'lost', '{}')
-        const [claimed] = await db.store.claim(QUEUE, 'w-lost', { leaseSeconds: 60, limit: 1 })
-        if (claimed?.taskId !== lost.taskId) throw new Error('the lost launch was not claimed')
-        // A started run whose worker is gone, and a task that must start within 45 seconds.
-        const left = await db.store.spawn(QUEUE, 'left', '{}')
-        await claimActivated(db, 'w-gone', left.taskId)
-        await db.store.spawn(QUEUE, 'doomed', '{}', { cancellation: { maxDelaySeconds: 45 } })
-        await db.admin.setFakeNowEpochMs(NOW_MS + 61_000)
-        return lost.taskId
-      },
+      prepare: async (db) => (await owedToASweep(db)).lost.taskId,
     },
   ],
 }

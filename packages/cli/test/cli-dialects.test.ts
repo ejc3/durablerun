@@ -1,6 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import {
   CURRENT_SCHEMA_VERSION,
   SCHEMA_VERSION_NOTES as LIBSQL_NOTES,
@@ -14,8 +12,10 @@ import type { SchemaVersionNotes } from '../src/open-store.js'
 import { EXPLAIN_SEEDS, onSeed, parkedOnAnEvent } from './explain-seeds.js'
 import { OWED_AT_MS, owedQueue } from './queue-seeds.js'
 import {
+  BIN,
   NOW_MS,
   QUEUE,
+  ROOT,
   SELECTED,
   STORE_COMMANDS,
   commandLine,
@@ -28,6 +28,7 @@ import {
   seedSagas,
   seedTasks,
   withoutDialect,
+  writeFlags,
 } from './support.js'
 
 const NOTES: Readonly<Record<(typeof SELECTED)[number], SchemaVersionNotes>> = {
@@ -35,9 +36,6 @@ const NOTES: Readonly<Record<(typeof SELECTED)[number], SchemaVersionNotes>> = {
   postgres: POSTGRES_NOTES,
   mysql: MYSQL_NOTES,
 }
-
-const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
 /** One seeded database's tasks by the name of their seed, and what every compared command line printed. */
 interface Answers {
@@ -437,7 +435,7 @@ describe('the CLI on every selected dialect', () => {
           // A task that is due from this instant, for `stuck` to find.
           await db.store.spawn(QUEUE, 'report', '{}')
           await plantNullPayload(older)
-          const named = ['--queue', QUEUE, '--target', db.target]
+          const named = writeFlags(db)
           const unreachable: Record<string, string> = {
             libsql: 'libsql://127.0.0.1:1',
             postgres: 'postgresql://postgres:postgres@127.0.0.1:1/durablerun',

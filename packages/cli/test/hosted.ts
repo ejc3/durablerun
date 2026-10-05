@@ -1,9 +1,9 @@
 import { type IncomingMessage, type Server, createServer } from 'node:http'
-import { type Clock, systemClock } from '@durablerun/core'
+import { systemClock } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { bearerAuthorization, createHostedRouter } from '@durablerun/driver'
 import type { TaskRegistry } from '@durablerun/sdk'
-import { type CliDb, QUEUE } from './support.js'
+import { type CliDb, QUEUE, openCliDb } from './support.js'
 
 /**
  * A hosted deployment for the tests of `tick`: the driver package's own hosted router over
@@ -12,16 +12,19 @@ import { type CliDb, QUEUE } from './support.js'
  * the one a deployment mounts, with its bearer authorization, so what `tick` is answered
  * here is what a deployment answers.
  */
+/** One request a listener was sent: its method, its path, its headers and its body. */
+export interface SentRequest {
+  readonly method: string
+  readonly path: string
+  readonly headers: Readonly<Record<string, string>>
+  readonly body: string
+}
+
 export interface HostedDeployment {
   /** The deployment's base URL, `http://127.0.0.1:<port>`. */
   readonly url: string
-  /** Every request the listener was sent, in order: its method, its path, its headers and its body. */
-  readonly requests: readonly {
-    readonly method: string
-    readonly path: string
-    readonly headers: Readonly<Record<string, string>>
-    readonly body: string
-  }[]
+  /** Every request the listener was sent, in order. */
+  readonly requests: readonly SentRequest[]
   /** Every answer the listener gave, in order: its status and its body. */
   readonly answers: readonly { readonly status: number; readonly body: string }[]
   /** How many connections the listener accepted, whether or not a request followed. */
@@ -64,12 +67,7 @@ function listening(server: Server): Promise<number> {
 export async function serving(
   answer: (request: Request) => Promise<Response>,
 ): Promise<HostedDeployment> {
-  const requests: {
-    method: string
-    path: string
-    headers: Record<string, string>
-    body: string
-  }[] = []
+  const requests: SentRequest[] = []
   const answers: { status: number; body: string }[] = []
   let accepted = 0
   const server = createServer((incoming, outgoing) => {
@@ -118,15 +116,11 @@ export const TICK_TOKEN = 'tick-token-7f3a'
  * The hosted router over a test database, for its queue, with the handlers given. Its tick
  * route takes `TICK_TOKEN` as a bearer and refuses every other request.
  */
-export function hostedDeployment(
-  db: CliDb,
-  registry: TaskRegistry = new Map(),
-  clock: Clock = systemClock(),
-): Promise<HostedDeployment> {
+export function hostedDeployment(db: CliDb, registry: TaskRegistry): Promise<HostedDeployment> {
   const router = createHostedRouter({
     store: db.store,
     ids: testIdSource('hosted'),
-    clock,
+    clock: systemClock(),
     registry,
     authorization: bearerAuthorization({ token: TICK_TOKEN }),
     queue: QUEUE,
@@ -134,4 +128,24 @@ export function hostedDeployment(
     leaseSeconds: 60,
   })
   return serving((request) => router.handle(request))
+}
+
+/** A test database of one dialect and a deployment over it, both closed whatever the body does. */
+export async function onDeployment<T>(
+  dialect: Parameters<typeof openCliDb>[0],
+  name: string,
+  registry: TaskRegistry,
+  body: (db: CliDb, deployment: HostedDeployment) => Promise<T>,
+): Promise<T> {
+  const db = await openCliDb(dialect, name)
+  try {
+    const deployment = await hostedDeployment(db, registry)
+    try {
+      return await body(db, deployment)
+    } finally {
+      await deployment.close()
+    }
+  } finally {
+    await db.close()
+  }
 }

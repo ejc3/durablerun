@@ -11,7 +11,6 @@ import type { OperatorReads } from './ports.js'
 import type { SqlRow } from './primitives.js'
 import { decodeRollbackOutcome } from './sagas.js'
 import type { SqlFragment } from './sql-tree.js'
-import { QUEUE_TABLES, type QueueTable, STORE_TABLE_COLUMNS } from './store-tables.js'
 import {
   type RunInstant,
   databaseNowRead,
@@ -40,6 +39,7 @@ import {
   type RetryConjuncts,
   type RetryGuardConjunct,
 } from './statements/retry-task.js'
+import { QUEUE_TABLES, type QueueTable, STORE_TABLE_COLUMNS } from './store-tables.js'
 import { decodeTaskResult } from './task-result.js'
 import type {
   AgedTasks,
@@ -68,8 +68,8 @@ import type {
   UnadmittedRun,
   UncancelledTask,
   UnreclaimedRun,
-  Windowed,
   WaitFacts,
+  Windowed,
 } from './types.js'
 import {
   DERIVED_INTEGER_BOUNDS,
@@ -1172,12 +1172,13 @@ async function taskAdmission(
   // By ordinal and then by id, as a task's facts list its runs.
   const byOrdinal = (left: RunAdmission, right: RunAdmission): number =>
     absentLast(left.attempt, right.attempt) || byCodePoints(left.runId, right.runId)
+  runs.sort(byOrdinal)
   return {
     state: stringFrom(task.state),
     cancelAtMs: integersOf(task, corrupt, { taskId })(TASK.cancel_at_ms),
     retry: freeze(retry),
     sweepCancels: flagOf('task-admission sweepCancels', task.sweepCancels),
-    runs: [...runs].sort(byOrdinal),
+    runs,
     corrupt: inOrder(corrupt),
   }
 }

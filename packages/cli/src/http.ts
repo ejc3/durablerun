@@ -57,11 +57,18 @@ const WHAT_A_URL_IS =
  * only typed. The request goes to the tick route of that origin, whatever path either URL
  * holds.
  */
-export function tickRequest(
-  url: string,
-  baseUrl: string | undefined,
-  token: string | undefined,
-): TickRequest | TickRefusal {
+export function tickRequest({
+  url,
+  baseUrl,
+  token,
+}: {
+  /** What `--url` named. */
+  readonly url: string
+  /** DURABLERUN_BASE_URL. */
+  readonly baseUrl: string | undefined
+  /** DURABLERUN_TICK_TOKEN. */
+  readonly token: string | undefined
+}): TickRequest | TickRefusal {
   const usage = (refused: string): TickRefusal => ({ kind: 'usage', refused })
   if (baseUrl === undefined || baseUrl === '') {
     return usage('set DURABLERUN_BASE_URL to the deployment tick --url names; nothing was sent')
@@ -95,7 +102,11 @@ export function tickRequest(
 
 export type TickOutcome =
   /** The deployment answered. `body` is its JSON when the body is one JSON object, and undefined otherwise. */
-  | { readonly kind: 'answered'; readonly status: number; readonly body?: Record<string, unknown> }
+  | {
+      readonly kind: 'answered'
+      readonly status: number
+      readonly body: Record<string, unknown> | undefined
+    }
   /** No answer came within the time allowed. The pass may still have run. */
   | { readonly kind: 'timed-out' }
   /** The request failed before an answer: no connection, or one that broke. */
@@ -128,11 +139,8 @@ export async function postTick(
       redirect: 'manual',
       signal: over.signal,
     })
-    const text = await response.text()
-    const body = jsonObject(text)
-    return body === undefined
-      ? { kind: 'answered', status: response.status }
-      : { kind: 'answered', status: response.status, body }
+    const body = jsonObject(await response.text())
+    return { kind: 'answered', status: response.status, body }
   } catch {
     return timedOut ? { kind: 'timed-out' } : { kind: 'unreachable' }
   } finally {

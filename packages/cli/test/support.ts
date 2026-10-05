@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   type Clock,
   type IdSource,
@@ -509,13 +510,47 @@ export async function seedTasks(db: CliDb, queue = QUEUE): Promise<SeededTasks> 
 }
 
 /** Claim the one run of the queue that is due, which must be the task's, and activate it. */
-export async function claimActivated(db: CliDb, worker: string, taskId: string, queue = QUEUE) {
-  const [run] = await db.store.claim(queue, worker, { leaseSeconds: 60, limit: 1 })
+export async function claimActivated(
+  db: CliDb,
+  worker: string,
+  taskId: string,
+  queue = QUEUE,
+  leaseSeconds = 60,
+) {
+  const [run] = await db.store.claim(queue, worker, { leaseSeconds, limit: 1 })
   if (run?.taskId !== taskId) throw new Error(`${worker} did not claim task ${taskId}`)
   if ((await db.store.activate(queue, run.runId, run.claimToken, run.claimGen)) === null) {
     throw new Error(`${worker} could not activate the run of task ${taskId}`)
   }
   return run
+}
+
+/**
+ * A task whose saga began and that is rolling back: a registered step started, and the
+ * task's failure placed a rollback pass. It answers the task and the forward run that
+ * failed. Call it when the queue holds no other run that is due.
+ */
+export async function rollingBack(db: CliDb) {
+  const task = await db.store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
+  const forward = await claimActivated(db, 'w-forward', task.taskId)
+  await db.store.setCheckpoint(
+    QUEUE,
+    task.taskId,
+    forward.runId,
+    forward.claimToken,
+    `${SAGA_STARTED_PREFIX}charge`,
+    '1',
+    60,
+  )
+  const entered = await db.store.fail(
+    QUEUE,
+    forward.runId,
+    forward.claimToken,
+    '{"name":"E"}',
+    null,
+  )
+  if (!entered.rollingBack) throw new Error('the failure placed no rollback pass')
+  return { taskId: task.taskId, forward }
 }
 
 export interface SeededSagas {
@@ -654,3 +689,30 @@ export function comparedLines(
   }
   return lines
 }
+
+/** The repository's root and the CLI's bin, for a case that runs the bin as a child process. */
+export const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
+export const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
+
+/** A JSON answer of the CLI, read loosely: a test names the fields it asks about. */
+export type JsonAnswer = Readonly<Record<string, unknown>> & {
+  readonly error?: { readonly kind?: string; readonly cause?: string; readonly message?: string }
+}
+
+/** One libSQL database of a test, closed whatever the body does. */
+export async function onDb<T>(name: string, body: (db: CliDb) => Promise<T>): Promise<T> {
+  const db = await openCliDb('libsql', name)
+  try {
+    return await body(db)
+  } finally {
+    await db.close()
+  }
+}
+
+/** The flags every write to a queue takes: the queue, and the store named again. */
+export const writeFlags = (db: Pick<CliDb, 'target'>): string[] => [
+  '--queue',
+  QUEUE,
+  '--target',
+  db.target,
+]

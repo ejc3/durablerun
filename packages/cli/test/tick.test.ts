@@ -1,25 +1,18 @@
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { type Clock, systemClock } from '@durablerun/core'
-import type { TaskRegistry } from '@durablerun/sdk'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, TICK_DEFAULT_TIMEOUT_SECONDS, VERBS } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import { TICK_PATH, deploymentOrigin, tickRequest } from '../src/http.js'
-import { type HostedDeployment, TICK_TOKEN, hostedDeployment, serving } from './hosted.js'
-import { type CliDb, QUEUE, openCliDb, runCli } from './support.js'
+import { TICK_TOKEN, onDeployment, serving } from './hosted.js'
+import { BIN, type JsonAnswer, QUEUE, ROOT, runCli } from './support.js'
 
 /**
  * `tick --url` (exit test line 38): one bounded pass of a hosted deployment over HTTP. It
  * opens no store. The deployment here is the driver package's own hosted router behind a
  * listener on the loopback address, at a port the operating system picks.
  */
-
-type Answer = Readonly<Record<string, unknown>> & {
-  readonly error?: { readonly kind?: string; readonly message?: string }
-}
 
 /** The environment `tick` reads: the deployment, and the token its tick route takes. No store is named. */
 const envOf = (deployment: { readonly url: string }, token = TICK_TOKEN) => ({
@@ -34,12 +27,9 @@ async function tick(
   clock: Clock = systemClock(),
 ) {
   const run = await runCli(['tick', ...argv], env, undefined, undefined, clock)
-  const answer = argv.includes('--json') ? (JSON.parse(run.stdout) as Answer) : undefined
+  const answer = argv.includes('--json') ? (JSON.parse(run.stdout) as JsonAnswer) : undefined
   return { ...run, answer }
 }
-
-const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
 /**
  * Run the bin as a child process and wait for it without blocking this process, whose
@@ -60,25 +50,6 @@ async function bin(argv: readonly string[], env: Readonly<Record<string, string>
       stdout: failed.stdout ?? '',
       stderr: failed.stderr ?? '',
     }
-  }
-}
-
-/** A test database and a deployment over it, both closed whatever the body does. */
-async function onDeployment<T>(
-  name: string,
-  registry: TaskRegistry,
-  body: (db: CliDb, deployment: HostedDeployment) => Promise<T>,
-): Promise<T> {
-  const db = await openCliDb('libsql', name)
-  try {
-    const deployment = await hostedDeployment(db, registry)
-    try {
-      return await body(db, deployment)
-    } finally {
-      await deployment.close()
-    }
-  } finally {
-    await db.close()
   }
 }
 
@@ -105,38 +76,43 @@ function impatientClock(): { readonly clock: Clock; readonly slept: number[] } {
 
 describe('tick --url against a hosted router on the loopback address', () => {
   it("returns the router's tick body, for the pass the router ran, and opens no store", () =>
-    onDeployment('tick-pass', new Map([['job', async () => 'done']]), async (db, deployment) => {
-      const task = await db.store.spawn(QUEUE, 'job', '{}')
-      const run = await tick(['--url', deployment.url, '--json'], envOf(deployment))
-      expect(run.exit, run.stdout).toBe(0)
-      // The body the CLI prints is the body the router answered, whole.
-      expect(deployment.answers).toHaveLength(1)
-      expect(
-        run.answer?.tick,
-        'mutation-verdict:behavior:cli-tick-returns-the-routers-body',
-      ).toEqual(JSON.parse(deployment.answers[0]?.body ?? 'null'))
-      expect(run.answer).toMatchObject({
-        status: 200,
-        url: `${deployment.url}${TICK_PATH}`,
-        tick: { claimed: 1, workerOutcome: { kind: 'completed' }, swept: [] },
-      })
-      // The router ran the pass: the task it claimed is completed.
-      expect((await db.store.getTaskResult(QUEUE, task.taskId))?.state).toBe('completed')
-      // In text the answer prints on stdout.
-      const text = await tick(['--url', deployment.url], envOf(deployment))
-      expect({
-        exit: text.exit,
-        stderr: text.stderr,
-        claimed: text.stdout.includes('claimed: 0'),
-      }).toEqual({
-        exit: 0,
-        stderr: '',
-        claimed: true,
-      })
-    }))
+    onDeployment(
+      'libsql',
+      'tick-pass',
+      new Map([['job', async () => 'done']]),
+      async (db, deployment) => {
+        const task = await db.store.spawn(QUEUE, 'job', '{}')
+        const run = await tick(['--url', deployment.url, '--json'], envOf(deployment))
+        expect(run.exit, run.stdout).toBe(0)
+        // The body the CLI prints is the body the router answered, whole.
+        expect(deployment.answers).toHaveLength(1)
+        expect(
+          run.answer?.tick,
+          'mutation-verdict:behavior:cli-tick-returns-the-routers-body',
+        ).toEqual(JSON.parse(deployment.answers[0]?.body ?? 'null'))
+        expect(run.answer).toMatchObject({
+          status: 200,
+          url: `${deployment.url}${TICK_PATH}`,
+          tick: { claimed: 1, workerOutcome: { kind: 'completed' }, swept: [] },
+        })
+        // The router ran the pass: the task it claimed is completed.
+        expect((await db.store.getTaskResult(QUEUE, task.taskId))?.state).toBe('completed')
+        // In text the answer prints on stdout.
+        const text = await tick(['--url', deployment.url], envOf(deployment))
+        expect({
+          exit: text.exit,
+          stderr: text.stderr,
+          claimed: text.stdout.includes('claimed: 0'),
+        }).toEqual({
+          exit: 0,
+          stderr: '',
+          claimed: true,
+        })
+      },
+    ))
 
   it('sends its token in the Authorization header of one POST to the tick route, and nowhere else, and prints it in no stream', () =>
-    onDeployment('tick-token', new Map(), async (_db, deployment) => {
+    onDeployment('libsql', 'tick-token', new Map(), async (_db, deployment) => {
       // A --url with a path and a query names the same origin, and the request goes to the
       // tick route all the same.
       const printed: string[] = []
@@ -175,7 +151,7 @@ describe('tick --url against a hosted router on the loopback address', () => {
     }))
 
   it('exits 4 when the deployment refuses the token, and prints neither token', () =>
-    onDeployment('tick-wrong-token', new Map(), async (_db, deployment) => {
+    onDeployment('libsql', 'tick-wrong-token', new Map(), async (_db, deployment) => {
       const wrong = 'a-wrong-token-91c2'
       const run = await tick(['--url', deployment.url, '--json'], envOf(deployment, wrong))
       expect(
@@ -357,12 +333,12 @@ describe('tick --url against a hosted router on the loopback address', () => {
   it(
     'bin/durablerun.ts runs a tick of the deployment and exits 0 with its body, and exits 4 for a token the deployment refuses',
     () =>
-      onDeployment('tick-bin', new Map(), async (_db, deployment) => {
+      onDeployment('libsql', 'tick-bin', new Map(), async (_db, deployment) => {
         const wrongToken = 'a-wrong-token-91c2'
         const argv = ['tick', '--url', deployment.url, '--json']
         const right = await bin(argv, envOf(deployment))
         expect(right.exit, right.stderr).toBe(0)
-        expect((JSON.parse(right.stdout) as Answer).tick).toEqual(
+        expect((JSON.parse(right.stdout) as JsonAnswer).tick).toEqual(
           JSON.parse(deployment.answers[0]?.body ?? 'null'),
         )
         const wrong = await bin(argv, envOf(deployment, wrongToken))
@@ -398,12 +374,14 @@ describe('where tick sends its token', () => {
   const HTTPS = 'https://deployment.example'
 
   it('names the tick route of the origin the environment names, whatever path either URL holds', () => {
-    expect(tickRequest(`${HTTPS}/a/page?x=1#y`, `${HTTPS}/app`, 't')).toEqual({
+    expect(
+      tickRequest({ url: `${HTTPS}/a/page?x=1#y`, baseUrl: `${HTTPS}/app`, token: 't' }),
+    ).toEqual({
       endpoint: `${HTTPS}${TICK_PATH}`,
       token: 't',
     })
     // The default port of a scheme is the same origin written out.
-    expect(tickRequest(`${HTTPS}:443`, HTTPS, 't')).toEqual({
+    expect(tickRequest({ url: `${HTTPS}:443`, baseUrl: HTTPS, token: 't' })).toEqual({
       endpoint: `${HTTPS}${TICK_PATH}`,
       token: 't',
     })
@@ -411,7 +389,7 @@ describe('where tick sends its token', () => {
 
   it('sends only over https, or over http to a loopback address', () => {
     const sendsTo = (url: string) => {
-      const request = tickRequest(url, url, 't')
+      const request = tickRequest({ url: url, baseUrl: url, token: 't' })
       return 'endpoint' in request ? request.endpoint : request.kind
     }
     expect(
@@ -443,13 +421,13 @@ describe('where tick sends its token', () => {
     const secret = 'pw-5e1d'
     const withCredential = `https://admin:${secret}@deployment.example`
     const refusals = [
-      tickRequest(HTTPS, withCredential, 't'),
-      tickRequest(withCredential, HTTPS, 't'),
-      tickRequest(HTTPS, HTTPS, `two\nlines-${secret}`),
-      tickRequest(HTTPS, HTTPS, `a space ${secret}`),
-      tickRequest(HTTPS, HTTPS, ''),
-      tickRequest(HTTPS, HTTPS, undefined),
-      tickRequest(HTTPS, undefined, 't'),
+      tickRequest({ url: HTTPS, baseUrl: withCredential, token: 't' }),
+      tickRequest({ url: withCredential, baseUrl: HTTPS, token: 't' }),
+      tickRequest({ url: HTTPS, baseUrl: HTTPS, token: `two\nlines-${secret}` }),
+      tickRequest({ url: HTTPS, baseUrl: HTTPS, token: `a space ${secret}` }),
+      tickRequest({ url: HTTPS, baseUrl: HTTPS, token: '' }),
+      tickRequest({ url: HTTPS, baseUrl: HTTPS, token: undefined }),
+      tickRequest({ url: HTTPS, baseUrl: undefined, token: 't' }),
     ]
     expect(
       refusals.map((refusal) =>

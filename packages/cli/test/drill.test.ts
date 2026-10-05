@@ -3,10 +3,18 @@ import { testIdSource } from '@durablerun/core/testing'
 import type { TaskHandler, TaskRegistry } from '@durablerun/sdk'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, type Verb } from '../src/commands.js'
-import { fixture } from './explain-seeds.js'
-import { TICK_TOKEN, hostedDeployment } from './hosted.js'
+import { asleep, fixture } from './explain-seeds.js'
+import { TICK_TOKEN, onDeployment } from './hosted.js'
 import { deferralTick } from './queue-seeds.js'
-import { type CliDb, type CliRun, NOW_MS, QUEUE, SELECTED, openCliDb, runCli } from './support.js'
+import {
+  type CliDb,
+  type CliRun,
+  NOW_MS,
+  QUEUE,
+  SELECTED,
+  claimActivated,
+  runCli,
+} from './support.js'
 
 /**
  * Exit test line 39: the operator drill. Causes are planted in one queue, each written
@@ -166,8 +174,9 @@ const REGISTRY: TaskRegistry = new Map<string, TaskHandler>([
 const DRILL_AT_MS = NOW_MS + 300_000
 
 /**
- * Plant every cause and every control, each task by the name it is written down under. The engine's ports and a real worker write every state but one: the row no
- * claim admits is fixture-built, because no engine path leaves one. `tick` runs one pass of
+ * Plant every cause and every control, each task by the name it is written down under. The
+ * engine's ports and a real worker write every state but one: the row no claim admits is
+ * fixture-built, because no engine path leaves one. `tick` runs one pass of
  * the deployment, whose worker is the SDK's own.
  */
 async function plant(
@@ -175,33 +184,17 @@ async function plant(
   tick: () => Promise<CliRun>,
 ): Promise<Record<PlantedName | NotListed, string>> {
   const { store } = db
-  const claimed = async (taskId: string, leaseSeconds: number) => {
-    const [run] = await store.claim(QUEUE, `w-${taskId}`, { leaseSeconds, limit: 1 })
-    if (run?.taskId !== taskId) throw new Error(`the claim did not take task ${taskId}`)
-    if ((await store.activate(QUEUE, run.runId, run.claimToken, run.claimGen)) === null) {
-      throw new Error(`the run of task ${taskId} did not start`)
-    }
-    return run
-  }
   // The deployment's worker runs a handler that awaits an event nobody emits, with no timeout.
   const untimedAwait = await store.spawn(QUEUE, 'waiter', '{}')
   expect((await tick()).exit).toBe(0)
   const completed = await store.spawn(QUEUE, 'job', '{}')
   expect((await tick()).exit).toBe(0)
-  const asleep = await store.spawn(QUEUE, 'job', '{}')
-  const sleeper = await claimed(asleep.taskId, 60)
-  await store.suspendRun(
-    QUEUE,
-    sleeper.runId,
-    sleeper.claimToken,
-    { inSeconds: 3600 },
-    { key: '$sleep:nap', stateJson: 'null' },
-  )
+  const sleeper = await asleep(db, 3600)
   const running = await store.spawn(QUEUE, 'job', '{}')
-  await claimed(running.taskId, 3600)
+  await claimActivated(db, 'w-running', running.taskId, QUEUE, 3600)
   // A worker started this run under a lease of a minute and was never heard from again.
   const leaseLapsed = await store.spawn(QUEUE, 'job', '{}')
-  await claimed(leaseLapsed.taskId, 60)
+  await claimActivated(db, 'w-gone', leaseLapsed.taskId)
   const delayed = await store.spawn(QUEUE, 'job', '{}', { startDelaySeconds: 3600 })
   const cancellationOverdue = await store.spawn(QUEUE, 'job', '{}', {
     cancellation: { maxDelaySeconds: 45 },
@@ -224,7 +217,7 @@ async function plant(
   return {
     untimedAwait: untimedAwait.taskId,
     completed: completed.taskId,
-    asleep: asleep.taskId,
+    asleep: sleeper,
     running: running.taskId,
     leaseLapsed: leaseLapsed.taskId,
     delayed: delayed.taskId,
@@ -245,27 +238,19 @@ async function onAPlantedQueue<T>(
     db: CliDb,
   ) => Promise<T>,
 ): Promise<T> {
-  const db = await openCliDb(dialect, name)
-  try {
-    const deployment = await hostedDeployment(db, REGISTRY)
-    try {
-      const env = {
-        ...db.env,
-        DURABLERUN_BASE_URL: deployment.url,
-        DURABLERUN_TICK_TOKEN: TICK_TOKEN,
-      }
-      // Every command is a process of its own, and no two mint the same id.
-      const ids = testIdSource(`${name}-cli`)
-      const clock = systemClock()
-      const cli = (argv: readonly string[]) => runCli(argv, env, undefined, ids, clock)
-      const planted = await plant(db, () => cli(['tick', '--url', deployment.url, '--json']))
-      return await body(planted, cli, db)
-    } finally {
-      await deployment.close()
+  return onDeployment(dialect, name, REGISTRY, async (db, deployment) => {
+    const env = {
+      ...db.env,
+      DURABLERUN_BASE_URL: deployment.url,
+      DURABLERUN_TICK_TOKEN: TICK_TOKEN,
     }
-  } finally {
-    await db.close()
-  }
+    // Every command is a process of its own, and no two mint the same id.
+    const ids = testIdSource(`${name}-cli`)
+    const clock = systemClock()
+    const cli = (argv: readonly string[]) => runCli(argv, env, undefined, ids, clock)
+    const planted = await plant(db, () => cli(['tick', '--url', deployment.url, '--json']))
+    return body(planted, cli, db)
+  })
 }
 
 const PLANTED_NAMES = Object.keys(WRITTEN_DOWN) as PlantedName[]
