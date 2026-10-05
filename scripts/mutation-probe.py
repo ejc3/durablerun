@@ -21199,7 +21199,7 @@ MUTATION_SPECS.extend(
             "cli-refuses-a-number-by-its-value",
             "packages/cli/src/drive.ts",
             "    if (power >= 0 && BigInt(kept) * 10n ** BigInt(power) !== BigInt(Math.abs(read))) {\n",
-            "    if (/^-?[0-9]+$/.test(token) && BigInt(token) !== BigInt(read)) { // MUTATION: only a number written as digits alone is compared\n",
+            "    if (fraction === '' && exponent === '0' && BigInt(kept) * 10n ** BigInt(power) !== BigInt(Math.abs(read))) { // MUTATION: only a number written with no fraction part and no exponent is compared\n",
             "enqueue --params with a 20 digit integer written with a fraction of zeros or an exponent stores another integer, and prints the digest of what it stored",
         ),
         (
@@ -22608,6 +22608,9 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "cli-retry-names-the-conjunct-that-refuses": (
+        "the case runs once for each conjunct of the retry guard, and its title carries the conjunct and the state planted for it"
+    ),
+    "cli-retry-says-what-yes-would-do": (
         "the case runs once for each conjunct of the retry guard, and its title carries the conjunct and the state planted for it"
     ),
     "cli-a-drive-verb-refuses-a-schema-below-the-window": (
