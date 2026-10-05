@@ -1674,8 +1674,8 @@ One invocation executes one claimed run to its next suspension point:
     on a column an index hands work out in the order of (`available_at_ms`,
     `claim_expires_at_ms`, `cancel_at_ms`, and `enqueue_at_ms`, which an
     operator's read of a queue's oldest live tasks reads in order and no
-    statement of the engine ranges over: that fourth column awaits the
-    maintainer's decision, section 3.11). It is a walk otherwise: a SCAN of a
+    statement of the engine ranges over: the maintainer approved that fourth
+    column on 2026-10-04, section 3.11). It is a walk otherwise: a SCAN of a
     table, with an index or without one, a SEARCH through an automatic index,
     and a SEARCH whose constraint list holds neither. The rows of a VALUES are
     no table's, and a SCAN of them is no walk. The rule is three lines. Over
@@ -6296,21 +6296,27 @@ unchanged. A read command never migrates, so version 11 arrives only through `mi
 at the current version, with no index to read through: a case holds the answers there, and
 not their cost.
 
-**Two decisions, proposed and awaiting the maintainer's.** Both are built as planned.
+**Three decisions, which the maintainer approved on 2026-10-04.** Each is approved as
+built. The first two are built as planned, and the third the plan did not have.
 
 1. **The libSQL plan reader counts a range on `enqueue_at_ms` as a due range** (section
    3.2). Before, a range was a due range only on the three instants the engine hands work
    out by, and the reader refused each of the six statements that read live tasks in the
    order they were enqueued as a walk of `tasks`. What the gate protects still holds by its
    two mechanisms: the plan test names each of the six, with the LIMIT that bounds it, and
-   the growth oracle still measures every shipped statement beside a backlog. If the change
-   is refused, `agedTasks`, `stuck --older-than`, the gauge of live tasks and the age of the
-   oldest go with it, and the launch-deferral loop, a hung handler and an await nobody emits
-   are found by a task id alone.
+   the growth oracle still measures every shipped statement beside a backlog. `agedTasks`,
+   `stuck --older-than`, the gauge of live tasks and the age of the oldest need the change.
+   Without it the launch-deferral loop, a hung handler and an await nobody emits are found
+   by a task id alone.
 2. **The metric definitions.** Claim latency is two numbers: `claimLagMs`, which is the wait
    of the head of the queue, and a task's start latency, its first start less its enqueue
    instant, which `inspect` prints of one task. There is no `claimed_at_ms` column, which
    would be a write on the claim and a schema version, no histogram, and no rate.
+3. **`stuck` lists seven legs where the plan had four.** The plan's rule was that a leg
+   holds what the engine's next claim or sweep takes, which left a row a move is owed to
+   that the engine refuses in no leg. Three legs list such rows, `dueNotAdmitted`,
+   `lapsedNotReclaimed` and `deadlineNotCancelled`, each found through a bounded window and
+   each counted by `--fail-if-any`, as this section says above.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a

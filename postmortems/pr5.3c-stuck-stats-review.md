@@ -13,7 +13,7 @@ fill in, it has not been answered yet.
 
 ## Severity
 
-Nothing shipped: the pull request is a draft, and the review ran before any merge. What would have shipped without it, worst first.
+Nothing shipped: the pull request was a draft, and the review ran before any merge. What would have shipped without it, worst first.
 
 A command whose name is `stuck`, with a flag made for a monitor, that stays silent for the one kind of run nothing will ever move (finding 1). The legs held what the engine's next claim or sweep would take. A due run that the claim refuses is taken by neither, so it was in no leg, at a grace of zero or of an hour. The review's state was one task whose stored retry strategy is not JSON, an hour after it came due: a claim took nothing, a sweep took nothing, `stuck --grace 0s --fail-if-any` listed nothing and exited 0, `stats` printed `pendingRunsDue` 1 with a claim lag of the hour, and `explain` printed `pending-due-unclaimed` with the verdict `stuck`. An operator who watched the queue through `stuck --fail-if-any` would have seen green for as long as the row stood. Only `--older-than` found it, by its age. No engine path writes such a row, and a row no engine path writes is what an operator's command is for. The engine does write one run a claim refuses, the due run of a task past its cancellation deadline, and that task was listed, as a task the sweep cancels.
 

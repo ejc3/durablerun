@@ -790,18 +790,16 @@ PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
 before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
 PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer decides on the
-two contract changes of DESIGN.md section 3.12, PR5.3c does not merge before the
-maintainer decides on the `enqueue_at_ms` plan-reader gate change, and PR5.2c2
-does not merge before the maintainer decides on the `fence_at_ms` one. A refusal
+two contract changes of DESIGN.md section 3.12, and PR5.2c2 does not merge
+before the maintainer decides on the `fence_at_ms` plan-reader gate change. The
+maintainer approved PR5.3c's `enqueue_at_ms` plan-reader gate change on
+2026-10-04, with its metric definitions and the seven legs of `stuck`, so no
+decision holds PR5.3c. A refusal
 is met by a docs pull request that first rewrites the lines it touches. If a
 contract change is refused, that pull request rewrites lines 40, 42, 43 and 44
 so that purge keeps every unit whose idempotency key may be presented again (the
 first change refused) or whose handle may still be awaited (the second). If the
-`enqueue_at_ms` change is refused, it rewrites lines 37, 39 and 44 and receipt
-M1: `stuck --older-than` leaves line 37, and line 39's script, line 44's run and
-receipt M1 are handed the task ids of the never-started and awaiting causes,
-which no clock leg holds. If the `fence_at_ms` change is refused, it rewrites
-line 42 before PR5.2c2 merges.
+`fence_at_ms` change is refused, it rewrites line 42 before PR5.2c2 merges.
 
 **Non-goals:** the maintainer's live week, which is receipt M1 above; sharding
 and fan-out (PR5.1), dedicated placement (Phase 6) and the WDK wrapper (Phase
@@ -866,16 +864,20 @@ producer's redelivery horizon, the 3,600 second floor and the 5,000 checkpoint
 unit cap. No longer held: the maintainer approved on 2026-10-03 the two contract
 changes PR5.2a writes into DESIGN.md section 3.12, that an idempotency key
 dedupes for the window of its task's terminal state and that a child handle is
-valid until its unit is purged, after which an await is refused loudly. The one
+valid until its unit is purged, after which an await is refused loudly. And on
+2026-10-04 the maintainer approved the three things PR5.3c waited on, each as
+built: the `gate-changes:` entry that adds `enqueue_at_ms` to the libSQL plan
+reader's due columns, the metric definitions, that claim latency is
+`claimLagMs`, the wait of the head of the queue, and a task's start latency,
+with no `claimed_at_ms` column, no histogram and no rate, and `stuck` listing
+seven legs where the plan had four. `sizes` is a statement tree, so the entry it
+would have needed as a text statement was never written. Still held, the one
 released-surface change:
 `FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
 checkpoints and to events, which needs a `changed` entry in
 scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
-before PR5.2c2 adds it. The metric definitions, above all that claim latency is
-the age of the oldest due run plus per-task start latency, with no
-`claimed_at_ms` column. Two `gate-changes:` entries for the libSQL plan reader,
-adding `enqueue_at_ms` to its due columns in PR5.3c and `fence_at_ms` in
-PR5.2c2, and a third if `sizes` falls back to a text statement. Whether
+before PR5.2c2 adds it. One `gate-changes:` entry for the libSQL plan reader,
+adding `fence_at_ms` to its due columns in PR5.2c2. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write that opens a store and loads no `.env`, and the
@@ -6396,17 +6398,17 @@ these three things; nothing else in the system does I/O, time, or randomness.
     well. `diagnose` reads facts that the operator-reads surface already holds equal on the
     three dialects, so the walk runs where the walk is cheapest. Trigger: a state `explain`
     names differently on two dialects.
-- **PR5.3c stuck, stats, sizes and schema version 11**: BUILT, and a draft until the
-  maintainer decides on its two open questions. Exit test line 37 of the operable alpha
-  milestone. `OperatorReads` gains five reads of one queue, each one core implementation
-  reached through the store factories: `stuckRuns`, `agedTasks`, `queueStatus`, `tableRows`
+- **PR5.3c stuck, stats, sizes and schema version 11**: DONE (#117). Exit test line 37 of
+  the operable alpha milestone. `OperatorReads` gains five reads of one queue, each one
+  core implementation reached through the store factories: `stuckRuns`, `agedTasks`,
+  `queueStatus`, `tableRows`
   and `eventWaiters`, in the batches `stuck-runs`, `aged-tasks`, `queue-status`,
   `table-rows` and `event-waiters`, all read-only. The CLI gains `stuck`, `stats` and
   `sizes`, and `explain` lists the waiters of an await. Schema version 11 is the index
   `tasks_live`. No statement of this pull request writes, no engine statement changes its
   SQL, which the corpus holds, and no released declaration changes. DESIGN.md section 3.11
   holds each read, each gauge's definition and what a gauge is not, the exits, the index
-  with its measured write cost, and the two questions that await the maintainer. The
+  with its measured write cost, and the three decisions the maintainer approved. The
   registry holds 1344 mutations where main held 1259: thirty-three for how core decodes a
   leg, a gauge, a count and a list, twenty-six for what a dialect decides, held on libSQL
   against the engine and against a dump, twenty for the three commands and the waiters
@@ -6414,13 +6416,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
   gate's arm is keyed on main's digest and exempts their seventy-six markers. It re-aims one
   entry of main's registry, whose lines moved out of the libSQL store's `claim` into
   `claimEligibility`.
-  - What awaits the maintainer. (1) The libSQL plan reader counts a range on
-    `enqueue_at_ms` as a due range, which six statements need. Three commits hold what a
-    refusal would remove: the read of the oldest live tasks with `stuck --older-than`, the
-    gauge of live tasks and the age of the oldest, then the reader's change with its plan
-    tables, then the PostgreSQL and MySQL plan cases. (2) The metric definitions: claim
-    latency is `claimLagMs` and a task's start latency, with no `claimed_at_ms` column, no
-    histogram and no rate.
+  - What the maintainer approved, on 2026-10-04, each as built. (1) The libSQL plan reader
+    counts a range on `enqueue_at_ms` as a due range, which six statements need. Three
+    commits hold what needs it: the read of the oldest live tasks with `stuck
+    --older-than`, the gauge of live tasks and the age of the oldest, then the reader's
+    change with its plan tables, then the PostgreSQL and MySQL plan cases. (2) The metric
+    definitions: claim latency is `claimLagMs` and a task's start latency, with no
+    `claimed_at_ms` column, no histogram and no rate. (3) `stuck` lists seven legs where
+    the plan had four: three of them list the rows a move is owed to that the engine does
+    not take.
   - Where the build differs from the plan, and why. (1) The index's predicate has a second
     term on libSQL and PostgreSQL, `AND enqueue_at_ms IS NOT NULL`. With the planned
     predicate libSQL planned 25 statements of 14 batches through the index, the claim's
@@ -6431,8 +6435,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     needs a comparison of the instant. So each store's leg of live tasks is its own text.
     (3) `stuck` is its clock legs in one batch and the oldest live tasks in a batch of
     their own, `aged-tasks`, where the plan had the oldest live tasks as a fifth leg of
-    the one batch. They are read only when asked for, and they are the part the open
-    question would remove. (4) The grace
+    the one batch. They are read only when asked for, and they are the part that needs
+    the plan reader's change. (4) The grace
     and the age are applied once, in core, to rows each leg read oldest first and one row
     past its limit. So the first red is `<` in that one comparison, where the plan named it
     on `claim_expires_at_ms` in one leg. Each leg's SQL keeps the engine's own predicate at
