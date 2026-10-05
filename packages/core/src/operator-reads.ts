@@ -15,6 +15,7 @@ import { QUEUE_TABLES, type QueueTable, STORE_TABLE_COLUMNS } from './store-tabl
 import {
   type RunInstant,
   databaseNowRead,
+  eventPayloadRead,
   eventStateRead,
   eventWaitersRead,
   liveTaskInstantsRead,
@@ -25,12 +26,20 @@ import {
   overdueTasksWindowRead,
   runInstantsRead,
   tableRowsRead,
+  taskAdmissionRetryRead,
+  taskAdmissionRunsRead,
+  taskAdmissionSweepRead,
   taskDeadlinesRead,
   taskFactsRunsRead,
   taskFactsTaskRead,
   taskFactsWaitsRead,
   taskIdByKeyRead,
 } from './statements/operator.js'
+import {
+  RETRY_GUARD,
+  type RetryConjuncts,
+  type RetryGuardConjunct,
+} from './statements/retry-task.js'
 import { decodeTaskResult } from './task-result.js'
 import type {
   AgedTasks,
@@ -47,10 +56,13 @@ import type {
   OverdueRun,
   OverdueTask,
   QueueStatus,
+  RunAdmission,
   RunFacts,
+  StoredEventPayload,
   StuckRuns,
   StuckRunsOptions,
   TableRows,
+  TaskAdmission,
   TaskFacts,
   TaskOutcomeFacts,
   UnadmittedRun,
@@ -115,6 +127,10 @@ export interface OperatorReadsDialect {
     eventWaiters(): FencedBatch
     /** `aged-tasks`, a batch of reads. */
     agedTasks(): FencedBatch
+    /** `event-payload`, a batch of one read. */
+    eventPayload(): FencedBatch
+    /** `task-admission`, a batch of reads. */
+    taskAdmission(): FencedBatch
   }
   /**
    * `fake-clock`: whether the store's test clock is set, as the integer 1 or 0. It is a
@@ -131,6 +147,14 @@ export interface OperatorReadsDialect {
   readonly taskOwnsRun: SqlFragment
   /** The run `r` is a live run of the task `t`. */
   readonly liveRunOfTask: SqlFragment
+  /** How this dialect names the type of the stored value of `payload`, as its `emit-event` reads it. */
+  readonly storedPayloadType: SqlFragment
+  /**
+   * The conjuncts this store's retry guard is built from (`retryAdmission`), each over the
+   * row `tasks`. A store hands out the record its `retryTask` holds, so the flags of
+   * `task-admission` cannot mean anything the guard does not.
+   */
+  readonly retryConjuncts: RetryConjuncts
   /**
    * What the engine would take now, each as the predicate the engine's own statement holds,
    * with the queue bound: over a run `r` and its task `t`, a claim's candidates of one
@@ -1062,6 +1086,102 @@ async function eventWaiters(
   }
 }
 
+async function eventPayload(
+  dialect: OperatorReadsDialect,
+  queue: string,
+  eventName: string,
+): Promise<StoredEventPayload> {
+  const b = dialect.open.eventPayload()
+  b.readTree(
+    'event',
+    eventPayloadRead({ queue, eventName, payloadType: dialect.storedPayloadType }),
+  )
+  const row = readRows(b, await dialect.run(b), 'event')[0]
+  if (row === undefined) return { exists: false }
+  const stored = row.payload
+  const type = textOf(row.payload_type)
+  if (type === 'text' && typeof stored === 'string') return { exists: true, payloadJson: stored }
+  // An event's payload is text on every engine path. A stored value of another kind is
+  // never read as a payload. It is named by the dialect's own name for its type, or, where
+  // the dialect calls it text and hands back something else, by the kind of what it handed.
+  return {
+    exists: true,
+    payloadJson: null,
+    stored: type === null || type === 'text' ? storageValueKind(stored) : type,
+  }
+}
+
+/**
+ * Why the statements of `task-admission` may see different clocks, the reason `readTree`
+ * asks of every read of the clock after a batch's first. Each flag is one of the engine's
+ * predicates at the instant of its own statement, and each is answered beside the state
+ * and the instant of the row it was read from.
+ */
+const ADMISSION_DRIFT =
+  "read-only report: each flag holds one of the engine's predicates at the instant of its own statement, beside the state and the instant of the row it read"
+
+async function taskAdmission(
+  dialect: OperatorReadsDialect,
+  queue: string,
+  taskId: string,
+): Promise<TaskAdmission | null> {
+  const { owed, taskOwnsRun } = dialect
+  const b = dialect.open.taskAdmission()
+  b.readTree('retry', taskAdmissionRetryRead({ queue, taskId, conjuncts: dialect.retryConjuncts }))
+  b.readTree('sweep', taskAdmissionSweepRead({ queue, taskId, dueCancels: owed.dueCancels(queue) }))
+  b.readTree(
+    'runs',
+    taskAdmissionRunsRead({
+      taskId,
+      taskOwnsRun,
+      pendingRuns: owed.pendingRuns(queue),
+      sleepingRuns: owed.sleepingRuns(queue),
+      expiredClaims: owed.expiredClaims(queue),
+    }),
+    ADMISSION_DRIFT,
+  )
+  const ran = await dialect.run(b)
+  const guard = readRows(b, ran, 'retry')[0]
+  const task = readRows(b, ran, 'sweep')[0]
+  // One snapshot answers both reads of the task, so it is in both or in neither.
+  if (guard === undefined || task === undefined) return null
+  const corrupt: CorruptInteger[] = []
+  const retry = createObject(null) as Record<RetryGuardConjunct, boolean>
+  for (const name of RETRY_GUARD) retry[name] = flagOf(`task-admission ${name}`, guard[name])
+  const runs = readRows(b, ran, 'runs').map((row): RunAdmission => {
+    const runId = stringFrom(row.run_id)
+    const int = integersOf(row, corrupt, { runId })
+    const ordinal = int(RUN.attempt)
+    const claims = int(RUN.claim_gen)
+    const availableAt = int(RUN.available_at_ms)
+    const leaseEndsAt = int(RUN.claim_expires_at_ms)
+    return {
+      runId,
+      state: stringFrom(row.state),
+      attempt: ordinal,
+      claimGen: claims,
+      availableAtMs: availableAt,
+      claimExpiresAtMs: leaseEndsAt,
+      // A claim takes a run of either state it may take, by that state's own predicate.
+      claimTakes:
+        flagOf('task-admission claimTakesPending', row.claimTakesPending) ||
+        flagOf('task-admission claimTakesSleeping', row.claimTakesSleeping),
+      sweepReclaims: flagOf('task-admission sweepReclaims', row.sweepReclaims),
+    }
+  })
+  // By ordinal and then by id, as a task's facts list its runs.
+  const byOrdinal = (left: RunAdmission, right: RunAdmission): number =>
+    absentLast(left.attempt, right.attempt) || byCodePoints(left.runId, right.runId)
+  return {
+    state: stringFrom(task.state),
+    cancelAtMs: integersOf(task, corrupt, { taskId })(TASK.cancel_at_ms),
+    retry: freeze(retry),
+    sweepCancels: flagOf('task-admission sweepCancels', task.sweepCancels),
+    runs: [...runs].sort(byOrdinal),
+    corrupt: inOrder(corrupt),
+  }
+}
+
 /**
  * The operator's read port over one dialect, and the only implementation of it. Every
  * method the string table names is reached through `requireOperatorReadStrings`, put in
@@ -1079,6 +1199,8 @@ export function createOperatorReads(dialect: OperatorReadsDialect): HeldOperator
     queueStatus: (queue) => queueStatus(dialect, queue),
     tableRows: (queue) => tableRows(dialect, queue),
     eventWaiters: (queue, eventName) => eventWaiters(dialect, queue, eventName),
+    eventPayload: (queue, eventName) => eventPayload(dialect, queue, eventName),
+    taskAdmission: (queue, taskId) => taskAdmission(dialect, queue, taskId),
   }
   const held: Partial<Record<OperatorReadMethod, unknown>> = {}
   for (let index = 0; index < OPERATOR_READ_METHODS.length; index++) {

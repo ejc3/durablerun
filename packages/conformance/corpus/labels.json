@@ -34,5 +34,7 @@
   "queue-status": ["read"],
   "table-rows": ["read"],
   "event-waiters": ["read"],
+  "event-payload": ["read"],
+  "task-admission": ["read"],
   "aged-tasks": ["read"]
 }

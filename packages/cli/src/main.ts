@@ -8,6 +8,7 @@ import {
   SchemaNotInitializedError,
   StoreUnavailableError,
   type TaskFacts,
+  isLiveState,
   isPortRefusal,
   isTerminalState,
 } from '@durablerun/core'
@@ -16,6 +17,8 @@ import {
   type CommandSpec,
   type Invocation,
   STUCK_DEFAULT_LIMIT,
+  SWEEP_DEFAULT_LIMIT,
+  TICK_DEFAULT_TIMEOUT_SECONDS,
   UsageError,
   VERBS,
   type Verb,
@@ -24,6 +27,14 @@ import {
   usage,
   wholeNumber,
 } from './commands.js'
+import {
+  isReservedEventName,
+  jsonArgument,
+  retryRefusal,
+  rollbackFacts,
+  runsInAnotherQueue,
+  sweptView,
+} from './drive.js'
 import { EXITS, type ExitName, exitCode } from './exit.js'
 import {
   CHILD_HOPS,
@@ -31,13 +42,15 @@ import {
   type Diagnosis,
   type Evidence,
   type TaskOnTheWay,
+  admissionOf,
   answerView,
   diagnose,
   endsByAClock,
   readUnreadableRow,
   ringClosedBy,
 } from './explain.js'
-import { factsView, whatIsNotReadable } from './inspect.js'
+import { deploymentOrigin, postTick, routerErrorCode, tickRequest } from './http.js'
+import { corruptView, factsView, stateView, whatIsNotReadable } from './inspect.js'
 import {
   MissingDatabaseError,
   type OpenedStore,
@@ -49,6 +62,7 @@ import {
 } from './open-store.js'
 import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
+import { userValue } from './render.js'
 
 /** Where the CLI writes. The bin hands it the process's streams, and a test its own. */
 export interface Io {
@@ -100,21 +114,26 @@ interface Context {
   readonly reveal: boolean
   /** Writes one line to stderr now, ahead of the answer. */
   readonly note: (line: string) => void
+  /** What `--target` names for the store that was opened. */
+  readonly target: string
+  /** The origin of the hosted deployment DURABLERUN_BASE_URL names, when it names one a token may be sent to. */
+  readonly deployment: string | undefined
 }
 
 type Handler = (context: Context) => Promise<Answer>
 
 /**
  * The CLI, with everything it touches handed in: the arguments, the environment it reads
- * DURABLERUN_STORE_URL and DURABLERUN_STORE_TOKEN from, the streams it writes, the ids a
- * store takes, and the clock, which no command reads today. It answers with the exit code.
+ * DURABLERUN_STORE_URL and DURABLERUN_STORE_TOKEN from, and for `tick` DURABLERUN_BASE_URL
+ * and DURABLERUN_TICK_TOKEN, the streams it writes, the ids a store takes, and the clock,
+ * which `tick` alone uses, to end its wait for an answer. It answers with the exit code.
  */
 export async function main(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   io: Io,
   ids: IdSource,
-  _clock: Clock,
+  clock: Clock,
   opener: StoreOpener = openStore,
 ): Promise<number> {
   let invocation: Invocation
@@ -131,6 +150,10 @@ export async function main(
   const { spec } = invocation
   const json = invocation.booleans.json === true
   if (spec.verb === 'help') return emit(io, json, spec.verb, undefined, help(json))
+  // `tick` opens no store: it reads nothing of DURABLERUN_STORE_URL, and sends nothing there.
+  if (spec.verb === 'tick') {
+    return emit(io, json, spec.verb, undefined, await tick(invocation, env, clock))
+  }
   const usageAnswer = (kind: string, message: string): number =>
     emit(io, json, spec.verb, undefined, { exit: 'usage', view: { error: { kind, message } } })
   const url = env.DURABLERUN_STORE_URL
@@ -160,8 +183,10 @@ export async function main(
   const reveal = invocation.booleans.reveal === true
   let store: OpenedStore
   try {
+    // Only `migrate` creates a database. A drive verb that named a file that is not there
+    // would otherwise leave an empty database behind its refusal.
     store = await opener(url, token, ids, {
-      mayCreate: spec.writes && invocation.booleans.yes === true,
+      mayCreate: spec.verb === 'migrate' && invocation.booleans.yes === true,
     })
   } catch (error) {
     if (error instanceof StoreUrlError) return usageAnswer('usage', error.message)
@@ -175,7 +200,8 @@ export async function main(
   let answer: Answer
   try {
     const note = (line: string): void => io.err(`${line}\n`)
-    answer = await HANDLERS[spec.verb]({ invocation, store, reveal, note })
+    const deployment = deploymentOrigin(env.DURABLERUN_BASE_URL)
+    answer = await HANDLERS[spec.verb]({ invocation, store, reveal, note, target, deployment })
   } catch (error) {
     answer = failure(error, reveal)
   } finally {
@@ -242,8 +268,11 @@ function help(json: boolean): Answer {
         }),
         exits: EXITS,
         environment: {
-          DURABLERUN_STORE_URL: 'the store every command but help opens',
+          DURABLERUN_STORE_URL: 'the store every command but help and tick opens',
           DURABLERUN_STORE_TOKEN: "a libSQL server's token, when its URL needs one",
+          DURABLERUN_BASE_URL:
+            'the hosted deployment tick --url names: tick sends its token to that origin alone',
+          DURABLERUN_TICK_TOKEN: "the bearer token that deployment's tick route takes",
         },
       },
     }
@@ -257,6 +286,8 @@ function help(json: boolean): Answer {
       ...VERBS.map((verb) => `  ${usage(COMMANDS[verb])}\n      ${COMMANDS[verb].summary}`),
       '',
       'The store is DURABLERUN_STORE_URL, with DURABLERUN_STORE_TOKEN for a libSQL server.',
+      'tick opens no store: it posts to the origin of DURABLERUN_BASE_URL, with DURABLERUN_TICK_TOKEN.',
+      'A write names its store again with --target, and emit, cancel and retry change nothing without --yes.',
       'Values users wrote print as their length and sha256 unless --reveal.',
       '',
       'exit codes:',
@@ -561,6 +592,9 @@ export async function explained(
     } else if (asked.needs === 'waiters') {
       const waiters = await store.operator.eventWaiters(queue, asked.eventName)
       evidence = { ...evidence, waiters }
+    } else if (asked.needs === 'admission') {
+      const read = await store.operator.taskAdmission(queue, taskId)
+      evidence = { ...evidence, admission: admissionOf(facts, read) }
     } else if (ring !== null) {
       evidence = { ...evidence, child: ring }
     } else if (hop === CHILD_HOPS) {
@@ -590,7 +624,7 @@ const explain: Handler = async (context) => {
     holdsFacts: true,
     view: {
       queue,
-      ...answerView(diagnosis, queue),
+      ...answerView(diagnosis, { queue, target: context.target, url: context.deployment }),
       databaseNowEpochMs: facts.nowMs,
       fakeClock: facts.fakeClock,
       // An ended task's outcome, rendered as `result` renders it.
@@ -601,7 +635,11 @@ const explain: Handler = async (context) => {
   }
 }
 
-/** The queue a read of a queue names, once the schema window admits the database, or the answer that refuses. */
+/**
+ * The queue a command names, once the schema window admits the database, or the answer that
+ * refuses. A drive verb is held to the same window as a read: on a database at each version
+ * of it, the verb leaves what its port call leaves there, which a test holds.
+ */
 async function readableQueue({ invocation, store }: Context): Promise<string | Answer> {
   const queue = invocation.strings.queue ?? ''
   const version = await readableVersion(store)
@@ -689,7 +727,375 @@ const sizes: Handler = async (context) => {
   }
 }
 
-const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze({
+/** The refusal of a write that was not confirmed: what it would do, and that nothing was changed. */
+const notConfirmed = (view: Record<string, unknown>, message: string): Answer => ({
+  exit: 'usage',
+  view: { ...view, error: { kind: 'confirmation-required', message } },
+})
+
+/**
+ * Spawn a task under an idempotency key. It is the store's `spawn` and nothing else. The
+ * key is required, so the command run again after a lost answer finds the task the first
+ * run made and makes no second one, and says so with `created: false`.
+ */
+const enqueue: Handler = async (context) => {
+  const { invocation, store, reveal } = context
+  const params = jsonArgument(invocation.strings.params, 'task parameters')
+  if ('refused' in params) return flagRefused(`--params ${params.refused}`)
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return queue
+  const taskName = invocation.args.taskName ?? ''
+  const key = invocation.strings.key ?? ''
+  const named = {
+    queue,
+    taskName,
+    idempotencyKey: userValue(key, reveal),
+    params: userValue(params.json, reveal),
+  }
+  try {
+    const spawned = await store.scheduler.spawn(queue, taskName, params.json, {
+      idempotencyKey: key,
+    })
+    return {
+      exit: 'done',
+      view: { ...named, taskId: spawned.taskId, runId: spawned.runId, created: spawned.created },
+    }
+  } catch (error) {
+    // A port's refusal names what the caller passed, and the one value a user wrote that it
+    // can quote is the key. A refusal that quotes it prints only with --reveal.
+    if (!isPortRefusal(error) || reveal || key === '' || !error.message.includes(key)) throw error
+    return {
+      exit: 'refused',
+      view: {
+        ...named,
+        error: {
+          kind: 'refused',
+          name: error.name,
+          message:
+            'the store refused the call, and its words quote the idempotency key: run it again with --reveal to print them. Nothing was changed',
+        },
+      },
+    }
+  }
+}
+
+/**
+ * Emit an event. It is the store's `emitEvent` and nothing else: the first emit's payload
+ * stands, and a later one changes no payload. The answer says which this call was, from the
+ * event's state read before the write and its stored payload read after: `created`, or
+ * `already-emitted` with the digest of the payload the event holds. That payload's text is
+ * never printed, `--reveal` or not.
+ */
+const emitEvent: Handler = async (context) => {
+  const { invocation, store, reveal } = context
+  const eventName = invocation.args.eventName ?? ''
+  const payload = jsonArgument(invocation.strings.payload, 'event payload')
+  if ('refused' in payload) return flagRefused(`--payload ${payload.refused}`)
+  if (isReservedEventName(eventName)) {
+    return {
+      exit: 'refused',
+      view: {
+        event: eventName,
+        error: {
+          kind: 'reserved-name',
+          message: `the event name ${eventName} is reserved: names that start with $ belong to the engine. Nothing was sent`,
+        },
+      },
+    }
+  }
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return queue
+  const before = await store.operator.eventState(queue, eventName)
+  const waiting = await store.operator.eventWaiters(queue, eventName)
+  const named = {
+    queue,
+    event: eventName,
+    payload: userValue(payload.json, reveal),
+    // The waits registered on the event as of the read before the write: what a first emit wakes.
+    waitersBefore: waiting.waiters.rows.length,
+    moreWaiters: waiting.waiters.atLeast,
+  }
+  if (invocation.booleans.yes !== true) {
+    return notConfirmed(
+      { ...named, exists: before.exists, emittedAtMs: before.emittedAtMs },
+      before.exists
+        ? `the event ${eventName} exists as of this read, and its first emit's payload stands: emit would change no payload. Run it again with --yes to be told that payload's digest. Nothing was changed`
+        : `emit would create the event ${eventName} and wake the waits registered on it, ${named.waitersBefore} as of this read; run it again with --yes. Nothing was changed`,
+    )
+  }
+  const sent = await decoded(() => store.scheduler.emitEvent(queue, eventName, payload.json))
+  if ('refused' in sent) {
+    return unreadable({ ...named, storedPayload: 'unreadable' }, sent.refused, reveal)
+  }
+  const stored = await store.operator.eventPayload(queue, eventName)
+  if (!stored.exists) throw new Error('the event an emit answered for is not there')
+  if (stored.payloadJson === null) {
+    return unreadable(
+      { ...named, storedPayload: 'unreadable' },
+      `the stored payload is ${stored.stored}, not text`,
+      reveal,
+    )
+  }
+  const payloadMatches = stored.payloadJson === payload.json
+  return {
+    exit: 'done',
+    view: {
+      ...named,
+      // The event was not there before the write and holds what this call sent: this call,
+      // or one that sent the same payload a moment before it, made it.
+      outcome: !before.exists && payloadMatches ? 'created' : 'already-emitted',
+      storedPayload: userValue(stored.payloadJson, false),
+      payloadMatches,
+    },
+  }
+}
+
+/**
+ * Cancel a task. It is the store's `cancelTask` and nothing else. The task is read first:
+ * one whose saga began is cancelled only with --halt-rollback, because the cancellation
+ * halts the rollback where it stands (DESIGN.md section 3.10). When the port answers false
+ * it wrote nothing, and why is read from the task as it stands after: gone, cancelled
+ * already, ended another way, or live with a run in another queue.
+ */
+const cancel: Handler = async (context) => {
+  const { invocation, store, reveal } = context
+  const taskId = invocation.args.taskId ?? ''
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return { ...queue, view: { taskId, ...queue.view } }
+  const before = await store.operator.taskFacts(queue, taskId)
+  if (before === null) return noSuchTask(queue, taskId)
+  const live = isLiveState(before.task.state)
+  const haltsARollback = live && before.task.sagaBegan
+  const named = {
+    queue,
+    taskId,
+    taskName: before.task.taskName,
+    stateBefore: stateView(before.task.state, reveal),
+    sagaBegan: before.task.sagaBegan,
+    ...(haltsARollback ? { rollback: rollbackFacts(before, reveal) } : {}),
+  }
+  const halting =
+    'its saga began, and cancelling it halts the rollback where it stands: a step not yet rolled back stays as it is'
+  if (invocation.booleans.yes !== true) {
+    return notConfirmed(
+      named,
+      !live
+        ? `task ${taskId} is not live as of this read, so cancel would change nothing. Nothing was changed`
+        : haltsARollback
+          ? `cancel would cancel task ${taskId} and its live run. As of this read ${halting}. Run it again with --yes and --halt-rollback. Nothing was changed`
+          : `cancel would cancel task ${taskId} and its live run; run it again with --yes. Nothing was changed`,
+    )
+  }
+  if (haltsARollback && invocation.booleans['halt-rollback'] !== true) {
+    return notConfirmed(
+      named,
+      `task ${taskId} is rolling back as of this read: ${halting}. Run it again with --halt-rollback to cancel it all the same. Nothing was changed`,
+    )
+  }
+  if (await store.scheduler.cancelTask(queue, taskId)) {
+    return { exit: 'done', view: { ...named, outcome: 'cancelled' } }
+  }
+  const after = await store.operator.taskFacts(queue, taskId)
+  if (after === null) return noSuchTask(queue, taskId)
+  const state = after.task.state
+  if (state === 'cancelled') {
+    return { exit: 'done', view: { ...named, outcome: 'already-cancelled', state } }
+  }
+  const elsewhere = runsInAnotherQueue(queue, after)
+  const [cause, why] = isTerminalState(state)
+    ? ['already-terminal', `the task is ${state}, and a task that has ended is not cancelled`]
+    : elsewhere.length > 0
+      ? [
+          'run-in-another-queue',
+          'the task is live, and a run that names it is in another queue, which no engine path writes',
+        ]
+      : ['not-cancelled', 'the task is live, and nothing its rows show refuses it: run it again']
+  return {
+    exit: 'refused',
+    view: {
+      ...named,
+      state: stateView(state, reveal),
+      ...(elsewhere.length > 0 ? { runsInAnotherQueue: elsewhere } : {}),
+      error: {
+        kind: 'refused',
+        cause,
+        message: `cancel of task ${taskId} was refused. As of this read: ${why}. Nothing was changed`,
+      },
+    },
+  }
+}
+
+/**
+ * Revive a failed task. It is the store's `retryTask` and nothing else. When the port
+ * answers null it wrote nothing, and why is read from the retry guard's own conjuncts,
+ * each as a boolean, as the task stands after. A task that is live at that read is
+ * reported with its live run and the command exits `done`: the task was read as failed
+ * before the write, so the revival is this call's own, delivered twice, or another
+ * caller's, and a task that was live before it is one a repeat finds already revived.
+ */
+const retry: Handler = async (context) => {
+  const { invocation, store, reveal } = context
+  const taskId = invocation.args.taskId ?? ''
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return { ...queue, view: { taskId, ...queue.view } }
+  const before = await store.operator.taskFacts(queue, taskId)
+  if (before === null) return noSuchTask(queue, taskId)
+  const wasFailed = before.task.state === 'failed'
+  const named = {
+    queue,
+    taskId,
+    taskName: before.task.taskName,
+    stateBefore: stateView(before.task.state, reveal),
+  }
+  if (invocation.booleans.yes !== true) {
+    return notConfirmed(
+      named,
+      wasFailed
+        ? `retry would revive task ${taskId}: a new pending run, due now, one ordinal past its top run, and one more attempt in its budget. Run it again with --yes. Nothing was changed`
+        : `task ${taskId} is not failed as of this read, and only a failed task is revived: retry would change nothing. Nothing was changed`,
+    )
+  }
+  const revived = await store.scheduler.retryTask(queue, taskId)
+  if (revived !== null) {
+    return {
+      exit: 'done',
+      view: { ...named, outcome: 'revived', runId: revived.runId, attempt: revived.attempt },
+    }
+  }
+  const admission = await store.operator.taskAdmission(queue, taskId)
+  if (admission === null) return noSuchTask(queue, taskId)
+  const liveRun = admission.runs.find((run) => isLiveState(run.state))
+  if (isLiveState(admission.state) && liveRun !== undefined) {
+    return {
+      exit: 'done',
+      view: {
+        ...named,
+        outcome: wasFailed ? 'revived' : 'already-live',
+        state: admission.state,
+        runId: liveRun.runId,
+        attempt: liveRun.attempt,
+      },
+    }
+  }
+  const refusal = retryRefusal(taskId, admission)
+  return {
+    exit: 'refused',
+    view: {
+      ...named,
+      state: stateView(admission.state, reveal),
+      causes: refusal.causes,
+      conjunctsNotHeld: refusal.conjunctsNotHeld,
+      corrupt: admission.corrupt.map(corruptView),
+      error: { kind: 'refused', cause: refusal.cause, message: refusal.message },
+    },
+  }
+}
+
+/**
+ * One sweep of a queue, and then the queue's next wake. It is the store's `sweep` and
+ * nothing else: it cancels the tasks past their deadline and takes back the runs whose
+ * lease lapsed, as a tick's first step does, up to the limit, and claims nothing.
+ */
+const sweep: Handler = async (context) => {
+  const shown = context.invocation.strings.limit
+  const most = shown === undefined ? SWEEP_DEFAULT_LIMIT : wholeNumber(shown, OPERATOR_LIST_CAP)
+  if (most === null) {
+    return flagRefused(`--limit takes a whole number from 1 to ${OPERATOR_LIST_CAP}`)
+  }
+  const queue = await readableQueue(context)
+  if (typeof queue !== 'string') return queue
+  const { scheduler } = context.store
+  const swept = await scheduler.sweep(queue, most)
+  return {
+    exit: 'done',
+    view: {
+      queue,
+      limit: most,
+      swept: swept.length,
+      // A sweep that filled its limit may have left more: run it again.
+      atLimit: swept.length >= most,
+      transitions: swept.map(sweptView),
+      nextWakeAtEpochMs: await scheduler.nextWakeAtEpochMs(queue),
+    },
+  }
+}
+
+/**
+ * One bounded pass of a hosted deployment: a POST to its tick route, and the route's
+ * answer. It opens no store. Nothing is sent unless `--url` names the origin of
+ * DURABLERUN_BASE_URL, and the token goes in the Authorization header to that origin
+ * alone. An answer that does not come within the timeout exits `unavailable`: the pass may
+ * still have run, and a tick is safe to send again.
+ */
+async function tick(
+  invocation: Invocation,
+  env: Readonly<Record<string, string | undefined>>,
+  clock: Clock,
+): Promise<Answer> {
+  const shown = invocation.strings.timeout
+  const seconds = shown === undefined ? TICK_DEFAULT_TIMEOUT_SECONDS : durationSeconds(shown)
+  if (seconds === null || seconds === 0) {
+    return flagRefused(
+      '--timeout takes a whole number above zero and a unit, s, m, h or d, as in 90s or 2m, of at most 100 years',
+    )
+  }
+  const request = tickRequest(
+    invocation.strings.url ?? '',
+    env.DURABLERUN_BASE_URL,
+    env.DURABLERUN_TICK_TOKEN,
+  )
+  if ('refused' in request) {
+    return { exit: 'usage', view: { error: { kind: request.kind, message: request.refused } } }
+  }
+  const sentTo = { url: request.endpoint, timeoutSeconds: seconds }
+  const outcome = await postTick(request, seconds * 1000, clock)
+  if (outcome.kind !== 'answered') {
+    return {
+      exit: 'unavailable',
+      view: {
+        ...sentTo,
+        error: {
+          kind: outcome.kind,
+          message:
+            outcome.kind === 'timed-out'
+              ? `the deployment did not answer within ${seconds} seconds. The pass may still have run, and a tick is safe to send again`
+              : 'the deployment could not be reached, or the connection broke before it answered',
+        },
+      },
+    }
+  }
+  const { status, body } = outcome
+  if (status === 200 && body !== undefined)
+    return { exit: 'done', view: { ...sentTo, status, tick: body } }
+  const code = routerErrorCode(body)
+  const refused = (exit: ExitName, kind: string, message: string): Answer => ({
+    exit,
+    view: { ...sentTo, status, ...(code === undefined ? {} : { code }), error: { kind, message } },
+  })
+  if (status === 401 || status === 403) {
+    return refused(
+      'unauthorized',
+      'unauthorized',
+      `the deployment refused the token tick sent, with HTTP ${status}`,
+    )
+  }
+  if (status === 503) {
+    return refused(
+      'unavailable',
+      'deployment-unavailable',
+      'the deployment answered HTTP 503: its store or its authorization is unavailable',
+    )
+  }
+  return refused(
+    'permanent',
+    'unexpected-answer',
+    status === 200
+      ? 'the deployment answered HTTP 200 with a body that is no JSON object, so it is not a tick route'
+      : `the deployment answered HTTP ${status}, which a tick route does not answer a tick with`,
+  )
+}
+
+const HANDLERS: Readonly<Record<Exclude<Verb, 'help' | 'tick'>, Handler>> = Object.freeze({
   doctor,
   migrate,
   result,
@@ -699,4 +1105,9 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help'>, Handler>> = Object.freeze
   stuck,
   stats,
   sizes,
+  enqueue,
+  emit: emitEvent,
+  cancel,
+  retry,
+  sweep,
 })

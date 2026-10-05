@@ -437,6 +437,7 @@ describe('the CLI on every selected dialect', () => {
           // A task that is due from this instant, for `stuck` to find.
           await db.store.spawn(QUEUE, 'report', '{}')
           await plantNullPayload(older)
+          const named = ['--queue', QUEUE, '--target', db.target]
           const unreachable: Record<string, string> = {
             libsql: 'libsql://127.0.0.1:1',
             postgres: 'postgresql://postgres:postgres@127.0.0.1:1/durablerun',
@@ -462,6 +463,15 @@ describe('the CLI on every selected dialect', () => {
               ['doctor', '--queue', QUEUE],
             ],
             ['permanent', older.env, ['migrate', '--yes', '--target', older.target]],
+            // The drive verbs, last, because they write: each names its store again.
+            ['done', db.env, ['enqueue', 'report', '--key', 'a-bin-key', ...named]],
+            ['usage', db.env, ['emit', 'a-bin-event', ...named]],
+            ['done', db.env, ['emit', 'a-bin-event', '--yes', ...named]],
+            ['done', db.env, ['cancel', seeded.pending, '--yes', ...named]],
+            ['done', db.env, ['retry', seeded.failed, '--yes', ...named]],
+            ['refused', db.env, ['retry', seeded.completed, '--yes', ...named]],
+            ['done', db.env, ['sweep', ...named]],
+            ['usage', db.env, ['sweep', '--queue', QUEUE, '--target', 'not-its-store']],
           ]
           const seen: string[] = []
           for (const [exit, env, argv] of cases) {

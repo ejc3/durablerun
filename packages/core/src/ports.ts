@@ -14,10 +14,12 @@ import type {
   QueueStatus,
   SpawnOptions,
   SpawnResult,
+  StoredEventPayload,
   StuckRuns,
   StuckRunsOptions,
   SweptRun,
   TableRows,
+  TaskAdmission,
   TaskFacts,
   TaskResult,
   WakeSpec,
@@ -262,8 +264,9 @@ export interface SchedulerStore {
    * counter recorded (an infrastructure or relaunch cap) is charged as a user
    * attempt, the budget grows by one, and the task's failure reason is cleared.
    * Null, writing nothing, when the task is not in this queue, is not failed, has
-   * no runs or a live run, owns a run in another queue, or its failure is corrupt:
-   * no reason, a completed payload, or counters out of range or out of accounting.
+   * no runs or a live run, owns a run in another queue, its saga began (DESIGN.md
+   * §3.10), or its failure is corrupt: no reason, a completed payload, or counters
+   * out of range or out of accounting.
    */
   retryTask(queue: string, taskId: string): Promise<{ runId: string; attempt: number } | null>
 }
@@ -302,6 +305,16 @@ export interface OperatorReads {
 
   /** The waits registered on an event that are still waiting, with the task of each. */
   eventWaiters(queue: string, eventName: string): Promise<EventWaiters>
+
+  /** One event's stored payload, for its digest: what the first emit of the event stored. */
+  eventPayload(queue: string, eventName: string): Promise<StoredEventPayload>
+
+  /**
+   * What the engine's own guards say of one task now, each as a boolean: every conjunct
+   * of the retry guard, and whether a claim or a sweep takes the task or one of its runs.
+   * Null when the queue holds no such task.
+   */
+  taskAdmission(queue: string, taskId: string): Promise<TaskAdmission | null>
 }
 
 /** Test/simulation-only surface; never used by engine actors. */

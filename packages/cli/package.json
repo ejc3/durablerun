@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@durablerun/conformance": "workspace:*",
+    "@durablerun/driver": "workspace:*",
     "@durablerun/sdk": "workspace:*"
   }
 }

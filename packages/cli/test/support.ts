@@ -61,12 +61,17 @@ export interface CliRun {
   readonly stderr: string
 }
 
-/** Run `main` with its streams captured. */
+/**
+ * Run `main` with its streams captured. The ids a store mints are from a seeded source,
+ * the same for every run unless the caller hands one in, and the clock refuses every read
+ * unless the caller hands one in, which only `tick` needs.
+ */
 export async function runCli(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   opener: StoreOpener = openStore,
   ids: IdSource = testIdSource('cli'),
+  clock: Clock = REFUSING_CLOCK,
 ): Promise<CliRun> {
   let stdout = ''
   let stderr = ''
@@ -78,7 +83,7 @@ export async function runCli(
       stderr += text
     },
   }
-  const exit = await main(argv, env, io, ids, REFUSING_CLOCK, opener)
+  const exit = await main(argv, env, io, ids, clock, opener)
   return { exit, stdout, stderr }
 }
 
@@ -103,6 +108,8 @@ export interface CliDb {
   readonly admin: StoreAdmin
   /** The current store over `raw`, with ids from the test's own source. */
   readonly store: SchedulerStore
+  /** The current store over `raw` with the ids handed in, for a port call a test makes beside the CLI's. */
+  storeWith(ids: IdSource): SchedulerStore
   /** Every table and schema object, as one comparable text. */
   dump(): Promise<string>
   /** Record a schema version as a newer build that migrated would, after seeding. */
@@ -181,6 +188,7 @@ export async function openCliDb(
       raw,
       admin: make(raw),
       store: new LibsqlSchedulerStore(raw, ids),
+      storeWith: (other) => new LibsqlSchedulerStore(raw, other),
       dump: () => dumpOf(dialect, raw),
       recordNewer: () => recordNewer(dialect, raw),
       close: async () => {
@@ -204,6 +212,7 @@ export async function openCliDb(
         raw: db.raw,
         admin: db.admin,
         store: new PostgresSchedulerStore(db.raw, ids),
+        storeWith: (other) => new PostgresSchedulerStore(db.raw, other),
         dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
         close: db.close,
@@ -226,6 +235,7 @@ export async function openCliDb(
       raw: db.raw,
       admin: db.admin,
       store: new MysqlSchedulerStore(db.raw, ids),
+      storeWith: (other) => new MysqlSchedulerStore(db.raw, other),
       dump: () => dumpOf(dialect, db.raw),
       recordNewer: () => recordNewer('mysql', db.raw),
       close: db.close,
@@ -315,7 +325,7 @@ function rowText(row: SqlRow): string {
 }
 
 /** Every table's rows, sorted, and the schema's objects the catalog reads above name, as one text. */
-async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<string> {
+export async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<string> {
   const [tables, ...catalogs] = await raw.batch(
     'fixture:dump-catalog',
     [
@@ -339,6 +349,47 @@ async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<strin
     lines.push(`${table} ${JSON.stringify(rows)}`)
   })
   return lines.join('\n')
+}
+
+/** An id source that keeps every id and token it hands out. */
+export function recordingIds(inner: IdSource): {
+  readonly ids: IdSource
+  readonly minted: string[]
+} {
+  const minted: string[] = []
+  const kept = (value: string): string => {
+    minted.push(value)
+    return value
+  }
+  return {
+    ids: { uuidv7: () => kept(inner.uuidv7()), token: () => kept(inner.token()) },
+    minted,
+  }
+}
+
+/**
+ * A dump with every id and token of `minted` read as one placeholder, and each table's
+ * rows sorted again. Two runs of one write mint different ids, so their dumps are compared
+ * this way: what must be equal is every row but for the ids the runs minted.
+ */
+export function withoutMinted(dump: string, minted: readonly string[]): string {
+  // Longest first, so an id that begins another is not replaced inside it.
+  const ids = [...new Set(minted)].sort((left, right) => right.length - left.length)
+  const plain = (text: string): string => {
+    let out = text
+    for (const id of ids) out = out.replaceAll(id, '<minted>')
+    return out
+  }
+  return dump
+    .split('\n')
+    .map((line) => {
+      const at = line.indexOf(' ')
+      const table = line.slice(0, at)
+      if (table === 'objects') return line
+      const rows = (JSON.parse(line.slice(at + 1)) as string[]).map(plain).sort()
+      return `${table} ${JSON.stringify(rows)}`
+    })
+    .join('\n')
 }
 
 /** A store opener that records every batch every executor it makes is sent. */
@@ -517,9 +568,18 @@ export async function seedRefused(db: CliDb): Promise<string> {
   return task.taskId
 }
 
+/** What a test names for each argument a command takes but a task's id. */
+const ARGUMENT_VALUES: Readonly<Record<string, string>> = {
+  taskName: 'report',
+  eventName: 'an-event',
+}
+
+/** The idempotency key a test hands a command that requires one. */
+export const TABLE_KEY = 'a-key-of-the-table-walk'
+
 /**
  * The command line a command runs with against a test database: every argument and every
- * required flag filled in, `--yes` for a command that writes, and `--json`. A command that
+ * required flag filled in, `--yes` for a command that takes it, and `--json`. A command that
  * takes an argument or a required flag this does not know fails here, so a new command gets
  * a line of its own.
  */
@@ -531,16 +591,19 @@ export function commandLine(
 ): string[] {
   const line: string[] = [spec.verb]
   for (const name of spec.positionals) {
-    if (name !== 'taskId') throw new Error(`no test value for the argument ${name} of ${spec.verb}`)
-    line.push(taskId)
+    const value = name === 'taskId' ? taskId : ARGUMENT_VALUES[name]
+    if (value === undefined)
+      throw new Error(`no test value for the argument ${name} of ${spec.verb}`)
+    line.push(value)
   }
   for (const [name, flag] of Object.entries(spec.flags)) {
     if (flag.required !== true) continue
     if (name === 'queue') line.push('--queue', QUEUE)
     else if (name === 'target') line.push('--target', db.target)
+    else if (name === 'key') line.push('--key', TABLE_KEY)
     else throw new Error(`no test value for the flag --${name} of ${spec.verb}`)
   }
-  if (spec.writes) line.push('--yes')
+  if (Object.hasOwn(spec.flags, 'yes')) line.push('--yes')
   return [...line, '--json', ...extra]
 }
 

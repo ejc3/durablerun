@@ -439,6 +439,45 @@ export const EXPLAIN_SEEDS: readonly ExplainSeed[] = [
     },
   },
   {
+    cause: 'deadline-no-sweep-cancels',
+    verdict: 'inconsistent',
+    name: "a task past its start deadline whose run is then moved to another queue, so the sweep's scan does not answer the task, fixture-built",
+    marker: 'mutation-verdict:behavior:cli-explain-arm-deadline-no-sweep-cancels',
+    build: async ({ db, at }) => {
+      const task = await spawn(db, 'job', { cancellation: { maxDelaySeconds: 30 } })
+      await fixture(db, "UPDATE runs SET queue = 'elsewhere' WHERE task_id = ?", [task.taskId])
+      await at(NOW_MS + 60_000)
+      return task.taskId
+    },
+  },
+  {
+    cause: 'lapsed-lease-no-sweep-reclaims',
+    verdict: 'inconsistent',
+    name: "a started run at the end of its lease whose activation generation is then set past its claim generation, so the sweep's scan does not answer the run, fixture-built",
+    marker: 'mutation-verdict:behavior:cli-explain-arm-lapsed-lease-no-sweep-reclaims',
+    build: async ({ db, at }) => {
+      const { taskId, run } = await started(db)
+      await fixture(db, 'UPDATE runs SET activated_gen = claim_gen + 5 WHERE run_id = ?', [
+        run.runId,
+      ])
+      await at(NOW_MS + 60_000)
+      return taskId
+    },
+  },
+  {
+    cause: 'due-run-no-claim-admits',
+    verdict: 'inconsistent',
+    name: 'a due run whose task is then given a retry strategy that is not JSON, so no claim admits the run, fixture-built',
+    marker: 'mutation-verdict:behavior:cli-explain-arm-due-run-no-claim-admits',
+    build: async ({ db }) => {
+      const task = await spawn(db)
+      await fixture(db, "UPDATE tasks SET retry_strategy = 'not json' WHERE task_id = ?", [
+        task.taskId,
+      ])
+      return task.taskId
+    },
+  },
+  {
     cause: 'unexplained',
     verdict: 'unexplained',
     name: 'a sleeping run whose wake instant is then set to NULL with no event to wait on, fixture-built',

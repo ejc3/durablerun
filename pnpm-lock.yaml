@@ -60,6 +60,9 @@ importers:
       '@durablerun/conformance':
         specifier: workspace:*
         version: link:../conformance
+      '@durablerun/driver':
+        specifier: workspace:*
+        version: link:../driver
       '@durablerun/sdk':
         specifier: workspace:*
         version: link:../sdk

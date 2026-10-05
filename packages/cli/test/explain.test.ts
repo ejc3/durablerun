@@ -16,6 +16,8 @@ import {
   type Cause,
   DUE_GRACE_MS,
   type Diagnosis,
+  type Evidence,
+  type Given,
   HUNG_RUN_MS,
   VERDICTS,
   type Verdict,
@@ -85,20 +87,12 @@ async function ask(db: CliDb, taskId: string) {
   return { answer, reads }
 }
 
-/**
- * A stand-in for a command a later build adds: `migrate`, the table's own command that
- * writes, under another verb and with a required --queue. So it requires --target, which
- * main.ts demands of a command that writes, and it takes the flag that confirms the write.
- */
-const drive = (verb: string, positionals: string[]): CommandSpec => ({
-  ...COMMANDS.migrate,
-  verb: verb as CommandSpec['verb'],
-  positionals,
-  flags: {
-    ...COMMANDS.migrate.flags,
-    queue: { type: 'string', required: true, value: 'Q', description: 'the queue' },
-  },
-})
+/** Everything `explain` can be given to fill a suggestion from: a queue, a store's target and a deployment. */
+const EVERYTHING_GIVEN: Given = {
+  queue: QUEUE,
+  target: 'db.example.io:5432',
+  url: 'https://deployment.example',
+}
 
 /** The arguments a POSIX shell reads back from the one line `explain` prints to paste. */
 const shellReads = (line: string): string[] =>
@@ -156,7 +150,7 @@ describe('explain on libSQL', () => {
         })
       }
     }
-    // These six say in their names that fixture SQL built them. Every other seed reaches its
+    // These nine say in their names that fixture SQL built them. Every other seed reaches its
     // state through the store's ports alone.
     expect(
       EXPLAIN_SEEDS.filter((seed) => seed.name.includes('fixture-built')).map((seed) => seed.cause),
@@ -166,6 +160,9 @@ describe('explain on libSQL', () => {
       'terminal-task-with-a-live-run',
       'live-task-without-one-live-run',
       'task-and-run-states-differ',
+      'deadline-no-sweep-cancels',
+      'lapsed-lease-no-sweep-reclaims',
+      'due-run-no-claim-admits',
       'unexplained',
     ])
   })
@@ -312,16 +309,11 @@ describe('explain on libSQL', () => {
         verdict: 'ok',
         cancelAtMs: NOW_MS + 7_200_000,
       })
-      // Against a command table that holds `cancel`, the next command is still a look.
-      const cancel: CommandSpec = {
-        ...COMMANDS.result,
-        verb: 'cancel' as CommandSpec['verb'],
-        writes: true,
-      }
+      // The command table holds `cancel`, and the next command is still a look.
+      expect(Object.hasOwn(COMMANDS, 'cancel')).toBe(true)
       const built = suggestion(
         { cause: answer.cause, verdict: answer.verdict, taskId: task.taskId },
-        QUEUE,
-        { ...COMMANDS, cancel },
+        { queue: QUEUE, target: db.target },
       )
       expect(
         { built: Array.isArray(built) ? built[0] : built, printed: answer.next?.argv[0] },
@@ -857,10 +849,16 @@ describe('explain on libSQL', () => {
     const emitted: string[][] = []
     for (const seed of EXPLAIN_SEEDS) {
       await onSeed('libsql', seed, async (db, taskId, at) => {
-        const answers = [await explain(db, taskId)]
+        // The environment names a deployment, so a cause that names `tick` is filled.
+        const env = { ...db.env, DURABLERUN_BASE_URL: 'https://deployment.example/app' }
+        const asked = async () => {
+          const run = await runCli(['explain', taskId, '--queue', QUEUE, '--json'], env)
+          return JSON.parse(run.stdout) as Answer
+        }
+        const answers = [await asked()]
         // The same seed once the driver is late for it, for the causes that have a clock.
         await at(NOW_MS + 30 * 86_400_000)
-        answers.push(await explain(db, taskId))
+        answers.push(await asked())
         for (const answer of answers) {
           if (answer.next === null) continue
           emitted.push(answer.next.argv)
@@ -868,78 +866,82 @@ describe('explain on libSQL', () => {
         }
       })
     }
-    // A command table that already holds the verbs a later build adds, each as main.ts
-    // demands a command that writes to be: the store named again with a required --target,
-    // and the flag that confirms the write. So the builder is asked about them too.
-    const later: Readonly<Record<string, CommandSpec>> = {
-      ...COMMANDS,
-      sweep: drive('sweep', []),
-      tick: drive('tick', []),
-      cancel: drive('cancel', ['taskId']),
-      emit: drive('emit', []),
-    }
+    // And every cause under every verdict, handed everything `explain` can be given, so the
+    // builder is asked about pairs no seed reaches.
     const built: string[][] = []
-    const withheld = new Set<string>()
     for (const cause of Object.keys(CAUSES) as Cause[]) {
       for (const verdict of VERDICTS) {
-        const next = suggestion({ cause, verdict, taskId: 'a-task' }, QUEUE, later)
+        const next = suggestion({ cause, verdict, taskId: 'a-task' }, EVERYTHING_GIVEN)
         if (next === null) continue
-        if ('withheld' in next) withheld.add(next.withheld)
-        else built.push([...next])
+        if ('withheld' in next) throw new Error(`${cause} under ${verdict}: ${next.withheld}`)
+        built.push([...next])
       }
     }
     for (const argv of [...emitted, ...built]) {
       expect(
-        { argv, confirms: argv.includes('--yes'), emits: argv[0] === 'emit' },
+        {
+          argv,
+          confirms: argv.includes('--yes'),
+          emits: argv[0] === 'emit',
+          cancels: argv[0] === 'cancel',
+        },
         'mutation-verdict:behavior:cli-explain-suggests-no-yes',
-      ).toEqual({ argv, confirms: false, emits: false })
+      ).toEqual({ argv, confirms: false, emits: false, cancels: false })
     }
-    // Every suggestion parses as the command it names, the ones printed and the ones built
-    // against the later table alike. What the later table's writes would need is withheld,
-    // with the reason: `explain` has no value for --target.
+    // Every suggestion parses as the command it names, the ones printed and the ones built.
     for (const argv of [...emitted, ...built]) {
       expect(parseInvocation(argv).spec.verb).toBe(argv[0])
     }
-    expect(new Set(emitted.map((argv) => argv[0]))).toEqual(new Set(['result', 'inspect']))
-    expect(new Set(built.map((argv) => argv[0]))).toEqual(new Set(['result', 'inspect']))
-    expect(withheld).toEqual(
-      new Set([
-        'explain knows no value for --target of sweep',
-        'explain knows no value for --target of tick',
-      ]),
-    )
+    // Two reads and the two drive verbs a late cause names, and no other command.
+    const verbs = new Set(['result', 'inspect', 'sweep', 'tick'])
+    expect(new Set(emitted.map((argv) => argv[0]))).toEqual(verbs)
+    expect(new Set(built.map((argv) => argv[0]))).toEqual(verbs)
     // A waiting verdict owes no command, whatever the cause.
     for (const cause of Object.keys(CAUSES) as Cause[]) {
       expect(
-        suggestion({ cause, verdict: 'waiting', taskId: 'a-task' }, QUEUE, later),
+        suggestion({ cause, verdict: 'waiting', taskId: 'a-task' }, EVERYTHING_GIVEN),
         'mutation-verdict:behavior:cli-explain-a-waiting-verdict-owes-no-command',
       ).toBeNull()
     }
   }, 120_000)
 
-  it('names the causes whose suggestion no command of the table carries yet', () => {
-    // `sweep`, `tick` and `cancel` join the command table with the drive verbs. Until then a
-    // cause that names one of them prints no next command. The pull request that adds them
-    // empties this list, and has to say here what each of these causes then suggests.
-    const notYet = Object.entries(CAUSES)
-      .filter(([, spec]) => spec.next !== null && !Object.hasOwn(COMMANDS, spec.next))
-      .map(([cause, spec]) => `${cause}: ${spec.next}`)
-    expect(notYet).toEqual([
-      'cancellation-deadline-passed: sweep',
-      'lease-lapsed-unswept: sweep',
-      'woken-unclaimed: tick',
-      'pending-due-unclaimed: tick',
-      'sleeping-past-its-wake: tick',
-    ])
-    // Stuck, each of them prints no next command today.
-    for (const line of notYet) {
-      const cause = line.slice(0, line.indexOf(':')) as Cause
-      expect(suggestion({ cause, verdict: 'stuck', taskId: 'a-task' }, QUEUE)).toBeNull()
-    }
+  it('says what each cause that names a drive verb suggests, filled only from what explain was given', () => {
+    // Every cause names a command the table holds: no suggestion waits for a verb.
+    expect(
+      Object.entries(CAUSES)
+        .filter(([, spec]) => spec.next !== null && !Object.hasOwn(COMMANDS, spec.next))
+        .map(([cause]) => cause),
+    ).toEqual([])
+    const stuck = (cause: Cause, given: Given) =>
+      suggestion({ cause, verdict: 'stuck', taskId: 'a-task' }, given)
+    // The five causes whose command is a drive verb, each with what it prints when the
+    // driver is late: a sweep of the queue with the store named again, or a tick of the
+    // deployment the environment names. Neither takes a task.
+    const driven = (Object.keys(CAUSES) as Cause[]).filter((cause) =>
+      ['sweep', 'tick'].includes(CAUSES[cause].next ?? ''),
+    )
+    const sweep = ['sweep', '--queue=q', '--target=db.example.io:5432']
+    const tick = ['tick', '--url=https://deployment.example']
+    expect(
+      Object.fromEntries(driven.map((cause) => [cause, stuck(cause, EVERYTHING_GIVEN)])),
+      'mutation-verdict:behavior:cli-explain-fills-a-drive-verb-from-what-it-was-given',
+    ).toEqual({
+      'cancellation-deadline-passed': sweep,
+      'lease-lapsed-unswept': sweep,
+      'woken-unclaimed': tick,
+      'pending-due-unclaimed': tick,
+      'sleeping-past-its-wake': tick,
+    })
+    // With no deployment named, a tick is withheld with its reason, and a sweep is not.
+    const noDeployment = { queue: QUEUE, target: 'db.example.io:5432' }
+    expect(stuck('pending-due-unclaimed', noDeployment)).toEqual({
+      withheld: 'explain knows no value for --url of tick',
+    })
+    expect(stuck('lease-lapsed-unswept', noDeployment)).toEqual(sweep)
     // A command whose argument `explain` has no value for is withheld the same way.
     const unknown: CommandSpec = { ...COMMANDS.result, positionals: ['somethingElse'] }
     expect(
-      suggestion({ cause: 'completed', verdict: 'ok', taskId: 'a-task' }, QUEUE, {
+      suggestion({ cause: 'completed', verdict: 'ok', taskId: 'a-task' }, EVERYTHING_GIVEN, {
         result: unknown,
       }),
     ).toEqual({ withheld: 'explain knows no value for <somethingElse> of result' })
@@ -977,14 +979,13 @@ describe('explain on libSQL', () => {
   })
 
   it('withholds a next command it cannot fill, and says what it has no value for', () => {
-    // What main.ts demands of a command that writes: the store named again with --target.
-    const sweep = drive('sweep', [])
+    // `sweep` writes, so it requires the store named again with --target. Handed no target,
+    // the builder has no value for it.
     const built = (() => {
       try {
         return suggestion(
           { cause: 'lease-lapsed-unswept', verdict: 'stuck', taskId: 'a-task' },
-          QUEUE,
-          { sweep },
+          { queue: QUEUE },
         )
       } catch (error) {
         return `threw ${String(error)}`
@@ -1003,7 +1004,7 @@ describe('explain on libSQL', () => {
       ended: false,
       facts: { runId: 'a-run' },
     }
-    expect(answerView(stuck, QUEUE, { sweep })).toMatchObject({
+    expect(answerView(stuck, { queue: QUEUE })).toMatchObject({
       taskId: 'a-task',
       cause: 'lease-lapsed-unswept',
       verdict: 'stuck',
@@ -1247,6 +1248,9 @@ function answered(asked: ReturnType<typeof diagnose>): Diagnosis {
   return asked
 }
 
+/** The engine's guards admit the row: its claim takes the run, and its sweep the run and the task. */
+const THE_ENGINE_TAKES_IT = { claimTakes: true, sweepReclaims: true, sweepCancels: true }
+
 describe('diagnose', () => {
   it('answers unexplained for facts no arm takes, and never a healthy verdict', () => {
     const parked = {
@@ -1407,7 +1411,9 @@ describe('diagnose', () => {
       ),
     }
     for (const [run, facts] of Object.entries(runs)) {
-      const answer = answered(diagnose(facts))
+      // A move is owed, so the cause first asks whether the engine's sweep takes it.
+      expect(diagnose(facts)).toEqual({ needs: 'admission' })
+      const answer = answered(diagnose(facts, { admission: THE_ENGINE_TAKES_IT }))
       expect([run, answer.cause, answer.verdict, answer.facts.dueAtMs]).toEqual([
         run,
         'cancellation-deadline-passed',
@@ -1415,6 +1421,69 @@ describe('diagnose', () => {
         NOW_MS - 1,
       ])
     }
+  })
+
+  it('asks whether the engine takes a move it is owed, names the row it does not take, and reads a row that moved as it stood', () => {
+    const lateBy = NOW_MS - DUE_GRACE_MS - 1
+    // One state for each move the driver owes: a deadline passed, a lease lapsed, a pending
+    // run due, and a sleeping run past its wake, each later than the grace.
+    const owed = {
+      deadline: factsOf(
+        { state: 'pending', availableAtMs: NOW_MS + 60_000 },
+        { task: { cancelAtMs: lateBy } },
+      ),
+      lease: factsOf({ state: 'running', claimExpiresAtMs: lateBy }),
+      pending: factsOf({ state: 'pending', availableAtMs: lateBy, activatedGen: 0, claimGen: 0 }),
+      sleeping: factsOf({ state: 'sleeping', availableAtMs: lateBy }),
+    }
+    const taken = { claimTakes: true, sweepReclaims: true, sweepCancels: true }
+    const read = (facts: TaskFacts, admission: NonNullable<Evidence['admission']>) => {
+      const answer = answered(diagnose(facts, { admission, checkpoints: 1 }))
+      return [answer.cause, answer.verdict, answer.facts.owedAtMs ?? answer.facts.dueAtMs]
+    }
+    const each = (admission: NonNullable<Evidence['admission']>) =>
+      Object.fromEntries(
+        Object.entries(owed).map(([move, facts]) => [move, read(facts, admission)]),
+      )
+    for (const facts of Object.values(owed)) {
+      expect(diagnose(facts, { checkpoints: 1 })).toEqual({ needs: 'admission' })
+    }
+    // Every guard admits the row: the late cause answers, and the driver is late for it.
+    const late = {
+      deadline: ['cancellation-deadline-passed', 'stuck', lateBy],
+      lease: ['lease-lapsed-unswept', 'stuck', lateBy],
+      pending: ['pending-due-unclaimed', 'stuck', lateBy],
+      sleeping: ['sleeping-past-its-wake', 'stuck', lateBy],
+    }
+    expect(each(taken)).toEqual(late)
+    // The one guard that would take the move refuses the row: no tick and no sweep comes to
+    // it, and the cause says so, however the other two answer.
+    expect(
+      {
+        deadline: read(owed.deadline, { ...taken, sweepCancels: false }),
+        lease: read(owed.lease, { ...taken, sweepReclaims: false }),
+        pending: read(owed.pending, { ...taken, claimTakes: false }),
+        sleeping: read(owed.sleeping, { ...taken, claimTakes: false }),
+      },
+      'mutation-verdict:behavior:cli-explain-names-a-move-the-engine-does-not-take',
+    ).toEqual({
+      deadline: ['deadline-no-sweep-cancels', 'inconsistent', lateBy],
+      lease: ['lapsed-lease-no-sweep-reclaims', 'inconsistent', lateBy],
+      pending: ['due-run-no-claim-admits', 'inconsistent', lateBy],
+      sleeping: ['due-run-no-claim-admits', 'inconsistent', lateBy],
+    })
+    // A guard that refuses a move the cause is not about decides nothing.
+    expect({
+      deadline: read(owed.deadline, { ...taken, claimTakes: false, sweepReclaims: false }),
+      lease: read(owed.lease, { ...taken, claimTakes: false, sweepCancels: false }),
+      pending: read(owed.pending, { ...taken, sweepReclaims: false, sweepCancels: false }),
+    }).toEqual({ deadline: late.deadline, lease: late.lease, pending: late.pending })
+    // The rows moved between the two reads: the answer is read as it stood, and asking
+    // again answers it.
+    expect(
+      each('moved'),
+      'mutation-verdict:behavior:cli-explain-reads-a-row-that-moved-as-it-stood',
+    ).toEqual(late)
   })
 
   it('asks for the waits on the event an await names, and lists every one of them', () => {
@@ -1490,9 +1559,10 @@ describe('diagnose', () => {
     // A task with no checkpoint whose timer has passed is still the task no build runs, and
     // one with a checkpoint is a sleeper the driver is late for.
     const overdue = factsOf({ state: 'sleeping', availableAtMs: NOW_MS - DUE_GRACE_MS - 1 })
+    const admission = THE_ENGINE_TAKES_IT
     expect([
-      answered(diagnose(overdue, { checkpoints: 0 })).verdict,
-      answered(diagnose(overdue, { checkpoints: 1 })).verdict,
+      answered(diagnose(overdue, { checkpoints: 0, admission })).verdict,
+      answered(diagnose(overdue, { checkpoints: 1, admission })).verdict,
     ]).toEqual(['waiting', 'stuck'])
 
     const child = taskDoneEventName('the-child')

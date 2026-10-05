@@ -61,6 +61,8 @@ describe('generated SQL corpus', () => {
         expect((await operator.queueStatus('q')).gauges.runningRuns.count).toBe(1)
         expect((await operator.tableRows('q')).tables.tasks.count).toBe(1)
         expect((await operator.eventWaiters('q', 'no-such-event')).waiters.rows).toEqual([])
+        expect(await operator.eventPayload('q', 'no-such-event')).toEqual({ exists: false })
+        expect((await operator.taskAdmission('q', run.taskId))?.runs).toHaveLength(1)
         const aged = await operator.agedTasks('q', { olderThanSeconds: 0, limit: 10 })
         expect(aged.tasks.rows).toHaveLength(1)
         // A run this store never heard of: the terminal batch reads its task, finds none,

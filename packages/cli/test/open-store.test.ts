@@ -61,18 +61,31 @@ describe('the store opener', () => {
           'window',
         ])
         expect(Object.keys(store.admin).sort()).toEqual(['migrate', 'nowEpochMs', 'schemaVersion'])
-        expect(Object.keys(store.scheduler).sort()).toEqual(['getCheckpoints', 'getTaskResult'])
+        // Two reads, the five calls the drive verbs are, and the read of the next wake.
+        expect(Object.keys(store.scheduler).sort()).toEqual([
+          'cancelTask',
+          'emitEvent',
+          'getCheckpoints',
+          'getTaskResult',
+          'nextWakeAtEpochMs',
+          'retryTask',
+          'spawn',
+          'sweep',
+        ])
         expect(Object.keys(store.operator).sort()).toEqual([
           'agedTasks',
+          'eventPayload',
+          'eventState',
           'eventWaiters',
           'queueStatus',
           'stuckRuns',
           'tableRows',
+          'taskAdmission',
           'taskFacts',
           'taskIdByKey',
         ])
-        // @ts-expect-error no command reads an event's state yet, so the opener hands none
-        expect(store.operator.eventState).toBeUndefined()
+        // @ts-expect-error a worker's write under a claim cannot be made through the CLI's scheduler
+        expect(store.scheduler.complete).toBeUndefined()
         // @ts-expect-error the fake clock's setter cannot be written through the CLI's admin
         expect(store.admin.setFakeNowEpochMs).toBeUndefined()
         // @ts-expect-error a claim cannot be written through the CLI's scheduler

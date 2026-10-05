@@ -622,6 +622,8 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
     expect((await reads.taskFacts('q', task.taskId))?.waits).toHaveLength(1)
     expect(await reads.taskIdByKey('q', 'order-7')).toBe(task.taskId)
     expect((await reads.eventState('q', 'approval')).exists).toBe(false)
+    expect(await reads.eventPayload('q', 'approval')).toEqual({ exists: false })
+    expect((await reads.taskAdmission('q', task.taskId))?.runs).toHaveLength(1)
 
     await client.query(`SET search_path TO "${db.schemaName}"`)
     const { reached, scans } = await indexesAndScans(client, recorder)
@@ -653,6 +655,41 @@ it("reaches every row an operator's read takes by a key, and scans no table", as
       'fake-clock#0': [],
       'task-id-by-key#0': ['tasks_idem on tasks: ((queue = $1) AND (idempotency_key = $2))'],
       'event-state#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
+      'event-payload#0': ['events_pkey on events: ((queue = $1) AND (event_name = $2))'],
+      // What the engine's guards say of one task. The retry guard's conjuncts, over the
+      // task by its key: each reads the task's runs or its saga marker. The read of the
+      // task's live runs goes through the queue's runs by state on a table of one run,
+      // which is the planner's choice between two indexes that both hold the row.
+      'task-admission#0': [
+        'tasks_pkey on tasks: (task_id = $1)',
+        'runs_task_attempt on runs ownership_run: (task_id = tasks.task_id)',
+        'runs_task_attempt on runs r: (task_id = tasks.task_id)',
+        "runs_poll on runs r_1: ((queue = tasks.queue) AND (state = ANY ('{pending,running,sleeping}'::text[])))",
+        'runs_task_attempt on runs r_2: (task_id = tasks.task_id)',
+        `checkpoints_pkey on checkpoints sp: ${sagaPhase}`,
+      ],
+      // Whether the sweep cancels the task: the task by its key, and that it owns every run.
+      'task-admission#1': [
+        'tasks_pkey on tasks t: (task_id = $2)',
+        'runs_task_attempt on runs ownership_run: (task_id = t.task_id)',
+      ],
+      // The task's runs by the index on a task's ordinals, each joined to its task by the
+      // key, with what a claim of a pending run, a claim of a sleeping run and the sweep's
+      // scan each read of a run: its siblings, its waits and the runs above it.
+      'task-admission#2': [
+        'runs_task_attempt on runs r: (task_id = $4)',
+        'tasks_pkey on tasks t: (task_id = ($4)::text)',
+        'runs_task_attempt on runs sibling: (task_id = r.task_id)',
+        'waits_event on waits w: ((queue = r.queue) AND (event_name = r.wake_event))',
+        'waits_pkey on waits w_1: (run_id = r.run_id)',
+        'runs_task_attempt on runs higher: (task_id = r.task_id)',
+        'runs_task_attempt on runs sibling_1: (task_id = r.task_id)',
+        'waits_event on waits w_2: ((queue = r.queue) AND (event_name = r.wake_event))',
+        'waits_pkey on waits w_3: (run_id = r.run_id)',
+        'runs_task_attempt on runs higher_1: (task_id = r.task_id)',
+        'runs_task_attempt on runs sibling_2: (task_id = r.task_id)',
+        'runs_task_attempt on runs higher_2: (task_id = r.task_id)',
+      ],
     })
   } finally {
     await client.end()

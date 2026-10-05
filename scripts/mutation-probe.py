@@ -4620,54 +4620,50 @@ MUTATION_SPECS = [
     (
         "retry-task-requires-well-formed-failure",
         "packages/store-libsql/src/store.ts",
-        "         AND failure_reason IS NOT NULL AND completed_payload IS NULL\n",
-        "         AND 1 = 1\n",
+        "  hasAFailureReason: sqlFragment('failure_reason IS NOT NULL'),\n  hasNoCompletedPayload: sqlFragment('completed_payload IS NULL'),\n",
+        "  hasAFailureReason: sqlFragment('1 = 1'),\n  hasNoCompletedPayload: sqlFragment('1 = 1'),\n",
         "retryTask revives a failed task whose recorded outcome is corrupt",
     ),
     (
         "retry-task-charges-unaccounted-top-run",
         "packages/store-libsql/src/store.ts",
-        "        charged: sqlFragment(charged),\n",
+        "        charged: sqlFragment(RETRY_CHARGED),\n",
         "        charged: sqlFragment('attempts'),\n",
         "retryTask leaves a relaunch-capped run uncharged, so the revival run is not the next accounted ordinal",
     ),
     (
         "retry-task-requires-counters-in-range",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}\n"
-        "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n"
-        "         AND NOT EXISTS (SELECT 1 FROM runs r\n"
-        "                         WHERE ${runOwnedByTask('r', 'tasks')}\n"
-        "                           AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})\n",
-        "         AND 1 = 1\n",
+        "  attemptsInRange: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')),\n  infraRetriesInRange: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')),\n  everyRunOrdinalInRange: sqlFragment(\n    `NOT EXISTS (SELECT 1 FROM runs r\n                         WHERE ${runOwnedByTask('r', 'tasks')}\n                           AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})`,\n  ),\n",
+        "  attemptsInRange: sqlFragment('1 = 1'),\n  infraRetriesInRange: sqlFragment('1 = 1'),\n  everyRunOrdinalInRange: sqlFragment('1 = 1'),\n",
         "retryTask revives a failed task whose counters or run ordinals are out of range",
     ),
     (
         "retry-task-requires-incrementable-budget",
         "packages/store-libsql/src/store.ts",
-        "         AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}\n",
-        "         AND 1 = 1\n",
+        "  budgetTakesOneMore: sqlFragment(\n    storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks'),\n  ),\n",
+        "  budgetTakesOneMore: sqlFragment('1 = 1'),\n",
         "retryTask pushes a revived task's budget past its persisted maximum",
     ),
     (
         "retry-task-requires-accounting-band",
         "packages/store-libsql/src/store.ts",
-        "         AND ${charged} - attempts IN (0, 1)\n",
-        "         AND 1 = 1\n",
+        "  chargeIsTheAttemptsOrOneMore: sqlFragment(`${RETRY_CHARGED} - attempts IN (0, 1)`),\n",
+        "  chargeIsTheAttemptsOrOneMore: sqlFragment('1 = 1'),\n",
         "retryTask revives a task whose charge is outside the accounting band and writes negative attempts",
     ),
     (
         "retry-task-requires-charge-within-budget",
         "packages/store-libsql/src/store.ts",
-        "         AND ${charged} <= max_attempts`,\n",
-        "         AND 1 = 1`,\n",
+        "  chargeWithinBudget: sqlFragment(`${RETRY_CHARGED} <= max_attempts`),\n",
+        "  chargeWithinBudget: sqlFragment('1 = 1'),\n",
         "retryTask revives a task whose charge exceeds its budget",
     ),
     (
         "retry-task-charges-net-of-infra-retries",
         "packages/store-libsql/src/store.ts",
-        "    const charged = `(${top('tasks')} - infra_retries)`\n",
-        "    const charged = `(${top('tasks')})`\n",
+        "const RETRY_CHARGED = `(${topOrdinal('tasks')} - infra_retries)`\n",
+        "const RETRY_CHARGED = `(${topOrdinal('tasks')})`\n",
         "retryTask charges infrastructure successors as user attempts, so a task revived at the infrastructure cap is refused",
     ),
     (
@@ -13470,8 +13466,8 @@ MUTATION_SPECS.extend(
         (
             "saga-revival-refused-once-a-saga-began",
             "packages/store-libsql/src/store.ts",
-            "         AND NOT ${sagaBegan('tasks')}\n",
-            "         AND 1 = 1\n",
+            "  sagaNotBegun: sqlFragment(`NOT ${sagaBegan('tasks')}`),\n",
+            "  sagaNotBegun: sqlFragment('1 = 1'),\n",
             "a task whose steps were rolled back is revived, and its replay skips them as done",
         ),
         (
@@ -16157,8 +16153,8 @@ MUTATION_SPECS.extend(
         (
             "poison-target-retry-task-holds-infra-retries-bound",
             "packages/store-libsql/src/store.ts",
-            "         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}\n",
-            "         AND 1 = 1\n",
+            "  infraRetriesInRange: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')),\n",
+            "  infraRetriesInRange: sqlFragment('1 = 1'),\n",
             "the poison matrix's retry-task target revives a failed task whose infrastructure retries are out of range",
         ),
         (
@@ -16319,6 +16315,27 @@ TYPECHECK_MUTATION_PROJECTS: dict[str, TypecheckProject] = {
 TYPECHECK_MUTATION_NAMES = frozenset(TYPECHECK_MUTATION_PROJECTS)
 
 QUESTION_TOKEN_DELTA_REASONS = {
+    "cli-store-url-has-no-fallback": (
+        "replacement adds TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
+    "cli-emit-says-already-emitted-with-the-stored-digest": (
+        "replacement removes TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
+    "cli-retry-reports-the-live-run-a-repeat-finds": (
+        "replacement removes TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
+    "cli-a-drive-verb-is-its-port-call-over-a-walk": (
+        "replacement adds TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
+    "cli-a-drive-verb-refuses-a-schema-below-the-window": (
+        "replacement adds TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
+    "cli-tick-sends-its-token-in-the-authorization-header-alone": (
+        "replacement adds the separator of a URL query, not a SQL bind"
+    ),
+    "cli-drill-finds-each-planted-cause-without-an-id": (
+        "replacement removes TypeScript conditional, optional-chaining or default operators, not a SQL bind"
+    ),
     "operator-reads-list-a-task-whose-enqueue-instant-is-not-readable": (
         "replacement adds TypeScript conditional, optional-chaining or default operators, not a SQL bind"
     ),
@@ -20342,6 +20359,639 @@ VERDICTS.update(
     }
 )
 
+# The drive verbs (packages/cli): enqueue, emit, cancel, retry and sweep are each the store's
+# port call and nothing else, a write names its store again and three of them take --yes, a
+# refusal is named from a read after it, tick sends its token to one origin, and the two
+# reads the verbs ask of the engine's guards answer what the engine then does.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-a-drive-verb-names-its-store",
+            "packages/cli/src/main.ts",
+            "  if (spec.writes && invocation.strings.target !== target) {\n",
+            "  if (spec.verb === 'migrate' && invocation.strings.target !== target) { // MUTATION: only migrate names its store again\n",
+            "a drive verb writes to the store the environment names without that store being named again, so a write meant for one store lands in another",
+        ),
+        (
+            "cli-emit-changes-nothing-without-yes",
+            "packages/cli/src/main.ts",
+            "  if (invocation.booleans.yes !== true) {\n    return notConfirmed(\n      { ...named, exists: before.exists, emittedAtMs: before.emittedAtMs },\n",
+            "  if (false) { // MUTATION: emit writes without --yes\n    return notConfirmed(\n      { ...named, exists: before.exists, emittedAtMs: before.emittedAtMs },\n",
+            "emit creates an event and wakes its waiters with no confirmation",
+        ),
+        (
+            "cli-cancel-changes-nothing-without-yes",
+            "packages/cli/src/main.ts",
+            "  if (invocation.booleans.yes !== true) {\n    return notConfirmed(\n      named,\n      !live\n",
+            "  if (false) { // MUTATION: cancel writes without --yes\n    return notConfirmed(\n      named,\n      !live\n",
+            "cancel ends a live task with no confirmation",
+        ),
+        (
+            "cli-retry-changes-nothing-without-yes",
+            "packages/cli/src/main.ts",
+            "  if (invocation.booleans.yes !== true) {\n    return notConfirmed(\n      named,\n      wasFailed\n",
+            "  if (false) { // MUTATION: retry writes without --yes\n    return notConfirmed(\n      named,\n      wasFailed\n",
+            "retry revives a failed task with no confirmation",
+        ),
+        (
+            "cli-store-url-has-no-fallback",
+            "packages/cli/src/main.ts",
+            "  const url = env.DURABLERUN_STORE_URL\n",
+            "  const url = env.DURABLERUN_STORE_URL ?? env.TURSO_DATABASE_URL // MUTATION: the store URL falls back to another variable\n",
+            "a command with no DURABLERUN_STORE_URL opens, and a drive verb writes to, a store that another tool's variable names",
+        ),
+        (
+            "cli-a-drive-verb-creates-no-database",
+            "packages/cli/src/main.ts",
+            "      mayCreate: spec.verb === 'migrate' && invocation.booleans.yes === true,\n",
+            "      mayCreate: spec.writes && invocation.booleans.yes === true, // MUTATION: any confirmed write may create the database\n",
+            "a confirmed drive verb that names a file that is not there leaves an empty database behind its refusal",
+        ),
+        (
+            "cli-emit-refuses-a-reserved-name",
+            "packages/cli/src/main.ts",
+            "  if (isReservedEventName(eventName)) {\n",
+            "  if (false) { // MUTATION: emit sends a name of the engine to the store\n",
+            "emit of a name that starts with $ opens the store and reads it before the port refuses the name, and answers with the port's words in place of reserved-name",
+        ),
+        (
+            "cli-emit-says-already-emitted-with-the-stored-digest",
+            "packages/cli/src/main.ts",
+            "      outcome: !before.exists && payloadMatches ? 'created' : 'already-emitted',\n",
+            "      outcome: 'created', // MUTATION: every emit says it created the event\n",
+            "an operator whose emit changed no payload is told the event was created with the payload they sent",
+        ),
+        (
+            "cli-emit-never-prints-the-stored-payload",
+            "packages/cli/src/main.ts",
+            "      storedPayload: userValue(stored.payloadJson, false),\n",
+            "      storedPayload: userValue(stored.payloadJson, reveal), // MUTATION: --reveal prints the payload another caller stored\n",
+            "emit --reveal prints the text of a payload that the caller did not write",
+        ),
+        (
+            "cli-cancel-names-why-the-port-answered-false",
+            "packages/cli/src/main.ts",
+            "  const [cause, why] = isTerminalState(state)\n",
+            "  const [cause, why] = false // MUTATION: a task that ended is not told from one that is live\n",
+            "cancel of a task that already ended answers that nothing its rows show refuses it, and tells the operator to run it again",
+        ),
+        (
+            "cli-cancel-halts-a-rollback-only-when-told",
+            "packages/cli/src/main.ts",
+            "  if (haltsARollback && invocation.booleans['halt-rollback'] !== true) {\n",
+            "  if (false) { // MUTATION: cancel halts a rollback without being told to\n",
+            "cancel --yes of a task that is rolling back halts its saga where it stands, with steps not rolled back, and never says so",
+        ),
+        (
+            "cli-retry-reports-the-live-run-a-repeat-finds",
+            "packages/cli/src/main.ts",
+            "        outcome: wasFailed ? 'revived' : 'already-live',\n",
+            "        outcome: 'revived', // MUTATION: a repeat says it revived the task\n",
+            "retry of a task that is already live says it revived the task",
+        ),
+        (
+            "cli-retry-names-the-conjunct-that-refuses",
+            "packages/cli/src/drive.ts",
+            "  const conjunctsNotHeld = RETRY_GUARD.filter((name) => !admission.retry[name])\n",
+            "  const conjunctsNotHeld = RETRY_GUARD.filter(() => false) // MUTATION: the refusal is named without the read of the guard's conjuncts\n",
+            "a refused revival names no cause: the operator is told the task changed between the call and the read, whatever refused it",
+        ),
+        (
+            "cli-enqueue-spawns-under-its-key",
+            "packages/cli/src/main.ts",
+            "      idempotencyKey: key,\n",
+            "      // MUTATION: the task is spawned under no key\n",
+            "an enqueue run again after a lost answer spawns a second task",
+        ),
+        (
+            "cli-enqueue-is-the-spawn-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "    const spawned = await store.scheduler.spawn(queue, taskName, params.json, {\n",
+            "    const spawned = await store.scheduler.spawn(queue, taskName, 'null', { // MUTATION: the parameters are not handed to the port\n",
+            "enqueue spawns a task whose parameters are not the ones it was given",
+        ),
+        (
+            "cli-emit-is-the-emit-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "  const sent = await decoded(() => store.scheduler.emitEvent(queue, eventName, payload.json))\n",
+            "  const sent = await decoded(() => store.scheduler.emitEvent(queue, eventName, 'null')) // MUTATION: the payload is not handed to the port\n",
+            "emit creates an event whose payload is not the one it was given",
+        ),
+        (
+            "cli-cancel-is-the-cancel-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "  if (await store.scheduler.cancelTask(queue, taskId)) {\n",
+            "  if (await store.scheduler.cancelTask(queue, `${taskId}-`)) { // MUTATION: the port is asked about another task\n",
+            "cancel reads the task it was given and asks the port to cancel another, so the task stays live",
+        ),
+        (
+            "cli-retry-is-the-revival-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "  const revived = await store.scheduler.retryTask(queue, taskId)\n",
+            "  const revived = await store.scheduler.retryTask(queue, `${taskId}-`) // MUTATION: the port is asked about another task\n",
+            "retry reads the task it was given and asks the port to revive another, so the task stays failed",
+        ),
+        (
+            "cli-sweep-is-the-sweep-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "  const swept = await scheduler.sweep(queue, most)\n",
+            "  const swept = await scheduler.sweep(queue, 1) // MUTATION: the limit is not handed to the port\n",
+            "sweep makes one transition whatever limit it was given, and says it filled no limit",
+        ),
+        (
+            "cli-a-drive-verb-is-its-port-call-over-a-walk",
+            "packages/cli/src/main.ts",
+            "  const sent = await decoded(() => store.scheduler.emitEvent(queue, eventName, payload.json))\n",
+            "  const sent = before.exists ? {} : await decoded(() => store.scheduler.emitEvent(queue, eventName, payload.json)) // MUTATION: an event that exists is not sent to the port\n",
+            "emit of an event that exists answers from its own read and skips the port, so the event row is not stamped as the port stamps it",
+        ),
+        (
+            "cli-a-drive-verb-refuses-a-schema-below-the-window",
+            "packages/cli/src/main.ts",
+            "  const queue = await readableQueue(context)\n  if (typeof queue !== 'string') return queue\n  const { scheduler } = context.store\n",
+            "  const queue = context.invocation.strings.queue ?? '' // MUTATION: sweep runs on a schema its store does not read\n  const { scheduler } = context.store\n",
+            "sweep writes to a database older than every version the store reads, where the current statements were never held to what the port leaves",
+        ),
+        (
+            "cli-tick-returns-the-routers-body",
+            "packages/cli/src/main.ts",
+            "    return { exit: 'done', view: { ...sentTo, status, tick: body } }\n",
+            "    return { exit: 'done', view: { ...sentTo, status, tick: { claimed: body.claimed } } } // MUTATION: tick prints one field of the router's body\n",
+            "tick prints its own choice of the router's answer, so what the pass swept and whether it left a backlog is lost",
+        ),
+        (
+            "cli-tick-sends-its-token-in-the-authorization-header-alone",
+            "packages/cli/src/http.ts",
+            "    const response = await fetch(request.endpoint, {\n",
+            "    const response = await fetch(`${request.endpoint}?token=${request.token}`, { // MUTATION: the token is sent in the URL too\n",
+            "the tick token is sent in the request URL, where a proxy and an access log keep it",
+        ),
+        (
+            "cli-tick-exits-4-for-a-refused-token",
+            "packages/cli/src/main.ts",
+            "  if (status === 401 || status === 403) {\n",
+            "  if (false) { // MUTATION: a refused token is read as a status no tick route gives\n",
+            "a wrong tick token exits 7, a permanent error of the deployment, and a script cannot tell it from a route that is not there",
+        ),
+        (
+            "cli-tick-sends-only-to-the-origin-the-environment-names",
+            "packages/cli/src/http.ts",
+            "  if (named !== origin) {\n",
+            "  if (false) { // MUTATION: --url is not held to the origin the environment names\n",
+            "tick --url of one deployment sends the token to another, the one the environment names, with nothing said",
+        ),
+        (
+            "cli-tick-follows-no-redirect",
+            "packages/cli/src/http.ts",
+            "      redirect: 'manual',\n",
+            "      redirect: 'follow', // MUTATION: tick follows a redirect\n",
+            "tick follows a redirect to an origin nobody named and reads its answer as the pass",
+        ),
+        (
+            "cli-tick-ends-its-wait-through-the-clock",
+            "packages/cli/src/http.ts",
+            "  const deadline = clock.sleep(timeoutMs, over.signal).then(() => {\n",
+            "  const deadline = clock.sleep(timeoutMs * 1000, over.signal).then(() => { // MUTATION: tick waits a thousand times what it was given\n",
+            "tick --timeout 30s waits more than eight hours for a deployment that does not answer",
+        ),
+        (
+            "cli-tick-sends-over-https-or-to-loopback-alone",
+            "packages/cli/src/http.ts",
+            "  const loopback = parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname)\n",
+            "  const loopback = parsed.protocol === 'http:' // MUTATION: http is taken to any host\n",
+            "the tick token is sent in the clear to a host on the network",
+        ),
+        (
+            "cli-tick-refuses-a-credential-in-a-url",
+            "packages/cli/src/http.ts",
+            "  if (parsed.username !== '' || parsed.password !== '') return undefined\n",
+            "  if (false) return undefined // MUTATION: a URL that carries a credential is taken\n",
+            "a deployment URL that holds a user name and a password is taken, and its origin prints in a refusal and in a suggestion of explain",
+        ),
+        (
+            "cli-drill-finds-each-planted-cause-without-an-id",
+            "packages/cli/src/main.ts",
+            "      ...(aged === undefined || olderThanSeconds === undefined\n        ? {}\n        : { agedLive: agedLiveView(aged, olderThanSeconds) }),\n",
+            "      // MUTATION: stuck prints no leg of aged live tasks\n",
+            "an operator with no task id never finds a run that never started or a run parked on an event nobody emits, because no owed move lists either",
+        ),
+        (
+            "cli-drill-runs-each-suggestion-as-it-is-printed",
+            "packages/cli/src/explain.ts",
+            "    argv.push(`--${name}=${value}`)\n",
+            "    argv.push(`--${name}:${value}`) // MUTATION: a suggestion the command table cannot parse\n",
+            "the command explain suggests for a stuck task is refused by the CLI that printed it",
+        ),
+        (
+            "cli-drill-clears-what-is-stuck",
+            "packages/cli/src/explain.ts",
+            "  'pending-due-unclaimed': {\n    verdict: 'late',\n    next: 'tick',\n",
+            "  'pending-due-unclaimed': {\n    verdict: 'late',\n    next: 'sweep', // MUTATION: a due run no claim took is answered with a sweep\n",
+            "explain suggests a sweep for a run that is due and unclaimed, and a sweep claims nothing, so the run stays stuck",
+        ),
+        (
+            "cli-explain-fills-a-drive-verb-from-what-it-was-given",
+            "packages/cli/src/explain.ts",
+            "  const known: Readonly<Record<string, string | undefined>> = { taskId, ...given }\n",
+            "  const known: Readonly<Record<string, string | undefined>> = { taskId, queue: given.queue } // MUTATION: a suggestion is filled with the queue alone\n",
+            "explain withholds the sweep and the tick it suggests for a stuck task, though it holds the target of the store it read and the deployment the environment names",
+        ),
+        (
+            "cli-explain-names-a-move-the-engine-does-not-take",
+            "packages/cli/src/explain.ts",
+            "    if (admission === 'moved' || taken(admission)) return null\n",
+            "    if (admission === 'moved' || taken(admission) || true) return null // MUTATION: a move the engine does not take is read as late\n",
+            "explain answers that the driver is late for a row no tick and no sweep takes, and suggests the command that changes nothing",
+        ),
+        (
+            "cli-explain-reads-a-row-that-moved-as-it-stood",
+            "packages/cli/src/explain.ts",
+            "    if (admission === 'moved' || taken(admission)) return null\n",
+            "    if (admission !== 'moved' && taken(admission)) return null // MUTATION: a row that moved between the reads is read as one the engine does not take\n",
+            "explain calls a task inconsistent because it changed between two reads, which every healthy task does",
+        ),
+        (
+            "cli-explain-arm-deadline-no-sweep-cancels",
+            "packages/cli/src/explain.ts",
+            "  'deadline-no-sweep-cancels': ofTheLiveRun(deadlineNoSweepCancelsArm),\n",
+            "  'deadline-no-sweep-cancels': () => null, // MUTATION: the arm of deadline-no-sweep-cancels is deleted\n",
+            "explain answers the late cause for a row the engine does not take, and suggests a command that changes nothing (deadline-no-sweep-cancels)",
+        ),
+        (
+            "cli-explain-arm-lapsed-lease-no-sweep-reclaims",
+            "packages/cli/src/explain.ts",
+            "  'lapsed-lease-no-sweep-reclaims': ofTheLiveRun(lapsedLeaseNoSweepReclaimsArm),\n",
+            "  'lapsed-lease-no-sweep-reclaims': () => null, // MUTATION: the arm of lapsed-lease-no-sweep-reclaims is deleted\n",
+            "explain answers the late cause for a row the engine does not take, and suggests a command that changes nothing (lapsed-lease-no-sweep-reclaims)",
+        ),
+        (
+            "cli-explain-arm-due-run-no-claim-admits",
+            "packages/cli/src/explain.ts",
+            "  'due-run-no-claim-admits': ofTheLiveRun(dueRunNoClaimAdmitsArm),\n",
+            "  'due-run-no-claim-admits': () => null, // MUTATION: the arm of due-run-no-claim-admits is deleted\n",
+            "explain answers the late cause for a row the engine does not take, and suggests a command that changes nothing (due-run-no-claim-admits)",
+        ),
+        (
+            "operator-reads-answer-a-payload-only-as-text",
+            "packages/core/src/operator-reads.ts",
+            "  if (type === 'text' && typeof stored === 'string') return { exists: true, payloadJson: stored }\n",
+            "  if (type === 'text') return { exists: true, payloadJson: stored as string } // MUTATION: a value the dialect calls text is believed\n",
+            "a stored payload that is no text is handed on as the payload, and its digest is of a value no emit sent",
+        ),
+        (
+            "operator-reads-read-each-conjunct-as-its-own-flag",
+            "packages/core/src/operator-reads.ts",
+            "  for (const name of RETRY_GUARD) retry[name] = flagOf(`task-admission ${name}`, guard[name])\n",
+            "  for (const name of RETRY_GUARD) retry[name] = flagOf(`task-admission ${name}`, guard.failed) // MUTATION: every conjunct is read from the first flag\n",
+            "every conjunct of the retry guard is answered with whether the task is failed, so a refused revival of a failed task names no cause",
+        ),
+        (
+            "operator-reads-a-claim-takes-a-run-of-either-state",
+            "packages/core/src/operator-reads.ts",
+            "        flagOf('task-admission claimTakesPending', row.claimTakesPending) ||\n",
+            "        flagOf('task-admission claimTakesPending', row.claimTakesPending) && // MUTATION: a claim takes a run only when the predicates of both states hold\n",
+            "no run is ever said to be one a claim takes, because a run is in one state, and explain calls every due run one no claim admits",
+        ),
+        (
+            "operator-admission-reads-every-conjunct-of-the-guard",
+            "packages/core/src/statements/operator.ts",
+            "    .when(rawSql<boolean>(predicate, 'predicate'))\n    .then(literalValue(1))\n    .else(literalValue(0))\n",
+            "    .when(rawSql<boolean>(predicate, 'predicate'))\n    .then(literalValue(0)) // MUTATION: a predicate's flag is 1 when it does not hold\n    .else(literalValue(1))\n",
+            "every flag of the read says the opposite of the predicate the engine holds, so a task the guard revives reads as refused by every conjunct",
+        ),
+        (
+            "operator-admission-names-the-conjunct-that-refuses",
+            "packages/core/src/statements/operator.ts",
+            "        ...RETRY_CONJUNCTS.map((name) => flagOf(binds.conjuncts[name], name)),\n",
+            "        ...RETRY_CONJUNCTS.map((name) => flagOf(binds.conjuncts.ownsEveryRun, name)), // MUTATION: every flag is the first conjunct's\n",
+            "every conjunct of the retry guard is answered with whether the task owns its runs, so a revival the guard refuses reads as one every conjunct admits",
+        ),
+        (
+            "operator-admission-flags-are-what-the-engine-does",
+            "packages/core/src/statements/operator.ts",
+            "        flagOf(binds.sleepingRuns, 'claimTakesSleeping'),\n",
+            "        flagOf(binds.pendingRuns, 'claimTakesSleeping'), // MUTATION: a sleeping run is asked the pending predicate\n",
+            "a sleeping run past its wake reads as one no claim takes, though the next claim takes it",
+        ),
+        (
+            "operator-admission-agrees-with-the-finder-on-a-walk",
+            "packages/core/src/statements/operator.ts",
+            "        flagOf(binds.expiredClaims, 'sweepReclaims'),\n",
+            "        flagOf(binds.pendingRuns, 'sweepReclaims'), // MUTATION: the sweep's flag is asked the claim's predicate\n",
+            "a run under a lapsed lease reads as one no sweep takes back, and a due pending run as one a sweep does",
+        ),
+        (
+            "operator-admission-agrees-with-the-guard-on-a-walk",
+            "packages/core/src/statements/operator.ts",
+            "          .when(ofTheTask('state', '=', literalValue('failed')))\n",
+            "          .when(ofTheTask('state', '=', literalValue('cancelled'))) // MUTATION: the failed flag reads another state\n",
+            "a failed task the guard revives reads as not failed, and a cancelled task as failed",
+        ),
+        (
+            "operator-event-payload-is-what-the-first-emit-stored",
+            "packages/core/src/operator-reads.ts",
+            "  if (type === 'text' && typeof stored === 'string') return { exists: true, payloadJson: stored }\n",
+            "  if (false) return { exists: true, payloadJson: stored as string } // MUTATION: a stored payload is never answered as text\n",
+            "every stored payload reads as not text, so emit answers unreadable for every event",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-a-drive-verb-names-its-store": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "the drive verbs on libSQL a write with a --target that is not its store exits 2, opens nothing and changes nothing, whichever verb it is",
+            "mutation-verdict:behavior:cli-a-drive-verb-names-its-store",
+        ),
+        "cli-emit-changes-nothing-without-yes": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "the drive verbs on libSQL emit, cancel and retry without --yes exit 2 with confirmation-required, change nothing and say what they would do, and with --yes change the database",
+            "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
+        ),
+        "cli-cancel-changes-nothing-without-yes": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "the drive verbs on libSQL emit, cancel and retry without --yes exit 2 with confirmation-required, change nothing and say what they would do, and with --yes change the database",
+            "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
+        ),
+        "cli-retry-changes-nothing-without-yes": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "the drive verbs on libSQL emit, cancel and retry without --yes exit 2 with confirmation-required, change nothing and say what they would do, and with --yes change the database",
+            "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
+        ),
+        "cli-store-url-has-no-fallback": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "the drive verbs on libSQL reads no store and no queue from another variable: TURSO_* and DURABLERUN_QUEUE are not read",
+            "mutation-verdict:behavior:cli-store-url-has-no-fallback",
+        ),
+        "cli-a-drive-verb-creates-no-database": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "the drive verbs on libSQL creates no database: a drive verb of a file that is not there exits 5 and leaves no file",
+            "mutation-verdict:behavior:cli-a-drive-verb-creates-no-database",
+        ),
+        "cli-emit-refuses-a-reserved-name": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "emit on libSQL answers reserved-name for a name of the engine, and sends nothing",
+            "mutation-verdict:behavior:cli-emit-refuses-a-reserved-name",
+        ),
+        "cli-emit-says-already-emitted-with-the-stored-digest": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "emit on libSQL creates an event and wakes the runs parked on it, and a later emit is told the digest of the payload that stands",
+            "mutation-verdict:behavior:cli-emit-says-already-emitted-with-the-stored-digest",
+        ),
+        "cli-emit-never-prints-the-stored-payload": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "emit on libSQL never prints the text of the payload an event holds, --reveal or not, and prints the caller's own only with --reveal",
+            "mutation-verdict:behavior:cli-emit-never-prints-the-stored-payload",
+        ),
+        "cli-cancel-names-why-the-port-answered-false": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "cancel on libSQL cancels a live task, reports a task cancelled already, and names a task that ended another way or is not there",
+            "mutation-verdict:behavior:cli-cancel-names-why-the-port-answered-false",
+        ),
+        "cli-cancel-halts-a-rollback-only-when-told": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "cancel on libSQL refuses a task whose saga began without --halt-rollback, prints the rollback facts, and cancels it with the flag",
+            "mutation-verdict:behavior:cli-cancel-halts-a-rollback-only-when-told",
+        ),
+        "cli-retry-reports-the-live-run-a-repeat-finds": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "retry on libSQL revives a failed task, and a repeat reports the live run it finds",
+            "mutation-verdict:behavior:cli-retry-reports-the-live-run-a-repeat-finds",
+        ),
+        "cli-retry-names-the-conjunct-that-refuses": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "retry on libSQL a revival the guard refuses is named by the conjunct that is false, from a read after the refusal hasAFailureReason: a failed task whose reason is then set to NULL, fixture-built",
+            "mutation-verdict:behavior:cli-retry-names-the-conjunct-that-refuses",
+        ),
+        "cli-enqueue-spawns-under-its-key": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/fault-surface.test.ts",
+            "the CLI fault surface an enqueue whose answer was lost, run again, finds the task under its key and spawns no second one",
+            "mutation-verdict:behavior:cli-enqueue-spawns-under-its-key",
+        ),
+        "cli-enqueue-is-the-spawn-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
+            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
+        ),
+        "cli-emit-is-the-emit-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
+            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
+        ),
+        "cli-cancel-is-the-cancel-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
+            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
+        ),
+        "cli-retry-is-the-revival-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
+            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
+        ),
+        "cli-sweep-is-the-sweep-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "the drive verbs at every schema version their store reads, on libSQL every drive verb leaves the dump its port call leaves on a twin, at every version from 5 to the build's",
+            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
+        ),
+        "cli-a-drive-verb-is-its-port-call-over-a-walk": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "a drive verb over the states a walk of the engine leaves, on libSQL leaves the dump its port call leaves on a twin the same walk built, after every command",
+            "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call-over-a-walk",
+        ),
+        "cli-a-drive-verb-refuses-a-schema-below-the-window": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-twin.test.ts",
+            "a drive verb is its port call and nothing else [libsql] a drive verb exits 5 on a database below the window of its store's reads, names both versions, and changes nothing",
+            "mutation-verdict:behavior:cli-a-drive-verb-refuses-a-schema-below-the-window",
+        ),
+        "cli-tick-returns-the-routers-body": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address returns the router's tick body, for the pass the router ran, and opens no store",
+            "mutation-verdict:behavior:cli-tick-returns-the-routers-body",
+        ),
+        "cli-tick-sends-its-token-in-the-authorization-header-alone": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address sends its token in the Authorization header of one POST to the tick route, and nowhere else, and prints it in no stream",
+            "mutation-verdict:behavior:cli-tick-sends-its-token-in-the-authorization-header-alone",
+        ),
+        "cli-tick-exits-4-for-a-refused-token": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address exits 4 when the deployment refuses the token, and prints neither token",
+            "mutation-verdict:behavior:cli-tick-exits-4-for-a-refused-token",
+        ),
+        "cli-tick-sends-only-to-the-origin-the-environment-names": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address sends nothing when --url names another origin: neither listener records a connection",
+            "mutation-verdict:behavior:cli-tick-sends-only-to-the-origin-the-environment-names",
+        ),
+        "cli-tick-follows-no-redirect": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address follows no redirect: a deployment that answers with one is not a tick route, and the token goes to no second origin",
+            "mutation-verdict:behavior:cli-tick-follows-no-redirect",
+        ),
+        "cli-tick-ends-its-wait-through-the-clock": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "tick --url against a hosted router on the loopback address ends its wait through the clock it was handed, and exits 6 for an answer that does not come",
+            "mutation-verdict:behavior:cli-tick-ends-its-wait-through-the-clock",
+        ),
+        "cli-tick-sends-over-https-or-to-loopback-alone": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "where tick sends its token sends only over https, or over http to a loopback address",
+            "mutation-verdict:behavior:cli-tick-sends-over-https-or-to-loopback-alone",
+        ),
+        "cli-tick-refuses-a-credential-in-a-url": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/tick.test.ts",
+            "where tick sends its token refuses a URL that carries a credential and a token a header cannot carry, and quotes neither",
+            "mutation-verdict:behavior:cli-tick-refuses-a-credential-in-a-url",
+        ),
+        "cli-drill-finds-each-planted-cause-without-an-id": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drill.test.ts",
+            "the operator drill [libsql] finds each planted cause without a task id, clears what is stuck by the command explain suggests, and cancels what waits on nothing",
+            "mutation-verdict:behavior:cli-drill-finds-each-planted-cause-without-an-id",
+        ),
+        "cli-drill-runs-each-suggestion-as-it-is-printed": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drill.test.ts",
+            "the operator drill [libsql] finds each planted cause without a task id, clears what is stuck by the command explain suggests, and cancels what waits on nothing",
+            "mutation-verdict:behavior:cli-drill-runs-each-suggestion-as-it-is-printed",
+        ),
+        "cli-drill-clears-what-is-stuck": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drill.test.ts",
+            "the operator drill [libsql] finds each planted cause without a task id, clears what is stuck by the command explain suggests, and cancels what waits on nothing",
+            "mutation-verdict:behavior:cli-drill-clears-what-is-stuck",
+        ),
+        "cli-explain-fills-a-drive-verb-from-what-it-was-given": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain on libSQL says what each cause that names a drive verb suggests, filled only from what explain was given",
+            "mutation-verdict:behavior:cli-explain-fills-a-drive-verb-from-what-it-was-given",
+        ),
+        "cli-explain-names-a-move-the-engine-does-not-take": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "diagnose asks whether the engine takes a move it is owed, names the row it does not take, and reads a row that moved as it stood",
+            "mutation-verdict:behavior:cli-explain-names-a-move-the-engine-does-not-take",
+        ),
+        "cli-explain-reads-a-row-that-moved-as-it-stood": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "diagnose asks whether the engine takes a move it is owed, names the row it does not take, and reads a row that moved as it stood",
+            "mutation-verdict:behavior:cli-explain-reads-a-row-that-moved-as-it-stood",
+        ),
+        "cli-explain-arm-deadline-no-sweep-cancels": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause deadline-no-sweep-cancels: a task past its start deadline whose run is then moved to another queue, so the sweep's scan does not answer the task, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-deadline-no-sweep-cancels",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-lapsed-lease-no-sweep-reclaims": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause lapsed-lease-no-sweep-reclaims: a started run at the end of its lease whose activation generation is then set past its claim generation, so the sweep's scan does not answer the run, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-lapsed-lease-no-sweep-reclaims",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "cli-explain-arm-due-run-no-claim-admits": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] explain names the seeded cause due-run-no-claim-admits: a due run whose task is then given a retry strategy that is not JSON, so no claim admits the run, fixture-built",
+            "mutation-verdict:behavior:cli-explain-arm-due-run-no-claim-admits",
+            "packages/cli/test/explain-seeds.ts",
+        ),
+        "operator-reads-answer-a-payload-only-as-text": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how the reads a drive verb asks decode a row answers an event's payload only when the stored value is text, and names the kind of any other",
+            "mutation-verdict:behavior:operator-reads-answer-a-payload-only-as-text",
+        ),
+        "operator-reads-read-each-conjunct-as-its-own-flag": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how the reads a drive verb asks decode a row reads every conjunct of the retry guard as its own flag, and refuses a flag that is no integer",
+            "mutation-verdict:behavior:operator-reads-read-each-conjunct-as-its-own-flag",
+        ),
+        "operator-reads-a-claim-takes-a-run-of-either-state": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/operator-reads.test.ts",
+            "how the reads a drive verb asks decode a row says a claim takes a run when the predicate of either state holds, and lists the runs by ordinal and then by id",
+            "mutation-verdict:behavior:operator-reads-a-claim-takes-a-run-of-either-state",
+        ),
+        "operator-admission-reads-every-conjunct-of-the-guard": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] says every conjunct of the retry guard holds of a task that failed for good, and the revival then takes it",
+            "mutation-verdict:behavior:operator-admission-reads-every-conjunct-of-the-guard",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-admission-names-the-conjunct-that-refuses": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] a conjunct of the retry guard that is false is the one the read names, and the revival is refused hasAFailureReason: a failed task whose reason is then set to NULL, fixture-built",
+            "mutation-verdict:behavior:operator-admission-names-the-conjunct-that-refuses",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-admission-flags-are-what-the-engine-does": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] says of each run and task of a seeded queue what a claim and a sweep then do with it, with one canonical answer",
+            "mutation-verdict:behavior:operator-admission-flags-are-what-the-engine-does",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-admission-agrees-with-the-finder-on-a-walk": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] agrees with the retry guard, with a claim and with a sweep on every state a walk of the engine leaves",
+            "mutation-verdict:behavior:operator-admission-agrees-with-the-finder-on-a-walk",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-admission-agrees-with-the-guard-on-a-walk": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] agrees with the retry guard, with a claim and with a sweep on every state a walk of the engine leaves",
+            "mutation-verdict:behavior:operator-admission-agrees-with-the-guard-on-a-walk",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+        "operator-event-payload-is-what-the-first-emit-stored": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "operator reads of what the engine admits [libsql] answers the payload an event's first emit stored, byte for byte, a completion event's too, and nothing of another queue's",
+            "mutation-verdict:behavior:operator-event-payload-is-what-the-first-emit-stored",
+            "packages/conformance/src/operator-admission.ts",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -21675,6 +22325,21 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "cli-retry-names-the-conjunct-that-refuses": (
+        "the case runs once for each conjunct of the retry guard, and its title carries the conjunct and the state planted for it"
+    ),
+    "cli-a-drive-verb-refuses-a-schema-below-the-window": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
+    "cli-drill-finds-each-planted-cause-without-an-id": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
+    "cli-drill-runs-each-suggestion-as-it-is-printed": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
+    "cli-drill-clears-what-is-stuck": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
     "cli-explain-lists-every-waiter-of-the-event": (
         "the suite runs once for each selected dialect, and its describe title carries the dialect"
     ),
@@ -24253,7 +24918,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1344:
+        if len(MUTATIONS) != 1391:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

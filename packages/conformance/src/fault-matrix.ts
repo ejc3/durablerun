@@ -100,6 +100,8 @@ export const MATRIX_READ_LABELS = [
   'table-rows',
   'event-waiters',
   'aged-tasks',
+  'event-payload',
+  'task-admission',
 ] as const
 
 /** Fixture plumbing that runs outside any simulated actor. */
@@ -899,6 +901,10 @@ export async function runFaultMatrixCase(
       await go(() => operator.tableRows(Q))
       await go(() => operator.eventWaiters(Q, 'go'))
       await go(() => operator.agedTasks(Q, { olderThanSeconds: 0, limit: 10 }))
+      // And of what a drive verb asks before it names a refusal: an event's stored
+      // payload, and what the engine's own guards say of a task.
+      await go(() => operator.eventPayload(Q, 'go'))
+      if (t2) await go(() => operator.taskAdmission(Q, t2.taskId))
     })
     await world.run()
 

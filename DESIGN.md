@@ -5601,20 +5601,22 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
 is private at version 0.0.0 with no `bin` field, so nothing here is published and
 `scripts/package-smoke.sh` skips it. `main(argv, env, io, ids, clock)` in `src/main.ts` is
 the whole CLI with everything it touches handed in, and the bin hands it the process's
-arguments, environment and streams. No command reads the clock.
+arguments, environment and streams. `tick` waits for its answer on the clock it is handed,
+and no other command reads the clock: engine time is database time.
 
 **The command table.** `src/commands.ts` holds one entry for each command: its arguments
 and flags, whether it opens a store and whether it writes, what running it again does
 after its answer was lost (`read` prints the state it finds as of that read, `resumes`
-carries on from where the first run stopped), each port call it makes with every batch
+carries on from where the first run stopped, and `settles` reaches the state one successful
+run leaves and prints what it finds there), each port call it makes with every batch
 label that call can send, the exit codes it gives, and the exit a fault at each of its
 batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
 table. A command may name one argument that a flag stands in for, and it then takes one of
-the two and never both: `inspect` and `explain` each take a task id or `--key`. The commands so
-far are `help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect`, `explain`, `stuck`,
-`stats` and `sizes`.
+the two and never both: `inspect` and `explain` each take a task id or `--key`. The commands are
+`help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect`, `explain`, `stuck`, `stats`,
+`sizes`, `enqueue`, `emit`, `cancel`, `retry`, `sweep` and `tick`.
 
-**Transport.** Every command but `help` opens a store directly, from
+**Transport.** Every command but `help` and `tick` opens a store directly, from
 `DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
 one. There is no fallback to any other variable. `src/open-store.ts` picks the store by
 the URL's scheme: `file:`, `:memory:`, `libsql:`, `https:` and `wss:` open libSQL,
@@ -5624,7 +5626,7 @@ override for that file, and because the rule matches a specifier's spelling, a t
 resolves every import of `src` and `bin` as the compiler does, relative paths and
 `typeof import(...)` included, and fails on one that lands in a store package. The
 opener returns ports narrowed to the calls a command may make, never an executor: the
-fake clock's setter and `claim` cannot be written. A database credential is full admin:
+fake clock's setter and `claim` cannot be written, nor any call a worker makes under a claim. A database credential is full admin:
 it bypasses section 3.5's hosted authorization port, which decides only the hosted
 routes' four operations, and the rows it reaches hold params, checkpoints and event
 payloads in plaintext (section 3.5, observability). So the CLI's own messages never
@@ -5673,8 +5675,8 @@ fails partway, the versions it applied and the version now recorded. `--queue` a
 
 **The operator's reads.** `inspect (<taskId> | --key <idempotencyKey>) --queue Q` reads
 through `OperatorReads` (core's `ports.ts`), a read port apart from `SchedulerStore`: no
-engine actor calls it, and nothing in it writes. It has eight methods. Three read one task
-or one name.
+engine actor calls it, and nothing in it writes. It has ten methods. Five read one task or
+one name.
 
 - `taskFacts(queue, taskId)` answers one snapshot of a task, or null when the queue holds no
   such task: database time, and whether the test clock is set; the task's row (name, state,
@@ -5688,13 +5690,35 @@ or one name.
 - `taskIdByKey(queue, key)` answers the task spawned under an idempotency key, or null. A
   child's key, which the engine built, finds its child.
 - `eventState(queue, name)` answers whether an event exists and when it was emitted, a
-  completion event included, and nothing derived from its payload. The payload digest that
-  `emit` prints for an event that already exists belongs to PR5.3d, which adds it there.
-  No command calls `eventState` yet, so the CLI's opener hands out every method but that
-  one.
+  completion event included, and nothing derived from its payload. `emit` reads it before
+  its write.
+- `eventPayload(queue, name)` answers one event's stored payload, as the text its first
+  emit stored, byte for byte. It is read for the payload's digest alone: `emit` hashes it
+  and never prints it. A stored value that is not text is not answered as a payload, and
+  the answer names its kind by the dialect's own name for the type of what is stored.
+- `taskAdmission(queue, taskId)` answers what the engine's own guards say of one task as of
+  the read: each conjunct of the retry guard as a boolean, whether the sweep's scan of due
+  cancellations takes the task, and for each run whether a claim takes it and whether the
+  sweep's scan of expired claims does, each beside the state and the instants it was read
+  with. `retry` reads it to name a refusal, and `explain` reads it to tell a move the driver
+  is late for from a move the engine does not take.
 
 Five read one queue: `stuckRuns`, `agedTasks`, `queueStatus`, `tableRows` and
 `eventWaiters`. What each answers is said below, with the command that prints it.
+
+`taskAdmission` selects the engine's predicates and holds no copy of one. Each store names
+the conjuncts of its retry guard once, as a record keyed by core's list `RETRY_CONJUNCTS`.
+Core builds the guard of `retryTask` from that record (`retryAdmission`), and it builds the
+flags of the read from the same record, one `CASE WHEN <conjunct> THEN 1 ELSE 0 END` for
+each. So a conjunct the guard gains is a key the record must hold, the read selects it, and
+the CLI must give it a cause, or the build stops. The flags of a run are the fragments the
+claim and the sweep hold their own rows to, which are the ones `stuckRuns` lists by. A flag
+is 0 when its predicate is false or NULL, because a guard takes NULL for a refusal too. A
+conformance case plants a state for every conjunct and requires the read to name it and the
+revival to be refused. Another holds the read to the guard, to a claim and to a sweep on
+every state a walk of the engine leaves, with a floor under how many of each it reaches.
+The read is one batch, `task-admission`, of three statements, and `event-payload` is one
+statement.
 
 Core holds the one implementation (`createOperatorReads`). Its statements are shared trees
 (`statements/operator.ts`) over each store's own fragments, and each store package exports
@@ -5782,12 +5806,14 @@ the facts `inspect` reads and hands them to `diagnose` (`src/explain.ts`), which
 cause from a closed table, a verdict, the facts behind the cause, and, for a `waiting`
 verdict, `nextTransitionAtMs`. `diagnose` is pure: it reads no clock and no store, and
 database time is one of the facts. What the facts of one task do not hold it asks for by
-name, and `explain` reads that and asks again. It asks for three things: how many checkpoints
+name, and `explain` reads that and asks again. It asks for four things: how many checkpoints
 the task has committed, for a started run parked on a timer and no event, which
 `getCheckpoints` answers, the diagnosis of the child, for a run parked on a child's
-completion, and the waits on the event an await names, which `eventWaiters` answers. So
-`explain` sends the batches `inspect` sends, `get-checkpoints` for that one shape of run,
-and `event-waiters` for a run parked on an await.
+completion, the waits on the event an await names, which `eventWaiters` answers, and what
+the engine's guards say of the task, for a task past an instant the driver owes it a move
+at, which `taskAdmission` answers. So `explain` sends the batches `inspect` sends,
+`get-checkpoints` for that one shape of run, `event-waiters` for a run parked on an await,
+and `task-admission` for a task a move is owed to.
 
 A verdict says whether a move is owed to the task, never whether the task did well. A task
 that failed for good is `ok`: nothing will move it and nothing should.
@@ -5805,8 +5831,10 @@ that failed for good is `ok`: nothing will move it and nothing should.
 - `unexplained`: no cause of the table takes the facts. It is the answer when every arm
   declines, so a state nobody listed is never read as a healthy one.
 
-No verdict and no cause says a run can be claimed: a claim's admission reads what the facts
-do not hold, the stored retry strategy and headers among it. A verdict is the CLI's reading
+No verdict and no cause says a run can be claimed. Three causes say the opposite, that the
+engine does not take a move it is owed, and they say it from the engine's own predicates
+and not from the facts: a claim's admission reads what the facts do not hold, the stored
+retry strategy and headers among it. A verdict is the CLI's reading
 for an operator. The engine reads none of it, and the lease stays the only truth about who
 may run a task (section 3.9).
 
@@ -5830,11 +5858,14 @@ one, and a test parses both and requires them equal.
 | failed-with-no-retry | ok | result | the task's code failed and its worker asked for no retry, with attempts left |
 | live-task-without-one-live-run | inconsistent | inspect | the task is live and does not have exactly one live run |
 | task-and-run-states-differ | inconsistent | inspect | the task's state is not its live run's state |
+| deadline-no-sweep-cancels | inconsistent | inspect | the task's cancellation deadline passed, and the sweep's scan does not answer the task, so no sweep cancels it |
 | cancellation-deadline-passed | late | sweep | the task's cancellation deadline passed, and no sweep has cancelled it |
+| lapsed-lease-no-sweep-reclaims | inconsistent | inspect | the run's lease expired, and the sweep's scan does not answer the run, so no sweep takes it back |
 | lease-lapsed-unswept | late | sweep | the run's lease expired, and no sweep has taken the run back |
 | running-past-the-hung-bound | ok | inspect | the run was claimed once and has run under a live lease for longer than the hung-run bound |
 | running-under-a-live-lease | ok | none | the run is claimed under a lease that has not expired |
 | pending-delayed | waiting | none | the run is pending and not due yet: a start delay holds it, or the backoff after a lost launch or after a lease that ran out |
+| due-run-no-claim-admits | inconsistent | inspect | the run is due, and no claim admits it: it or its task holds a row a claim cannot run safely, so no tick takes it |
 | woken-unclaimed | late | tick | the run is due and carries the wake fields of an await of the event named, and no claim has taken it |
 | pending-due-unclaimed | late | tick | the run is due, and no claim has taken it |
 | backing-off | waiting | none | the run follows a failed run and sleeps until its retry delay or its rollback delay has run |
@@ -5955,20 +5986,30 @@ its bounds makes the answer `unreadable`, with exit 10, and names that wait, as 
 task's own does.
 
 The next command is built from the command table: the verb the cause names, each of that
-command's arguments, and each flag it requires, filled from the queue `explain` was given
-and the id of the task the command is for. A required flag and its value are one argument,
-`--queue=<value>`, so a queue whose name begins with a dash is still read as the flag's
-value. It prints as arguments (`next.argv`) and as one line to paste (`next.command`). No
-flag a command does not require is ever added, so no suggestion carries `--yes`, and no
-cause names `emit` or `cancel`: for an await with no timeout `explain` prints the event's
-name as a fact, and whether to emit it is the operator's call. A `waiting` verdict prints no
-next command. Neither does a cause whose verb the table does not hold: `sweep` and `tick`
-join the table with the drive verbs (PR5.3d), and until then the five causes that name them
-print none. A test lists those five, so the pull request that adds the verbs has to say
-there what each then prints. When a command requires an argument or a flag that `explain`
-has no value for, it builds no command, prints `next` as null, and says what it had no
-value for under `nextWithheld`. The diagnosis prints either way. A command that writes
-requires `--target`, and `explain` has no value for it today.
+command's arguments, and each flag it requires. It is filled only from what `explain` was
+given: the queue, the id of the task the command is for, the target of the store `explain`
+opened, which is what `--target` must name for a write to that store, and the origin of
+`DURABLERUN_BASE_URL` when the environment names a deployment a token may be sent to. A
+required flag and its value are one argument, `--queue=<value>`, so a queue whose name
+begins with a dash is still read as the flag's value. It prints as arguments (`next.argv`)
+and as one line to paste (`next.command`). No flag a command does not require is ever
+added, so no suggestion carries `--yes`, and no cause names `emit`, `cancel` or `retry`:
+for an await with no timeout `explain` prints the event's name as a fact, and whether to
+emit it, and whether to cancel a run that may be healthy, is the operator's call. A
+`waiting` verdict prints no next command.
+
+The two causes a sweep clears, `cancellation-deadline-passed` and `lease-lapsed-unswept`,
+print `sweep --queue=<queue> --target=<target>` once they are `stuck`. The three a claim
+clears, `woken-unclaimed`, `pending-due-unclaimed` and `sleeping-past-its-wake`, print
+`tick --url=<origin>`. Neither names a task: a sweep and a tick take what the queue owes,
+oldest first. When a command requires an argument or a flag that `explain` has no value
+for, it builds no command, prints `next` as null, and says what it had no value for under
+`nextWithheld`. With no `DURABLERUN_BASE_URL`, or with one a token is never sent to, the
+three causes a claim clears print `explain knows no value for --url of tick`, and the two a
+sweep clears still print their sweep. The diagnosis prints either way. The three causes for
+a move the engine does not take suggest `inspect`: a sweep or a tick changes nothing for
+such a row. A test runs the drill of an operator with no task id against a hosted router on
+the loopback address, and each suggestion it is printed runs as it is printed.
 
 `explain` exits 0 for every task it could read, whatever the verdict: a verdict is not an
 exit code. It exits 10 when a row it read is one `inspect` exits 10 for, the task's or that
@@ -6169,9 +6210,17 @@ is more than a grace, `stuck` under that grace lists a row, and `--fail-if-any` 
 the command then holds that run in one of its three legs of due runs: it lists the run, or
 a leg says with `atLeast` or `unexamined` that more runs are due than it settled. A task past its cancellation
 deadline is named for the deadline before any of the three, and a row that is not readable
-is named as that. `explain` does not test what a claim requires. It gives a run no claim admits the cause and
-the verdict it gives any due run, and it does not say that no tick will take the run. The
-leg `stuck` lists the run in is what tells the two apart.
+is named as that. `explain` asks the engine's own predicate about a run that is due
+(`taskAdmission`). A run no claim admits is `due-run-no-claim-admits`, with the verdict
+`inconsistent` and `inspect` as its next command, and `stuck` lists it in `dueNotAdmitted`.
+A run a claim takes is one of the three late causes, and `stuck` lists it in a leg of due
+runs. So the two commands agree about which of the two a run is. The same holds of a lapsed
+lease the sweep's scan does not answer (`lapsed-lease-no-sweep-reclaims`) and of a deadline
+it does not answer (`deadline-no-sweep-cancels`). `explain` reads the facts and the
+predicates in two snapshots. When the row moved between them, so that a state, a claim
+generation or an instant the flags were read beside is not the one the facts hold, the
+predicates decide nothing, the late cause answers for the row as it stood, and asking again
+answers it.
 
 The legs of the sweep relate to the gauges the same way. The running runs
 `runningRunsLapsed` counts are the rows of `leaseLapsed` and `lapsedNotReclaimed`, and the
@@ -6179,7 +6228,7 @@ live tasks `tasksPastTheirDeadline` counts are the rows of `cancelOverdue` and
 `deadlineNotCancelled`, as far as the limit and the window reach. A CLI case holds one such
 row end to end. A started run whose `activated_gen` was set past its `claim_gen`, an hour
 after its lease lapsed: the sweep takes nothing, `stats` counts one lapsed lease, `explain`
-answers `lease-lapsed-unswept` and `stuck`, and `stuck --grace 0s --fail-if-any` lists the
+answers `lapsed-lease-no-sweep-reclaims` and `inconsistent`, and `stuck --grace 0s --fail-if-any` lists the
 run in `lapsedNotReclaimed` and exits 9.
 
 **A queue's gauges.** `stats --queue Q` prints `queueStatus(queue)`: nine gauges, three
@@ -6318,6 +6367,113 @@ built. The first two are built as planned, and the third the plan did not have.
    `lapsedNotReclaimed` and `deadlineNotCancelled`, each found through a bounded window and
    each counted by `--fail-if-any`, as this section says above.
 
+**The drive verbs.** `enqueue`, `emit`, `cancel`, `retry` and `sweep` each make one call of
+the store's port, and that call is the whole write. The command reads before it and after
+it to say what happened, and nothing it reads decides whether a row changes: the port's own
+guard does. A test holds this on every dialect. The command runs through `main` against one
+database, and the port call it is runs against a twin: a second database built by the same
+calls with the same seeded ids. Both are handed an id source of one seed, and after each
+step a dump of every table of the one equals the dump of the other, and the command's
+answer is the port's. The same is held on libSQL over the states a walk of the engine
+leaves, after every command, with a floor under how many of each outcome the walks reach.
+
+- `enqueue <taskName> --key K [--params JSON] --queue Q --target T` is `spawn` under the
+  idempotency key. `--key` is required, so the command run again after a lost answer finds
+  the task the first run made and prints `created: false`. The parameters are one JSON
+  value, parsed and written again by the two functions the hosted routes hand a store its
+  JSON through, so a task enqueued here holds the bytes it holds when it is enqueued over
+  HTTP, and `null` when none is given.
+- `emit <eventName> [--payload JSON] --yes --queue Q --target T` is `emitEvent`. The first
+  emit's payload stands. A later emit changes no payload and wakes nothing, and the engine
+  stamps the event's row with the batch that last wrote it. The answer says which this call
+  was, `created` or `already-emitted`, from the event's state read before the write and its
+  stored payload read after (`eventPayload`). It prints the stored payload's byte length
+  and sha256 beside those of the payload it sent, and whether the two match. The stored
+  payload's text is never printed, `--reveal` or not, because another caller may have
+  written it. A name that starts with `$` is the engine's: it exits 3 with `reserved-name`,
+  and no batch is sent.
+- `cancel <taskId> --yes [--halt-rollback] --queue Q --target T` is `cancelTask`. The task
+  is read first. A live task whose saga began is cancelled only with `--halt-rollback`:
+  cancelling a task that is rolling back halts its saga where it stands, and a step not yet
+  rolled back stays as it is (section 3.10). Without the flag the command exits 2 with
+  `confirmation-required` and prints the rollback facts `taskFacts` carries: the attempts,
+  the budget and every run. When the port answers false it wrote nothing, and the task as
+  it stands after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`),
+  ended another way (exit 3, `already-terminal`), or live with a run in another queue,
+  which no engine path writes (exit 3, `run-in-another-queue`).
+- `retry <taskId> --yes --queue Q --target T` is `retryTask`. When the port answers null it
+  wrote nothing, and `taskAdmission`, read after, names why from the guard's own conjuncts.
+  A task that is live at that read, with a live run, exits 0 and prints that run. Its
+  outcome is `revived` when the task was failed before the write, which is this call
+  delivered twice or another caller's revival, and `already-live` when it was not.
+- `sweep --queue Q --target T [--limit N]` is `sweep`, and then a read of the queue's next
+  wake. It cancels the tasks past their deadline and takes back the runs whose lease
+  lapsed, as a tick's first step does, up to the limit (20 by default, at most 1,000), and
+  it claims nothing. `atLimit` says when it filled its limit and may have left more.
+
+`emit`, `cancel` and `retry` change nothing without `--yes`. They exit 2 with
+`confirmation-required` and print what they would do, from the read before the write.
+`enqueue` and `sweep` take no `--yes`: an enqueue under a key and a sweep are what a
+deployment does unasked, and each is safe to send again. Every one of the five names its
+store again with `--target`, as `migrate` does, and a mismatch exits 2 before anything
+opens. Nothing falls back to another variable: the store is `DURABLERUN_STORE_URL` and the
+queue is `--queue`, and `TURSO_*` and `DURABLERUN_QUEUE` are not read. A drive verb never
+creates a database. Only `migrate --yes` may, so a verb pointed at a `file:` URL that names
+no file exits 5 and leaves no file.
+
+A refusal names its cause from a read made after the port answered, and says so with the
+words `As of this read`: the port's answer is one bit, and the row can move between that
+answer and the read. A revival the guard refuses is named by the conjuncts that are false.
+Thirteen conjuncts give nine causes, and a task that is not there is the tenth.
+
+| Cause | Conjuncts of the guard | Meaning |
+| --- | --- | --- |
+| not-failed | failed | the task is not failed, and only a failed task is revived |
+| run-in-another-queue | ownsEveryRun | one of the runs that name the task is in another queue |
+| no-failure-reason | hasAFailureReason | the failed task holds no failure reason |
+| completed-payload | hasNoCompletedPayload | the failed task holds a completed payload |
+| no-run | hasARun | the task has no run of its own |
+| live-run | hasNoLiveRun | the task has a live run |
+| counter-out-of-range | attemptsInRange, infraRetriesInRange, everyRunOrdinalInRange, budgetTakesOneMore | a counter of the task or the ordinal of a run is outside its range, or the budget cannot take one more attempt |
+| out-of-accounting | chargeIsTheAttemptsOrOneMore, chargeWithinBudget | the attempts and the infrastructure retries do not account for the top run, or the charge is past the budget |
+| saga-began | sagaNotBegun | the task's saga began, and a task whose steps were rolled back is not revived (section 3.10) |
+
+The answer prints every conjunct that is false under `conjunctsNotHeld` and every cause
+they give, and it names the first, in the guard's order, as the cause. The CLI's map from a
+conjunct to its cause is keyed by core's list of the conjuncts, so a conjunct the guard
+gains stops the build until it has a cause. When every conjunct holds at the read, the task
+changed between the call and the read, and the answer says that and names no cause. A test
+enumerates the conjuncts and plants a state for each, by the engine where an engine path
+reaches it and by fixture SQL where none does, and requires the command to name it.
+
+**The schema window for a write.** A drive verb is held to the window a read is held to. It
+exits 5 outside it and prints the recorded version and the versions the build reads. On
+libSQL that window starts at version 5, and a verb may write there because its twin passes
+there: the test runs every verb's twin at each version from 5 to the build's. The verbs it
+runs are the write commands of the command table, so a verb that joins the table joins the
+test, and one whose twin fails at a version fails by name. Versions 6 to 11 add indexes,
+empty versions and triggers, and no statement a drive verb sends names a column or an index
+a later version adds. PostgreSQL and MySQL read their own version alone, so a drive verb
+exits 5 on an older database of either. No command has a second path for an older schema.
+
+**One pass of a deployment.** `tick --url U [--timeout D]` opens no store. It sends one POST
+to the tick route of a hosted deployment (section 3.5) and prints the route's answer under
+`tick`, whole: what the pass swept, claimed and launched, the worker's outcome, the next
+wake and whether a backlog is left. The token is `DURABLERUN_TICK_TOKEN`, sent as a bearer
+in the Authorization header and nowhere else. `--url` is to `tick` what `--target` is to a
+write, the deployment named again. Nothing is sent unless its origin is the origin of
+`DURABLERUN_BASE_URL`, and a mismatch exits 2 with `origin-mismatch` before any connection
+is made. Both must be https, or http to a loopback address (`localhost`, `127.0.0.1` or
+`[::1]`), with no user name and no password, and a token that holds a character a header
+cannot carry is refused, so neither URL as given nor the token is ever printed. The request
+goes to `/api/tick` of that origin whatever path either URL holds. A redirect is answered
+as the status it is and never followed, so the token goes to no second origin. The wait
+ends through the injected clock after `--timeout`, 60 seconds by default. The command exits
+4 when the deployment refuses the token (401 or 403), 6 when the deployment could not be
+reached, did not answer in time or answered 503, and 7 for any other status and for a 200
+whose body is not one JSON object. An answer that does not come in time leaves the outcome
+unknown: the pass may have run, and a tick is safe to send again.
+
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
 prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
 completed result, a failure reason the task's code wrote, a failed rollback's error, and
@@ -6343,7 +6499,11 @@ whose state or status is not the engine's own by the same. It quotes no stored v
 function builds that list, and a task's facts are readable when it is empty, so `inspect`
 exits 10 exactly when `explain` would name something. `stuck`, `stats` and `sizes` print
 ids, task names, states of the engine's own, instants and counts, and no value a user
-wrote.
+wrote. A drive verb prints the idempotency key, the parameters and the payload its caller
+passed as their length and sha256, and their text with `--reveal`. A port's refusal of an
+`enqueue` that quotes the key prints only with `--reveal`. The payload an event already
+holds prints as its length and sha256 and never as text. `tick` prints neither URL as it
+was given and never the token.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
@@ -6363,7 +6523,9 @@ prints the version it starts from and the versions it would apply on stderr, and
 `migrate` that fails partway prints the versions it applied there. A usage error, a
 refused call, a store that is unavailable, a task that is not there, and the answer of
 `result` or `checkpoints` for a row the decoders refuse print there too. A refusal of `stuck`, as of a grace
-it cannot read, prints there like any other.
+it cannot read, prints there like any other. So does every refusal of a drive verb and of
+`tick`: a write that was not confirmed, a revival the guard refused, with its cause, and a
+token the deployment refused.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
@@ -6372,12 +6534,12 @@ same table, which a test holds equal to this one.
 | --- | --- | --- |
 | 0 | done | the command did what it says |
 | 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
-| 2 | usage | usage, confirmation-required or target-mismatch; nothing was changed |
+| 2 | usage | usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and nothing was sent |
 | 3 | refused | the engine refused the call, and says why |
-| 4 | unauthorized | reserved for unauthenticated or forbidden; no command gives it yet, and a wrong credential exits 6 |
+| 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
 | 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
-| 6 | unavailable | the store is unavailable; safe to repeat, with retries capped, because a wrong credential exits 6 too |
-| 7 | permanent | the store answered with a permanent error |
+| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time or answered 503; safe to repeat, with retries capped, because a wrong store credential exits 6 too |
+| 7 | permanent | the store answered with a permanent error, or the deployment answered tick with a status no tick route gives |
 | 8 | not-found | no such task in the queue |
 | 9 | found | stuck --fail-if-any listed at least one row |
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
@@ -6386,13 +6548,20 @@ Exit 6 is safe to repeat for every command. For a read that holds because a read
 nothing. For `migrate` it holds because each version's write is fenced by the version
 before it, and after a failed version write the admin reads the version again and carries
 on when the write landed, so a lost answer to a version write the store committed ends in
-0 and a rerun resumes from the version reached. Safe to repeat is not sure to succeed. A
+0 and a rerun resumes from the version reached. For a drive verb it holds because running
+the command again reaches the state one successful run leaves and prints the state it finds
+as of that read: `enqueue` finds its task under the key, a repeated `emit` is told the
+event exists, a repeated `cancel` reports the task cancelled, a repeated `retry` reports
+the live run it finds, and a sweep takes what is still owed. For `tick` it holds because a
+tick is one bounded pass, and a second does what the next cron tick would. Safe to repeat
+is not sure to succeed. A
 wrong credential exits 6 today on every store: both server executors type an
 authentication failure as an outage (a test measures it on PostgreSQL and MySQL), and the
 libSQL executor types every client error but a constraint or a type mismatch as one. It
-fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is reserved
-for it: typing an authentication failure apart from an outage changes the executors and
-core, and is the maintainer's decision.
+fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is what `tick`
+gives for a token its deployment refuses. A store's wrong credential does not give it:
+typing an authentication failure apart from an outage changes the executors and core, and
+is the maintainer's decision.
 
 The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at the
 executor, as the CLI sees it: crash-before (the executor rejects with
@@ -6406,7 +6575,13 @@ which sends the read by key and then every batch a read by a task id sends. `exp
 by the key of a run asleep on a timer, which reads the checkpoints, and of a parent parked
 on its child, which reads the waiters of the child's completion and where a fault meets the
 reads of both tasks, so between them each batch it declares is sent. `stuck` runs with
-`--older-than`, which sends each batch it declares, and `stats` and `sizes` send theirs. The command
+`--older-than`, which sends each batch it declares, and `stats` and `sizes` send theirs. Each
+drive verb runs from the current version, over seeded tasks: `enqueue` under a key no task
+has, `emit` of an event a run awaits, `cancel` of a pending task, `retry` of a failed task
+and of a live one, which makes it read the guard, and `sweep` of a queue with a deadline
+passed, a launch lost and a lease lapsed. A drive verb mints ids, and its repeat is another
+process, so the repeat's ids go on from where the first run's stopped and the two states
+are compared with the ids each run minted read as one placeholder. The command
 table declares exit 6 for
 the first two and the exit of a clean run for duplicate, except at the batches whose lost
 answer `migrate` recovers, where it declares 0 for crash-after by label:

@@ -353,95 +353,69 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == '45d4fc7e8f217d199ca3d7dbf52f38e42db7fd5eee844e5117b04fb99f6a0bbb':
-              # The operator's reads of a queue register eighty-five mutations: thirty-three for
-              # how core decodes a leg, a gauge, a count and a list, twenty-six for what a dialect
-              # decides, held on libSQL against the engine and against a dump of every table,
-              # twenty for the exits and the streams of `stuck`, `stats` and `sizes` and for the
-              # waiters `explain` lists, and six for what bounds a due range in the libSQL plan
-              # test. Their cases carry seventy-six verdict markers. Each is newer than the base
-              # registry, so each is exempted there. One base entry is re-aimed: the lines of the libSQL claim's
-              # admission that it mutates moved out of `claim` into `claimEligibility`, which the
-              # claim and the operator's read of what a claim is owed to share.
+          if digest == 'dd72d14946a4b10201953dd231401d20f86c3410303efb363d2f2bff2286eba1':
+              # The drive verbs register forty-seven mutations: twenty-one for what `enqueue`,
+              # `emit`, `cancel`, `retry` and `sweep` require, send and answer, eight for where
+              # `tick` sends its token and how it reads the answer, three for the operator drill,
+              # six for what `explain` says of a move the engine does not take and what it
+              # suggests, three for how core decodes the two reads the verbs ask, and six for
+              # what those reads answer on libSQL against the engine. Their cases carry forty-one
+              # verdict markers. Each is newer than the base registry, so each is exempted there.
+              # Nine base entries are re-aimed: the lines of the libSQL retry guard that they
+              # mutate moved out of `retryTask` into `RETRY_ADMITS`, the record of the guard's
+              # conjuncts that the guard and the operator's read of it are both built from.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:cli-duration-units",
-                  "mutation-verdict:behavior:cli-explain-lists-every-waiter-of-the-event",
-                  "mutation-verdict:behavior:cli-explain-names-a-waiter-it-cannot-read",
-                  "mutation-verdict:behavior:cli-sizes-counts-one-queue",
-                  "mutation-verdict:behavior:cli-stats-exits-10-for-a-corrupt-row",
-                  "mutation-verdict:behavior:cli-stats-prints-its-report-on-stdout",
-                  "mutation-verdict:behavior:cli-stats-says-active",
-                  "mutation-verdict:behavior:cli-stats-says-quiet-never-ok",
-                  "mutation-verdict:behavior:cli-stuck-counts-a-deadline-no-sweep-cancels",
-                  "mutation-verdict:behavior:cli-stuck-counts-a-due-run-no-claim-admits",
-                  "mutation-verdict:behavior:cli-stuck-counts-a-lapsed-lease-no-sweep-reclaims",
-                  "mutation-verdict:behavior:cli-stuck-default-grace-outlasts-a-tick",
-                  "mutation-verdict:behavior:cli-stuck-exits-0-when-it-lists-nothing",
-                  "mutation-verdict:behavior:cli-stuck-exits-10-for-a-corrupt-row",
-                  "mutation-verdict:behavior:cli-stuck-exits-10-for-a-live-task-it-cannot-date",
-                  "mutation-verdict:behavior:cli-stuck-fail-if-any-exits-9",
-                  "mutation-verdict:behavior:cli-stuck-older-than-finds-a-deferral-loop",
-                  "mutation-verdict:behavior:cli-stuck-older-than-lists-a-task-as-old-as-asked",
-                  "mutation-verdict:behavior:cli-stuck-older-than-lists-what-no-leg-holds",
-                  "mutation-verdict:behavior:cli-stuck-refuses-a-flag-it-cannot-read",
-                  "mutation-verdict:behavior:operator-aged-answers-a-seeded-queue",
-                  "mutation-verdict:behavior:operator-aged-equals-the-live-tasks-of-the-dump",
-                  "mutation-verdict:behavior:operator-aged-lists-a-task-at-the-instant-it-is-as-old-as-asked",
-                  "mutation-verdict:behavior:operator-aged-lists-a-task-whose-enqueue-instant-is-outside-its-bounds",
-                  "mutation-verdict:behavior:operator-aged-stops-at-its-limit",
-                  "mutation-verdict:behavior:operator-finder-answers-a-seeded-queue",
-                  "mutation-verdict:behavior:operator-finder-lists-a-move-at-the-instant-it-comes-due",
-                  "mutation-verdict:behavior:operator-finder-lists-every-due-run-in-one-leg",
-                  "mutation-verdict:behavior:operator-finder-lists-the-due-runs-a-claim-refuses",
-                  "mutation-verdict:behavior:operator-finder-lists-the-runs-a-claim-takes",
-                  "mutation-verdict:behavior:operator-finder-lists-the-runs-a-sweep-reclaims",
-                  "mutation-verdict:behavior:operator-finder-lists-the-tasks-a-sweep-cancels",
-                  "mutation-verdict:behavior:operator-finder-lists-what-no-sweep-takes",
-                  "mutation-verdict:behavior:operator-finder-says-whether-a-lapsed-run-was-started",
-                  "mutation-verdict:behavior:operator-finder-stops-a-leg-at-its-limit",
-                  "mutation-verdict:behavior:operator-gauge-of-live-tasks-stops-at-the-cap",
-                  "mutation-verdict:behavior:operator-gauges-answer-a-seeded-queue",
-                  "mutation-verdict:behavior:operator-gauges-count-a-corrupt-row-and-list-it",
-                  "mutation-verdict:behavior:operator-gauges-equal-a-count-of-the-dump",
-                  "mutation-verdict:behavior:operator-gauges-stop-at-the-cap",
-                  "mutation-verdict:behavior:operator-reads-count-a-live-task-whose-instant-is-not-readable",
-                  "mutation-verdict:behavior:operator-reads-count-a-row-due-at-its-instant",
-                  "mutation-verdict:behavior:operator-reads-count-a-row-whose-instant-is-not-readable",
-                  "mutation-verdict:behavior:operator-reads-count-the-live-tasks-of-every-leg",
-                  "mutation-verdict:behavior:operator-reads-list-a-row-once-its-grace-has-run",
-                  "mutation-verdict:behavior:operator-reads-list-a-row-whose-instant-is-not-readable",
-                  "mutation-verdict:behavior:operator-reads-list-a-task-once-it-is-as-old-as-asked",
-                  "mutation-verdict:behavior:operator-reads-list-a-task-whose-enqueue-instant-is-not-readable",
-                  "mutation-verdict:behavior:operator-reads-merge-every-window-of-deadlines",
-                  "mutation-verdict:behavior:operator-reads-merge-the-live-legs-oldest-first",
-                  "mutation-verdict:behavior:operator-reads-merge-the-runs-a-claim-refuses",
-                  "mutation-verdict:behavior:operator-reads-name-the-head-of-the-queue",
-                  "mutation-verdict:behavior:operator-reads-order-a-leg-oldest-first",
-                  "mutation-verdict:behavior:operator-reads-order-the-waiters",
-                  "mutation-verdict:behavior:operator-reads-read-a-gauge-one-row-past-its-cap",
-                  "mutation-verdict:behavior:operator-reads-read-a-leg-one-row-past-its-limit",
-                  "mutation-verdict:behavior:operator-reads-read-a-live-leg-one-row-past-its-limit",
-                  "mutation-verdict:behavior:operator-reads-refuse-a-count-that-is-no-integer",
-                  "mutation-verdict:behavior:operator-reads-refuse-a-limit-past-the-cap",
-                  "mutation-verdict:behavior:operator-reads-refuse-an-age-or-a-limit-it-cannot-take",
-                  "mutation-verdict:behavior:operator-reads-say-what-a-window-showed",
-                  "mutation-verdict:behavior:operator-reads-say-when-a-leg-holds-more",
-                  "mutation-verdict:behavior:operator-reads-say-when-more-tasks-are-as-old",
-                  "mutation-verdict:behavior:operator-reads-say-whether-a-lapsed-run-was-started",
-                  "mutation-verdict:behavior:operator-reads-settle-a-window-row-only-ahead-of-the-last-taken",
-                  "mutation-verdict:behavior:operator-reads-stop-a-count-at-its-cap",
-                  "mutation-verdict:behavior:operator-reads-stop-a-gauge-at-its-cap",
-                  "mutation-verdict:behavior:operator-reads-stop-the-gauge-of-live-tasks-at-its-cap",
-                  "mutation-verdict:behavior:operator-reads-stop-the-waiters-at-the-cap",
-                  "mutation-verdict:behavior:operator-row-counts-answer-a-seeded-queue",
-                  "mutation-verdict:behavior:operator-row-counts-equal-a-count-of-the-dump",
-                  "mutation-verdict:behavior:operator-waiters-answer-a-seeded-queue",
-                  "mutation-verdict:behavior:operator-waiters-stop-at-the-cap",
-                  "mutation-verdict:behavior:plan-a-driving-due-range-is-bounded-as-its-entry-says",
-                  "mutation-verdict:behavior:plan-a-due-range-alone-is-bounded-as-its-entry-says",
-                  "mutation-verdict:behavior:plan-a-lone-due-range-is-excused-only-as-named",
+                  "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
+                  "mutation-verdict:behavior:cli-a-drive-verb-creates-no-database",
+                  "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
+                  "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call-over-a-walk",
+                  "mutation-verdict:behavior:cli-a-drive-verb-names-its-store",
+                  "mutation-verdict:behavior:cli-a-drive-verb-refuses-a-schema-below-the-window",
+                  "mutation-verdict:behavior:cli-cancel-halts-a-rollback-only-when-told",
+                  "mutation-verdict:behavior:cli-cancel-names-why-the-port-answered-false",
+                  "mutation-verdict:behavior:cli-drill-clears-what-is-stuck",
+                  "mutation-verdict:behavior:cli-drill-finds-each-planted-cause-without-an-id",
+                  "mutation-verdict:behavior:cli-drill-runs-each-suggestion-as-it-is-printed",
+                  "mutation-verdict:behavior:cli-emit-never-prints-the-stored-payload",
+                  "mutation-verdict:behavior:cli-emit-refuses-a-reserved-name",
+                  "mutation-verdict:behavior:cli-emit-says-already-emitted-with-the-stored-digest",
+                  "mutation-verdict:behavior:cli-enqueue-spawns-under-its-key",
+                  "mutation-verdict:behavior:cli-explain-arm-deadline-no-sweep-cancels",
+                  "mutation-verdict:behavior:cli-explain-arm-due-run-no-claim-admits",
+                  "mutation-verdict:behavior:cli-explain-arm-lapsed-lease-no-sweep-reclaims",
+                  "mutation-verdict:behavior:cli-explain-fills-a-drive-verb-from-what-it-was-given",
+                  "mutation-verdict:behavior:cli-explain-names-a-move-the-engine-does-not-take",
+                  "mutation-verdict:behavior:cli-explain-reads-a-row-that-moved-as-it-stood",
+                  "mutation-verdict:behavior:cli-retry-names-the-conjunct-that-refuses",
+                  "mutation-verdict:behavior:cli-retry-reports-the-live-run-a-repeat-finds",
+                  "mutation-verdict:behavior:cli-store-url-has-no-fallback",
+                  "mutation-verdict:behavior:cli-tick-ends-its-wait-through-the-clock",
+                  "mutation-verdict:behavior:cli-tick-exits-4-for-a-refused-token",
+                  "mutation-verdict:behavior:cli-tick-follows-no-redirect",
+                  "mutation-verdict:behavior:cli-tick-refuses-a-credential-in-a-url",
+                  "mutation-verdict:behavior:cli-tick-returns-the-routers-body",
+                  "mutation-verdict:behavior:cli-tick-sends-its-token-in-the-authorization-header-alone",
+                  "mutation-verdict:behavior:cli-tick-sends-only-to-the-origin-the-environment-names",
+                  "mutation-verdict:behavior:cli-tick-sends-over-https-or-to-loopback-alone",
+                  "mutation-verdict:behavior:operator-admission-agrees-with-the-finder-on-a-walk",
+                  "mutation-verdict:behavior:operator-admission-agrees-with-the-guard-on-a-walk",
+                  "mutation-verdict:behavior:operator-admission-flags-are-what-the-engine-does",
+                  "mutation-verdict:behavior:operator-admission-names-the-conjunct-that-refuses",
+                  "mutation-verdict:behavior:operator-admission-reads-every-conjunct-of-the-guard",
+                  "mutation-verdict:behavior:operator-event-payload-is-what-the-first-emit-stored",
+                  "mutation-verdict:behavior:operator-reads-a-claim-takes-a-run-of-either-state",
+                  "mutation-verdict:behavior:operator-reads-answer-a-payload-only-as-text",
+                  "mutation-verdict:behavior:operator-reads-read-each-conjunct-as-its-own-flag",
               ))
-              repaired = reaim_entry(repaired, candidate, "claim-payload-validation-atomic")
+              repaired = reaim_entry(repaired, candidate, "retry-task-requires-well-formed-failure")
+              repaired = reaim_entry(repaired, candidate, "retry-task-charges-unaccounted-top-run")
+              repaired = reaim_entry(repaired, candidate, "retry-task-requires-counters-in-range")
+              repaired = reaim_entry(repaired, candidate, "retry-task-requires-incrementable-budget")
+              repaired = reaim_entry(repaired, candidate, "retry-task-requires-accounting-band")
+              repaired = reaim_entry(repaired, candidate, "retry-task-requires-charge-within-budget")
+              repaired = reaim_entry(repaired, candidate, "retry-task-charges-net-of-infra-retries")
+              repaired = reaim_entry(repaired, candidate, "saga-revival-refused-once-a-saga-began")
+              repaired = reaim_entry(repaired, candidate, "poison-target-retry-task-holds-infra-retries-bound")
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)

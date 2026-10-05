@@ -20,6 +20,12 @@ export const VERBS = [
   'stuck',
   'stats',
   'sizes',
+  'enqueue',
+  'emit',
+  'cancel',
+  'retry',
+  'sweep',
+  'tick',
 ] as const
 export type Verb = (typeof VERBS)[number]
 
@@ -29,6 +35,8 @@ export interface FlagSpec {
   /** The placeholder usage prints for a string flag's value. */
   readonly value?: string
   readonly description: string
+  /** What the refusal of a command line that leaves a required flag out says besides the usage. */
+  readonly missing?: string
 }
 
 /** One port call a command makes, and every batch label that call can send. */
@@ -39,6 +47,12 @@ export interface PortUse {
     | 'admin.migrate'
     | 'scheduler.getTaskResult'
     | 'scheduler.getCheckpoints'
+    | 'scheduler.spawn'
+    | 'scheduler.emitEvent'
+    | 'scheduler.cancelTask'
+    | 'scheduler.retryTask'
+    | 'scheduler.sweep'
+    | 'scheduler.nextWakeAtEpochMs'
     | 'operator.taskFacts'
     | 'operator.taskIdByKey'
     | 'operator.stuckRuns'
@@ -46,6 +60,9 @@ export interface PortUse {
     | 'operator.queueStatus'
     | 'operator.tableRows'
     | 'operator.eventWaiters'
+    | 'operator.eventState'
+    | 'operator.eventPayload'
+    | 'operator.taskAdmission'
   /** A label ending in `<N>` stands for what comes before it followed by a whole number. */
   readonly labels: readonly string[]
 }
@@ -53,8 +70,11 @@ export interface PortUse {
 /**
  * What running a command again does after its answer was lost. `read` prints the state it
  * finds as of that read, and `resumes` carries on from wherever the first run stopped.
+ * `settles` is a write that a repeat does not double: the repeat reaches the state one
+ * successful run leaves, and prints the state it finds as of that read. `no-store` opens
+ * no store, and what a repeat does is the deployment's to say.
  */
-export type RepeatSafety = 'no-store' | 'read' | 'resumes'
+export type RepeatSafety = 'no-store' | 'read' | 'resumes' | 'settles'
 
 /**
  * A fault injected at the executor, as the CLI sees it, at one batch a command sends: the
@@ -117,6 +137,26 @@ const BY_ID_OR_KEY = {
   },
 } as const satisfies Pick<CommandSpec, 'positionals' | 'alternative' | 'flags'>
 
+/** The flags of a command that writes to a queue: the store named again, and the queue from the arguments alone. */
+const DRIVE_FLAGS = {
+  ...OUTPUT_FLAGS,
+  queue: { type: 'string', required: true, value: 'Q', description: 'the queue to write to' },
+  target: {
+    type: 'string',
+    required: true,
+    value: 'T',
+    description: "the store URL's host, or the path of a file: URL, named again",
+  },
+  reveal: READ_FLAGS.reveal,
+} as const satisfies Record<string, FlagSpec>
+
+/** The flag that confirms a write an operator should read first. No suggestion ever carries it. */
+const YES_FLAG = {
+  type: 'boolean',
+  description:
+    'confirm the change; without it nothing changes, and the command says what it would do',
+} as const satisfies FlagSpec
+
 const SCHEMA_VERSION: PortUse = { call: 'admin.schemaVersion', labels: ['migrate:version'] }
 const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-result'] }
 const CHECKPOINTS: PortUse = { call: 'scheduler.getCheckpoints', labels: ['get-checkpoints'] }
@@ -130,6 +170,18 @@ const QUEUE_STATUS: PortUse = {
 }
 const TABLE_ROWS: PortUse = { call: 'operator.tableRows', labels: ['table-rows'] }
 const EVENT_WAITERS: PortUse = { call: 'operator.eventWaiters', labels: ['event-waiters'] }
+const EVENT_STATE: PortUse = { call: 'operator.eventState', labels: ['event-state'] }
+const EVENT_PAYLOAD: PortUse = { call: 'operator.eventPayload', labels: ['event-payload'] }
+const TASK_ADMISSION: PortUse = { call: 'operator.taskAdmission', labels: ['task-admission'] }
+const SPAWN: PortUse = { call: 'scheduler.spawn', labels: ['spawn'] }
+const EMIT_EVENT: PortUse = { call: 'scheduler.emitEvent', labels: ['emit-event'] }
+const CANCEL_TASK: PortUse = { call: 'scheduler.cancelTask', labels: ['cancel-task'] }
+const RETRY_TASK: PortUse = { call: 'scheduler.retryTask', labels: ['retry-task'] }
+const SWEEP: PortUse = {
+  call: 'scheduler.sweep',
+  labels: ['sweep:scan', 'sweep:cancel', 'sweep:lost-launch', 'sweep:claim-timeout'],
+}
+const NEXT_WAKE: PortUse = { call: 'scheduler.nextWakeAtEpochMs', labels: ['next-wake'] }
 
 /** Both crashes exit 6, and a batch delivered twice ends as a run without a fault does. */
 const READ_FAULTS = {
@@ -138,7 +190,18 @@ const READ_FAULTS = {
   duplicate: 'done',
 } as const satisfies Record<CliFault, ExitName>
 
+/**
+ * The faults of a command that writes through one fenced batch. Both crashes exit 6: the
+ * write may have committed, and a repeat reaches the state one run leaves. A batch
+ * delivered twice ends as a run without a fault does, because the second delivery of a
+ * fenced batch writes nothing, and the command reads what it finds.
+ */
+const DRIVE_FAULTS = READ_FAULTS
+
 const STORE_EXITS = ['done', 'usage', 'schema', 'unavailable', 'permanent'] as const
+
+/** The exits of a write to a queue. A port refuses a name it cannot take. */
+const DRIVE_EXITS = [...STORE_EXITS, 'refused'] as const
 
 /** The exits of a read that names one task. */
 const TASK_READ_EXITS = [...STORE_EXITS, 'refused', 'not-found', 'unreadable'] as const
@@ -148,6 +211,15 @@ const QUEUE_READ_EXITS = [...STORE_EXITS, 'refused'] as const
 
 /** How many rows each leg of `stuck` lists when `--limit` is not given. */
 export const STUCK_DEFAULT_LIMIT = 20
+
+/**
+ * How many transitions one `sweep` makes at most when `--limit` is not given: what one leg
+ * of `stuck` lists, so a sweep with no flag takes what a `stuck` with no flag showed.
+ */
+export const SWEEP_DEFAULT_LIMIT = STUCK_DEFAULT_LIMIT
+
+/** How long `tick` waits for the deployment's answer when `--timeout` is not given. */
+export const TICK_DEFAULT_TIMEOUT_SECONDS = 60
 
 const DURATION_UNITS = { s: 1, m: 60, h: 3_600, d: 86_400 } as const
 
@@ -274,9 +346,10 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: false,
     repeat: 'read',
-    // The checkpoints are read only for a started run parked on a timer and no event, and
-    // the waiters of an event only for a run parked on an await of it.
-    ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS, CHECKPOINTS, EVENT_WAITERS],
+    // The checkpoints are read only for a started run parked on a timer and no event, the
+    // waiters of an event only for a run parked on an await of it, and what the engine's
+    // guards say of the task only when a move is owed to it.
+    ports: [SCHEMA_VERSION, TASK_ID_BY_KEY, TASK_FACTS, CHECKPOINTS, EVENT_WAITERS, TASK_ADMISSION],
     exits: TASK_READ_EXITS,
     faults: READ_FAULTS,
   },
@@ -338,6 +411,140 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     ports: [SCHEMA_VERSION, TABLE_ROWS],
     exits: QUEUE_READ_EXITS,
     faults: READ_FAULTS,
+  },
+  enqueue: {
+    verb: 'enqueue',
+    summary:
+      'spawn a task under an idempotency key: a repeat under the same key creates nothing and answers the task it finds',
+    positionals: ['taskName'],
+    flags: {
+      ...DRIVE_FLAGS,
+      key: {
+        type: 'string',
+        required: true,
+        value: 'K',
+        description:
+          'the idempotency key the task is spawned under, so that running the command again after a lost answer spawns no second task',
+      },
+      params: {
+        type: 'string',
+        value: 'JSON',
+        description: "the task's parameters, one JSON value; null when not given",
+      },
+    },
+    opensStore: true,
+    writes: true,
+    repeat: 'settles',
+    ports: [SCHEMA_VERSION, SPAWN],
+    exits: DRIVE_EXITS,
+    faults: DRIVE_FAULTS,
+  },
+  emit: {
+    verb: 'emit',
+    summary:
+      "emit an event: the first emit's payload stands, and a later one is told that payload's digest",
+    positionals: ['eventName'],
+    flags: {
+      ...DRIVE_FLAGS,
+      yes: YES_FLAG,
+      payload: {
+        type: 'string',
+        value: 'JSON',
+        description: "the event's payload, one JSON value; null when not given",
+      },
+    },
+    opensStore: true,
+    writes: true,
+    repeat: 'settles',
+    // The event's state and its waiters are read before the write, and its stored payload after.
+    ports: [SCHEMA_VERSION, EVENT_STATE, EVENT_WAITERS, EMIT_EVENT, EVENT_PAYLOAD],
+    exits: [...DRIVE_EXITS, 'unreadable'],
+    faults: DRIVE_FAULTS,
+  },
+  cancel: {
+    verb: 'cancel',
+    summary: 'cancel a live task; one that is rolling back only with --halt-rollback',
+    positionals: ['taskId'],
+    flags: {
+      ...DRIVE_FLAGS,
+      yes: YES_FLAG,
+      'halt-rollback': {
+        type: 'boolean',
+        description:
+          'cancel a task whose saga began: the rollback halts where it stands, and steps not yet rolled back stay as they are',
+      },
+    },
+    opensStore: true,
+    writes: true,
+    repeat: 'settles',
+    // The task is read before the write, and again when the port answers false.
+    ports: [SCHEMA_VERSION, TASK_FACTS, CANCEL_TASK],
+    exits: [...DRIVE_EXITS, 'not-found'],
+    faults: DRIVE_FAULTS,
+  },
+  retry: {
+    verb: 'retry',
+    summary:
+      'revive a failed task with a new run, or name the conjunct of the retry guard that refuses it',
+    positionals: ['taskId'],
+    flags: { ...DRIVE_FLAGS, yes: YES_FLAG },
+    opensStore: true,
+    writes: true,
+    repeat: 'settles',
+    // The task is read before the write. What the guard says of it is read only when the
+    // port answers null.
+    ports: [SCHEMA_VERSION, TASK_FACTS, RETRY_TASK, TASK_ADMISSION],
+    exits: [...DRIVE_EXITS, 'not-found'],
+    faults: DRIVE_FAULTS,
+  },
+  sweep: {
+    verb: 'sweep',
+    summary:
+      "one sweep of a queue: cancel what is past its deadline and take back the runs whose lease lapsed, then the queue's next wake",
+    positionals: [],
+    flags: {
+      ...DRIVE_FLAGS,
+      limit: {
+        type: 'string',
+        value: 'N',
+        description: `the most transitions the sweep makes, from 1 to ${OPERATOR_LIST_CAP}; ${SWEEP_DEFAULT_LIMIT} when not given`,
+      },
+    },
+    opensStore: true,
+    writes: true,
+    repeat: 'settles',
+    ports: [SCHEMA_VERSION, SWEEP, NEXT_WAKE],
+    exits: DRIVE_EXITS,
+    faults: DRIVE_FAULTS,
+  },
+  tick: {
+    verb: 'tick',
+    summary:
+      'one bounded pass of a hosted deployment, over HTTP: it opens no store, and sends its token only to the origin DURABLERUN_BASE_URL names',
+    positionals: [],
+    flags: {
+      ...OUTPUT_FLAGS,
+      url: {
+        type: 'string',
+        required: true,
+        value: 'U',
+        description:
+          "the deployment's URL, named again: its origin must be the origin of DURABLERUN_BASE_URL",
+        missing:
+          'tick runs one pass of a hosted deployment and no pass over a store: over a store, sweep takes back what a sweep takes, and no command claims',
+      },
+      timeout: {
+        type: 'string',
+        value: 'D',
+        description: `how long to wait for the answer: a whole number above zero and s, m, h or d, as in 90s; ${TICK_DEFAULT_TIMEOUT_SECONDS}s when not given`,
+      },
+    },
+    opensStore: false,
+    writes: false,
+    repeat: 'no-store',
+    ports: [],
+    exits: ['done', 'usage', 'unauthorized', 'unavailable', 'permanent'],
+    faults: null,
   },
 } satisfies Record<Verb, CommandSpec>)
 
@@ -460,7 +667,8 @@ export function parseInvocation(argv: readonly string[]): Invocation {
     if (flag.type === 'string') {
       if (typeof value === 'string') strings[name] = value
       else if (flag.required === true) {
-        throw new UsageError(`${word} requires --${name}\nusage: ${usage(spec)}`)
+        const hint = flag.missing === undefined ? '' : `. ${flag.missing}`
+        throw new UsageError(`${word} requires --${name}${hint}\nusage: ${usage(spec)}`)
       }
     } else {
       booleans[name] = value === true

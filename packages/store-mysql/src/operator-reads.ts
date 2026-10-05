@@ -19,6 +19,8 @@ import {
   DUE_SLEEPING,
   LEASES_LAPSED,
   LIVE_TASKS_BY_AGE,
+  RETRY_ADMITS,
+  STORED_PAYLOAD_TYPE,
   SWEEP_CANCELS_DUE,
   SWEEP_CLAIMS_EXPIRED,
   SWEEP_LIVE_RUN_OF_TASK,
@@ -56,6 +58,10 @@ class MysqlOperatorReads {
           new FencedBatch('event-waiters', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
         agedTasks: () =>
           new FencedBatch('aged-tasks', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        eventPayload: () =>
+          new FencedBatch('event-payload', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
+        taskAdmission: () =>
+          new FencedBatch('task-admission', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
       },
       fakeClock: async () => {
         const [flag] = await this.db.batch(
@@ -70,6 +76,9 @@ class MysqlOperatorReads {
       rollbackError: sqlFragment(rollbackError('tasks')),
       taskOwnsRun: sqlFragment(runOwnedByTask('r', 't')),
       liveRunOfTask: sqlFragment(SWEEP_LIVE_RUN_OF_TASK),
+      storedPayloadType: sqlFragment(STORED_PAYLOAD_TYPE),
+      // The conjuncts this store's `retryTask` holds, which `task-admission` selects as flags.
+      retryConjuncts: RETRY_ADMITS,
       // What the claim and the sweep of this store would take now, by their own predicates.
       owed: {
         pendingRuns: (queue) => sqlFragment(CLAIM_OWED_PENDING, [queue]),

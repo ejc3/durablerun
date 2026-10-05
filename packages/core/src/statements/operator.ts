@@ -1,3 +1,4 @@
+import { expressionBuilder } from 'kysely'
 import {
   type SqlFragment,
   aliasedAs,
@@ -6,9 +7,10 @@ import {
   nowValue,
   rawSql,
 } from '../sql-tree.js'
-import { type QueueTable, treeBuilder } from '../store-tables.js'
+import { type QueueTable, type StoreTables, treeBuilder } from '../store-tables.js'
 import { TASK_RESULT_COLUMN_LIST } from '../task-result.js'
 import { admittedRuns, dueCancelRows, rollbackSelections } from './reads.js'
+import { RETRY_CONJUNCTS, type RetryConjuncts } from './retry-task.js'
 
 /**
  * The reads of the operator's port (`OperatorReads`), each one SELECT of a batch that only
@@ -328,4 +330,112 @@ export const eventWaitersRead = defineStatement(
       .orderBy('w.run_id')
       .orderBy('w.step_name')
       .limit(binds.limit),
+)
+
+/**
+ * `event-payload`: one event's stored payload, with how the dialect names the type of the
+ * stored value. It is read for the payload's digest alone: the operator who emits an event
+ * that already exists is told which payload the first emit stored, by its hash.
+ */
+export const eventPayloadRead = defineStatement(
+  'event-payload',
+  (binds: { queue: string; eventName: string; payloadType: SqlFragment }) =>
+    treeBuilder
+      .selectFrom('events')
+      .select('payload')
+      .select(() => [aliasedAs(rawSql<string>(binds.payloadType, 'value'), 'payload_type')])
+      .where('queue', '=', binds.queue)
+      .where('event_name', '=', binds.eventName),
+)
+
+const ofTheTask = expressionBuilder<StoreTables, 'tasks'>()
+
+/**
+ * A store's predicate as a flag of a SELECT list: 1 when it holds of the row, and 0 when it
+ * does not or is NULL. A guard that holds the same predicate admits the row exactly when
+ * the flag is 1, because a guard takes NULL for a refusal too.
+ */
+const flagOf = <Alias extends string>(predicate: SqlFragment, alias: Alias) =>
+  ofTheTask
+    .case()
+    .when(rawSql<boolean>(predicate, 'predicate'))
+    .then(literalValue(1))
+    .else(literalValue(0))
+    .end()
+    .as(alias)
+
+/**
+ * `task-admission`'s first read: every conjunct of the retry guard as a flag of its own,
+ * over the one task of the queue. `failed` is the conjunct `reviveCas` holds itself, and
+ * the rest are the store's, the predicates its admission is built from (`retryAdmission`).
+ */
+export const taskAdmissionRetryRead = defineStatement(
+  'task-admission retry',
+  (binds: { queue: string; taskId: string; conjuncts: RetryConjuncts }) =>
+    treeBuilder
+      .selectFrom('tasks')
+      .select(() => [
+        ofTheTask
+          .case()
+          .when(ofTheTask('state', '=', literalValue('failed')))
+          .then(literalValue(1))
+          .else(literalValue(0))
+          .end()
+          .as('failed'),
+        ...RETRY_CONJUNCTS.map((name) => flagOf(binds.conjuncts[name], name)),
+      ])
+      .where('task_id', '=', binds.taskId)
+      .where('queue', '=', binds.queue),
+)
+
+/**
+ * `task-admission`'s second read: whether the sweep's scan of due cancellations takes the
+ * task now, with the state and the deadline the answer was read beside. `dueCancels` is
+ * the store's whole admission of the task `t`, the one its sweep reads by.
+ */
+export const taskAdmissionSweepRead = defineStatement(
+  'task-admission sweep',
+  (binds: { queue: string; taskId: string; dueCancels: SqlFragment }) =>
+    treeBuilder
+      .selectFrom('tasks as t')
+      .select(['t.state', 't.cancel_at_ms'])
+      .select(() => [flagOf(binds.dueCancels, 'sweepCancels')])
+      .where('t.task_id', '=', binds.taskId)
+      .where('t.queue', '=', binds.queue),
+)
+
+/**
+ * `task-admission`'s third read: every run that names the task, each with whether a claim
+ * takes it now and whether the sweep's scan of expired claims does, and with the state, the
+ * generation and the instants those answers were read beside. Each flag is the predicate
+ * the engine's own statement holds, over the run `r` and the task `t` that owns it. A run
+ * whose task is not in its queue joins no task, and every flag of it is 0.
+ */
+export const taskAdmissionRunsRead = defineStatement(
+  'task-admission runs',
+  (binds: {
+    taskId: string
+    /** The task `t` owns the run `r`. */
+    taskOwnsRun: SqlFragment
+    pendingRuns: SqlFragment
+    sleepingRuns: SqlFragment
+    expiredClaims: SqlFragment
+  }) =>
+    treeBuilder
+      .selectFrom('runs as r')
+      .leftJoin('tasks as t', (join) => join.on(rawSql<boolean>(binds.taskOwnsRun, 'predicate')))
+      .select([
+        'r.run_id',
+        'r.state',
+        'r.attempt',
+        'r.claim_gen',
+        'r.available_at_ms',
+        'r.claim_expires_at_ms',
+      ])
+      .select(() => [
+        flagOf(binds.pendingRuns, 'claimTakesPending'),
+        flagOf(binds.sleepingRuns, 'claimTakesSleeping'),
+        flagOf(binds.expiredClaims, 'sweepReclaims'),
+      ])
+      .where('r.task_id', '=', binds.taskId),
 )

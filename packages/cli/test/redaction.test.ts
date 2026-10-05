@@ -107,6 +107,87 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
   },
   stats: { lines: () => [['stats', '--queue', QUEUE]], shows: false },
   sizes: { lines: () => [['sizes', '--queue', QUEUE]], shows: false },
+  // The key and the parameters are values a user wrote: each prints as its length and
+  // sha256, and a refusal that would quote one does not.
+  enqueue: {
+    lines: (db) => {
+      const key = ['--key', `enqueue-${SENTINEL}`]
+      const params = ['--params', JSON.stringify({ secret: SENTINEL })]
+      return [
+        ['enqueue', 'report', ...key, ...params, ...written(db)],
+        // The same again, which finds the task under its key.
+        ['enqueue', 'report', ...key, ...params, ...written(db)],
+        // A key of the engine's own namespace, which the port refuses in words that quote it.
+        ['enqueue', 'report', '--key', `$${SENTINEL}`, ...written(db)],
+        // Parameters that are no JSON, another store named, and no task name.
+        ['enqueue', 'report', ...key, '--params', `{"not json ${SENTINEL}`, ...written(db)],
+        ['enqueue', 'report', ...key, ...params, '--queue', QUEUE, '--target', 'elsewhere'],
+        ['enqueue', ...key, ...params, ...written(db)],
+      ]
+    },
+    shows: true,
+  },
+  // The payload a caller passes is a value a user wrote. The payload an event already
+  // holds is too, and of that only a digest ever prints.
+  emit: {
+    lines: (db) => {
+      const payload = ['--payload', JSON.stringify({ payload: SENTINEL })]
+      return [
+        // The seeded event, whose stored payload holds the sentinel: asked, and then sent.
+        ['emit', 'page-ready', ...payload, ...written(db)],
+        ['emit', 'page-ready', ...payload, '--yes', ...written(db)],
+        ['emit', 'a-new-event', ...payload, ...written(db)],
+        ['emit', 'a-new-event', ...payload, '--yes', ...written(db)],
+        ['emit', '$reserved', ...payload, '--yes', ...written(db)],
+        ['emit', 'a-new-event', '--payload', `{"not json ${SENTINEL}`, '--yes', ...written(db)],
+      ]
+    },
+    shows: true,
+  },
+  // A cancellation and a revival print ids, a task name, states and counters. The failed
+  // task's reason holds the sentinel, and neither prints it.
+  cancel: {
+    lines: (db, seeded) => [
+      ['cancel', seeded.pending, ...written(db)],
+      ['cancel', seeded.pending, '--yes', ...written(db)],
+      ['cancel', seeded.pending, '--yes', ...written(db)],
+      ['cancel', seeded.completed, '--yes', ...written(db)],
+      ['cancel', 'no-such-task', '--yes', ...written(db)],
+    ],
+    shows: false,
+  },
+  retry: {
+    lines: (db, seeded) => [
+      ['retry', seeded.failed, ...written(db)],
+      ['retry', seeded.failed, '--yes', ...written(db)],
+      ['retry', seeded.failed, '--yes', ...written(db)],
+      ['retry', seeded.completed, '--yes', ...written(db)],
+      ['retry', 'no-such-task', '--yes', ...written(db)],
+    ],
+    shows: false,
+  },
+  sweep: {
+    lines: (db) => [
+      ['sweep', ...written(db)],
+      ['sweep', ...written(db), '--limit', SENTINEL],
+    ],
+    shows: false,
+  },
+  // `tick` opens no store. Each line is refused before anything is sent, and no refusal
+  // quotes what it was given.
+  tick: {
+    lines: () => [
+      ['tick'],
+      ['tick', '--url', `https://${SENTINEL}.example`],
+      ['tick', '--url', 'https://deployment.example', '--timeout', SENTINEL],
+    ],
+    shows: false,
+  },
+}
+
+/** The flags every write to a queue takes: the queue, and the store named again. */
+function written(db: CliDb): string[] {
+  return ['--queue', QUEUE, '--target', db.target]
 }
 
 /**
@@ -230,6 +311,22 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
   stuck: () => [['stuck', '--queue', QUEUE, '--fail-if-any', '--older-than', '1h']],
   stats: () => [['stats', '--queue', QUEUE]],
   sizes: () => [['sizes', '--queue', QUEUE]],
+  enqueue: (target) => [
+    ['enqueue', 'report', '--key', 'a-key', '--queue', QUEUE, '--target', target],
+    ['enqueue', 'report', '--key', 'a-key', '--queue', QUEUE, '--target', 'elsewhere'],
+  ],
+  emit: (target) => [
+    ['emit', 'an-event', '--queue', QUEUE, '--target', target],
+    ['emit', 'an-event', '--queue', QUEUE, '--target', target, '--yes'],
+  ],
+  cancel: (target) => [['cancel', 'a-task', '--queue', QUEUE, '--target', target, '--yes']],
+  retry: (target) => [['retry', 'a-task', '--queue', QUEUE, '--target', target, '--yes']],
+  sweep: (target) => [
+    ['sweep', '--queue', QUEUE, '--target', target],
+    ['sweep', '--queue', QUEUE, '--target', 'elsewhere'],
+  ],
+  // `tick` reads nothing of the store URL, and names no deployment here, so it sends nothing.
+  tick: () => [['tick', '--url', 'https://deployment.example']],
 }
 
 /** What --target names for a URL, or a stand-in for a URL that names nothing. */

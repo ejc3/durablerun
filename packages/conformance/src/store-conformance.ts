@@ -13,6 +13,7 @@ import {
 import type { StoreFixtureFactory } from './fixture.js'
 import { identifierBoundConformance } from './identifier-bound.js'
 import { ENGINE_INVARIANT_CONDITIONS } from './invariants.js'
+import { operatorAdmissionConformance } from './operator-admission.js'
 import { operatorQueueReadsConformance } from './operator-queue-reads.js'
 import { operatorReadsConformance } from './operator-reads.js'
 import {
@@ -1413,11 +1414,13 @@ export const storeConformance = bindStoreConformanceSurfaces([
   { id: 'stale-token', run: staleTokenConformance },
   { id: 'executor-errors', run: executorErrorConformance },
   {
-    // One surface in two files: the reads of a task, and the reads of a queue.
+    // One surface in three files: the reads of a task, the reads of a queue, and the two
+    // reads a drive verb asks before it names a refusal.
     id: 'operator-reads',
     run: (dialect, makeFixture) => {
       operatorReadsConformance(dialect, makeFixture)
       operatorQueueReadsConformance(dialect, makeFixture)
+      operatorAdmissionConformance(dialect, makeFixture)
     },
   },
   { id: 'retention', run: retentionConformance },

@@ -1,3 +1,4 @@
+import type { RetryGuardConjunct } from './statements/retry-task.js'
 import type { QueueTable } from './store-tables.js'
 /**
  * Engine data model, ported from Absurd's t_/r_/c_/e_/w_ tables
@@ -357,6 +358,50 @@ export interface TaskFacts {
 export type EventState =
   | (Extract<EmittedEvent, { exists: false }> & { readonly corrupt: readonly [] })
   | (Extract<EmittedEvent, { exists: true }> & { readonly corrupt: readonly CorruptInteger[] })
+
+/**
+ * An event's stored payload, read for its digest. `payloadJson` is the text as stored. It
+ * is null for a stored value that is no text, which no engine path writes, and `stored`
+ * then names the kind of value the row holds.
+ */
+export type StoredEventPayload =
+  | { readonly exists: false }
+  | { readonly exists: true; readonly payloadJson: string }
+  | { readonly exists: true; readonly payloadJson: null; readonly stored: string }
+
+/** One run of a task, as the engine's own guards read it at one instant. */
+export interface RunAdmission {
+  readonly runId: string
+  readonly state: string
+  readonly attempt: number | null
+  readonly claimGen: number | null
+  readonly availableAtMs: number | null
+  readonly claimExpiresAtMs: number | null
+  /** A claim at that instant takes the run: it is due, and the claim's own admission holds of it and of its task. */
+  readonly claimTakes: boolean
+  /** A sweep at that instant takes the run back: its lease has expired, and the sweep's scan answers it. */
+  readonly sweepReclaims: boolean
+}
+
+/**
+ * What the engine's own guards say of one task at one instant, each as a boolean read
+ * from the predicate the engine's statement holds: every conjunct of the retry guard,
+ * whether the sweep cancels the task, and of each run whether a claim takes it and whether
+ * the sweep takes it back. The state, the deadline, and each run's state, generation and
+ * instants are what those answers were read beside, so a reader that holds an earlier
+ * snapshot of the task can tell whether the rows moved between the two.
+ */
+export interface TaskAdmission {
+  readonly state: string
+  readonly cancelAtMs: number | null
+  /** Each conjunct of the retry guard, true when it holds of the task. A revival is refused when any is false. */
+  readonly retry: Readonly<Record<RetryGuardConjunct, boolean>>
+  /** A sweep at that instant cancels the task: it is live and past its deadline, and the sweep's scan answers it. */
+  readonly sweepCancels: boolean
+  /** Every run that names the task, by its ordinal and then by its id. */
+  readonly runs: readonly RunAdmission[]
+  readonly corrupt: readonly CorruptInteger[]
+}
 
 /** A list an operator read stopped at a limit: the rows it lists, and whether more exist. */
 export interface Capped<Row> {

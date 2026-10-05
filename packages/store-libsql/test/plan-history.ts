@@ -131,6 +131,10 @@ export async function recordHistory(
   await operator.tableRows('q')
   await operator.eventWaiters('q', 'event')
   await operator.agedTasks('q', { olderThanSeconds: 0, limit: 20 })
+  // What a drive verb reads before it names a refusal: an event's stored payload, and
+  // what the retry guard, a claim and a sweep each say of one task.
+  await operator.eventPayload('q', 'event')
+  await operator.taskAdmission('q', parent.taskId)
   const childRun = await startedOf(child.taskId)
   await store.complete('q', childRun.runId, childRun.claimToken, '{}')
   const wokenParent = await startedOf(parent.taskId)

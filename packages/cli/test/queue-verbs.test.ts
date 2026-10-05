@@ -297,14 +297,25 @@ describe('stuck on libSQL', () => {
         (await runCli(['stats', '--queue', QUEUE, '--json'], db.env)).stdout,
       ) as { gauges: { runningRunsLapsed: { count: number } } }
       expect(stats.gauges.runningRunsLapsed.count).toBe(1)
-      // `explain` reads the run as any lapsed lease, and calls its task stuck.
+      // `explain` asks the sweep's own predicate of the run, and names it as one no sweep
+      // takes back: a row no engine path writes, so it suggests a look and no sweep.
       const explained = await runCli(['explain', task.taskId, '--queue', QUEUE, '--json'], db.env)
-      const diagnosis = JSON.parse(explained.stdout) as { cause: string; verdict: string }
+      const diagnosis = JSON.parse(explained.stdout) as {
+        cause: string
+        verdict: string
+        next: { argv: string[] } | null
+      }
       expect({
         exit: explained.exit,
         cause: diagnosis.cause,
         verdict: diagnosis.verdict,
-      }).toEqual({ exit: 0, cause: 'lease-lapsed-unswept', verdict: 'stuck' })
+        next: diagnosis.next?.argv[0],
+      }).toEqual({
+        exit: 0,
+        cause: 'lapsed-lease-no-sweep-reclaims',
+        verdict: 'inconsistent',
+        next: 'inspect',
+      })
       const found = await runCli(
         ['stuck', '--queue', QUEUE, '--json', '--grace', '0s', '--fail-if-any'],
         db.env,

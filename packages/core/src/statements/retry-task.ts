@@ -5,10 +5,61 @@ import {
   defineStatement,
   fenceValue,
   rawSql,
+  sqlFragment,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
 import { whereTaskInQueue } from './claimed-run.js'
 import { insertedRun } from './successor.js'
+
+/**
+ * The conjuncts of `retry-task`'s admission that a store writes, each under a name, in the
+ * order the guard holds them. A store hands core one predicate over the row `tasks` for
+ * each, and the guard is those predicates and nothing else (`retryAdmission`). The
+ * operator's read of what the engine's guards say of a task selects each of them as a flag
+ * of its own, so a refusal is named by the guard's own conjuncts and by no second account
+ * of them.
+ */
+export const RETRY_CONJUNCTS = [
+  'ownsEveryRun',
+  'hasAFailureReason',
+  'hasNoCompletedPayload',
+  'hasARun',
+  'hasNoLiveRun',
+  'attemptsInRange',
+  'infraRetriesInRange',
+  'everyRunOrdinalInRange',
+  'budgetTakesOneMore',
+  'chargeIsTheAttemptsOrOneMore',
+  'sagaNotBegun',
+  'chargeWithinBudget',
+] as const
+export type RetryConjunct = (typeof RETRY_CONJUNCTS)[number]
+
+/** What a store hands core for the retry guard: one predicate over the row `tasks` to a conjunct, with no bind. */
+export type RetryConjuncts = Readonly<Record<RetryConjunct, SqlFragment>>
+
+/**
+ * Every conjunct of the retry guard: `failed`, which `reviveCas` holds itself, and then
+ * the store's. The guard also names the task by its id and its queue, and a task that is
+ * not there has no conjunct to read.
+ */
+export const RETRY_GUARD = ['failed', ...RETRY_CONJUNCTS] as const
+export type RetryGuardConjunct = (typeof RETRY_GUARD)[number]
+
+/**
+ * The admission `reviveCas` takes: the store's conjuncts, every one of them, joined by AND
+ * in the list's order. A store builds its admission here, so the guard cannot hold a
+ * conjunct the list does not name, or leave one out.
+ */
+export function retryAdmission(conjuncts: RetryConjuncts): SqlFragment {
+  const held: string[] = []
+  for (const name of RETRY_CONJUNCTS) {
+    const { sql, args } = conjuncts[name]
+    if (args.length > 0) throw new TypeError(`the retry guard's ${name} carries a bind`)
+    held.push(sql)
+  }
+  return sqlFragment(held.join('\n         AND '))
+}
 
 /**
  * `retry-task`'s compare-and-set: a task returns to pending, charged for its top run,
