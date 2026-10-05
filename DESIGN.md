@@ -6416,10 +6416,21 @@ reach.
 
 - `enqueue <taskName> --key K [--params JSON] --queue Q --target T` is `spawn` under the
   idempotency key. `--key` is required, so the command run again after a lost answer finds
-  the task the first run made and prints `created: false`. The parameters are one JSON
-  value, parsed and written again by the two functions the hosted routes hand a store its
-  JSON through, so a task enqueued here holds the bytes it holds when it is enqueued over
-  HTTP, and `null` when none is given.
+  the task the first run made and prints `created: false`. It then reads the task it found
+  and prints the name that task is stored under (`storedTaskName`) and whether it is the
+  name this call passed (`taskNameMatches`). The name and the parameters beside them are
+  this call's. The stored parameters are not compared, and the answer says so
+  (`storedParams: not-compared`), because no read of the CLI selects a task's parameters.
+  An empty task name is a usage error: no handler is registered under one. The parameters
+  are one JSON value, parsed and written again by the two functions the hosted routes hand
+  a store its JSON through, so a task enqueued here holds the bytes it holds when it is
+  enqueued over HTTP, and `null` when none is given. A document that would not be stored as
+  it was written is refused as a usage error that says which: a number that is not finite
+  once it is read, as `1e400` is, or an integer a double cannot hold, as
+  `12345678901234567890` is. So what is stored, and what the printed digest is of, is what
+  the caller passed, in canonical form. `emit --payload` is read the same way. A refusal of
+  the port prints its words, but for a refusal of the key, which quotes the key: when
+  core's own check of the key refuses it, the words print only with `--reveal`.
 - `emit <eventName> [--payload JSON] --yes --queue Q --target T` is `emitEvent`. The first
   emit's payload stands. A later emit changes no payload and wakes nothing, and the engine
   stamps the event's row with the batch that last wrote it. The answer says which this call

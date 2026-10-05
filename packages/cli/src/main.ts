@@ -33,6 +33,7 @@ import {
 import {
   isReservedEventName,
   jsonArgument,
+  refusesTheKey,
   retryRefusal,
   rollbackFacts,
   runsInAnotherQueue,
@@ -756,15 +757,23 @@ const notConfirmed = (view: Record<string, unknown>, message: string): Answer =>
 /**
  * Spawn a task under an idempotency key. It is the store's `spawn` and nothing else. The
  * key is required, so the command run again after a lost answer finds the task the first
- * run made and makes no second one, and says so with `created: false`.
+ * run made and makes no second one, and says so with `created: false`. The task it found
+ * is then read for the name it is stored under, which prints beside whether it is the name
+ * this call passed. Its stored parameters are not compared, and the answer says so: no
+ * read selects a task's parameters.
  */
 const enqueue: Handler = async (context) => {
   const { invocation, store, reveal } = context
   const params = jsonArgument(invocation.strings.params)
   if ('refused' in params) return flagRefused(`--params ${params.refused}`)
+  const taskName = invocation.args.taskName ?? ''
+  if (taskName === '') {
+    return flagRefused(
+      'enqueue takes a task name that is not empty: no handler is registered under an empty name',
+    )
+  }
   const queue = await readableQueue(context)
   if (typeof queue !== 'string') return queue
-  const taskName = invocation.args.taskName ?? ''
   const key = invocation.strings.key ?? ''
   const named = {
     queue,
@@ -772,18 +781,17 @@ const enqueue: Handler = async (context) => {
     idempotencyKey: userValue(key, reveal),
     params: userValue(params.json, reveal),
   }
+  let found: Awaited<ReturnType<typeof store.scheduler.spawn>>
   try {
     const spawned = await store.scheduler.spawn(queue, taskName, params.json, {
       idempotencyKey: key,
     })
-    return {
-      exit: 'done',
-      view: { ...named, taskId: spawned.taskId, runId: spawned.runId, created: spawned.created },
-    }
+    found = spawned
   } catch (error) {
     // A port's refusal names what the caller passed, and the one value a user wrote that it
-    // can quote is the key. A refusal that quotes it prints only with --reveal.
-    if (!isPortRefusal(error) || reveal || key === '' || !error.message.includes(key)) throw error
+    // quotes is the key, when the key is what it refuses. So the words print, unless core's
+    // own check of the key refuses this one, and then they print only with --reveal.
+    if (!isPortRefusal(error) || reveal || !refusesTheKey(key)) throw error
     return {
       exit: 'refused',
       view: {
@@ -792,10 +800,25 @@ const enqueue: Handler = async (context) => {
           kind: 'refused',
           name: error.name,
           message:
-            'the store refused the call, and its words quote the idempotency key: run it again with --reveal to print them. Nothing was changed',
+            'the store refused the idempotency key, and its words quote the key: run it again with --reveal to print them. Nothing was changed',
         },
       },
     }
+  }
+  const view = { ...named, taskId: found.taskId, runId: found.runId, created: found.created }
+  if (found.created) return { exit: 'done', view }
+  // The key found a task another call made, under the name and the parameters that call
+  // passed. The name and the parameters above are this call's.
+  const stored = await store.operator.taskFacts(queue, found.taskId)
+  const storedTaskName = stored?.task.taskName ?? null
+  return {
+    exit: 'done',
+    view: {
+      ...view,
+      storedTaskName,
+      taskNameMatches: storedTaskName === taskName,
+      storedParams: 'not-compared',
+    },
   }
 }
 

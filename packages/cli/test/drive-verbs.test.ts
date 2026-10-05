@@ -337,6 +337,48 @@ describe('enqueue on libSQL', () => {
         runId: first.answer.runId,
         unchanged: true,
       })
+      // The answer of a repeat says what the task it found is stored under. Its name is
+      // compared with the name this call passed, and its parameters are said not to be.
+      const otherName = await changedBy(db, () =>
+        drive(db, ['enqueue', 'invoice', '--key', 'order-7', ...writeFlags(db)]),
+      )
+      const found = ({ answer }: typeof again.out) => ({
+        created: answer.created,
+        taskId: answer.taskId,
+        passed: answer.taskName,
+        stored: answer.storedTaskName,
+        matches: answer.taskNameMatches,
+        storedParams: answer.storedParams,
+      })
+      expect(
+        {
+          sameName: found(again.out),
+          otherName: found(otherName.out),
+          unchanged: otherName.unchanged,
+          // A call that created its task found none, and says nothing of a stored one.
+          firstSaysNothing: Object.hasOwn(first.answer, 'storedTaskName'),
+        },
+        'mutation-verdict:behavior:cli-enqueue-says-whether-the-stored-name-matches',
+      ).toEqual({
+        sameName: {
+          created: false,
+          taskId: first.answer.taskId,
+          passed: 'report',
+          stored: 'report',
+          matches: true,
+          storedParams: 'not-compared',
+        },
+        otherName: {
+          created: false,
+          taskId: first.answer.taskId,
+          passed: 'invoice',
+          stored: 'report',
+          matches: false,
+          storedParams: 'not-compared',
+        },
+        unchanged: true,
+        firstSaysNothing: false,
+      })
       // With no --params the parameters are null, as a hosted enqueue's are.
       const bare = await drive(db, ['enqueue', 'report', '--key', 'order-8', ...writeFlags(db)])
       const [second] = await db.store.claim(QUEUE, 'a-worker-2', { leaseSeconds: 60, limit: 1 })
@@ -384,7 +426,114 @@ describe('enqueue on libSQL', () => {
         hidden: [hidden.exit, hidden.answer.error?.message?.includes('$spawn:forged')],
         shown: [shown.exit, shown.answer.error?.message?.includes('$spawn:forged')],
       }).toEqual({ hidden: [3, false], shown: [3, true] })
+      // A refusal that is not of the key prints its words. The key here is one letter, which
+      // every sentence holds: what hides a refusal is that the key is refused, and not that
+      // the words hold it.
+      const longQueue = await drive(db, [
+        'enqueue',
+        'report',
+        '--key',
+        'e',
+        '--queue',
+        'q'.repeat(300),
+        '--target',
+        db.target,
+      ])
+      const words = longQueue.answer.error?.message ?? ''
+      expect(
+        {
+          exit: longQueue.exit,
+          kind: longQueue.answer.error?.kind,
+          saysToReveal: words.includes('--reveal'),
+          namesTheQueue: words.includes('queue'),
+          holdsTheKeysLetter: words.includes('e'),
+        },
+        'mutation-verdict:behavior:cli-enqueue-hides-only-a-refusal-of-the-key',
+      ).toEqual({
+        exit: 3,
+        kind: 'refused',
+        saysToReveal: false,
+        namesTheQueue: true,
+        holdsTheKeysLetter: true,
+      })
+      // An empty task name is a command line no handler could ever match.
+      const noName = await drive(db, ['enqueue', '', '--key', 'k', ...writeFlags(db)])
+      expect(
+        [noName.exit, noName.answer.error?.kind, noName.answer.error?.message?.includes('name')],
+        'mutation-verdict:behavior:cli-enqueue-refuses-an-empty-task-name',
+      ).toEqual([2, 'usage', true])
       expect(await db.dump()).toBe(before)
+    }))
+
+  it('refuses parameters and a payload that would not be stored as they were written, says which number it is, and takes what a double holds', () =>
+    onDb('drive-enqueue-numbers', async (db) => {
+      const before = await db.dump()
+      const { opener, sent } = recordingOpener()
+      const asked = async (line: readonly string[]) => {
+        const run = await runCli([...line, ...writeFlags(db), '--json'], db.env, opener)
+        const answer = JSON.parse(run.stdout) as JsonAnswer
+        return [run.exit, answer.error?.kind, answer.error?.message ?? '']
+      }
+      const notFinite = await asked(['enqueue', 'report', '--key', 'k', '--params', '{"x":1e400}'])
+      const tooLong = await asked([
+        'enqueue',
+        'report',
+        '--key',
+        'k',
+        '--params',
+        '{"n":12345678901234567890}',
+      ])
+      // One past the largest integer a double keeps, below zero, inside an array.
+      const onePast = await asked([
+        'enqueue',
+        'report',
+        '--key',
+        'k',
+        '--params',
+        '[-9007199254740993]',
+      ])
+      const payload = await asked(['emit', 'an-event', '--payload', '[1e999]', '--yes'])
+      const said = ([exit, kind, message]: (string | number | undefined)[], reason: string) => [
+        exit,
+        kind,
+        String(message).includes(reason),
+        // The refusal says which kind of number, and prints nothing of what it was given.
+        /9007199254740993|"x"|"n"/.test(String(message)),
+      ]
+      expect(
+        {
+          notFinite: said(notFinite, 'not finite'),
+          tooLong: said(tooLong, 'a double cannot hold'),
+          onePast: said(onePast, 'a double cannot hold'),
+          payload: said(payload, 'not finite'),
+          sent: sent().length,
+          unchanged: (await db.dump()) === before,
+        },
+        'mutation-verdict:behavior:cli-refuses-a-number-a-double-cannot-hold',
+      ).toEqual({
+        notFinite: [2, 'usage', true, false],
+        tooLong: [2, 'usage', true, false],
+        onePast: [2, 'usage', true, false],
+        payload: [2, 'usage', true, false],
+        sent: 0,
+        unchanged: true,
+      })
+      // What a double holds is taken as it is: the largest integer it keeps, a fraction, an
+      // exponent as the canonical form writes one, and digits and a backslash inside a string,
+      // which are no number.
+      const held =
+        '{"a":9007199254740991,"b":-0.5,"c":1e+21,"d":"12345678901234567890","e":"\\"1e400"}'
+      const taken = await drive(db, [
+        'enqueue',
+        'report',
+        '--key',
+        'held',
+        '--params',
+        held,
+        ...writeFlags(db),
+      ])
+      const [claimed] = await db.store.claim(QUEUE, 'a-worker', { leaseSeconds: 60, limit: 1 })
+      expect([taken.exit, claimed?.paramsJson]).toEqual([0, held])
     }))
 })
 

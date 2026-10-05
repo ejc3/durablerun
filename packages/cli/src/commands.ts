@@ -449,7 +449,8 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: true,
     repeat: 'settles',
-    ports: [SCHEMA_VERSION, SPAWN],
+    // The task a key found is read for its stored name, when the call created nothing.
+    ports: [SCHEMA_VERSION, SPAWN, TASK_FACTS],
     exits: DRIVE_EXITS,
     faults: DRIVE_FAULTS,
   },

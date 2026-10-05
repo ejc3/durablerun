@@ -6,6 +6,8 @@ import {
   isPortRefusal,
   parseTaskValueJson,
   refuseReservedEventName,
+  refuseReservedIdempotencyKey,
+  requirePortString,
   serializeTaskValue,
 } from '@durablerun/core'
 import { stateView } from './inspect.js'
@@ -17,12 +19,53 @@ import { stateView } from './inspect.js'
  * port does, and these functions read what it left.
  */
 
+/** A JSON number, as the grammar writes one. Sticky, so it is matched where a scan stands. */
+const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y
+
+/**
+ * Why a JSON text cannot be stored as it was written, or null when it can. Reading a number
+ * makes it a double. One that is past what a double holds is read as no finite number and
+ * would be written as `null`, and an integer with more digits than a double keeps would be
+ * written as another integer. Either is a document other than the one the caller passed.
+ * The text is one JSON value already, so a digit outside a string starts a number.
+ */
+function numberNotHeld(text: string): string | null {
+  let at = 0
+  while (at < text.length) {
+    const char = text.charAt(at)
+    if (char === '"') {
+      // To the quote that closes the string, past each escaped character.
+      at += 1
+      while (at < text.length && text.charAt(at) !== '"') at += text.charAt(at) === '\\' ? 2 : 1
+      at += 1
+      continue
+    }
+    JSON_NUMBER.lastIndex = at
+    const literal = (char === '-' || (char >= '0' && char <= '9')) && JSON_NUMBER.exec(text)?.[0]
+    if (typeof literal !== 'string') {
+      at += 1
+      continue
+    }
+    const read = Number(literal)
+    if (!Number.isFinite(read)) {
+      return 'holds a number that is not finite once it is read, as 1e400 is, so it would be stored as null'
+    }
+    if (/^-?[0-9]+$/.test(literal) && BigInt(literal) !== BigInt(read)) {
+      return 'holds an integer a double cannot hold, as 12345678901234567890 is, so it would be stored as another number: pass it as a string'
+    }
+    at += literal.length
+  }
+  return null
+}
+
 /**
  * A JSON argument as the port is handed it: parsed and written again by the two functions
  * the hosted routes hand a store's port its JSON through, so a task enqueued here holds
  * the bytes the same parameters hold when they are enqueued over HTTP. No value is `null`,
- * as it is there. Text that is not one JSON value is refused, and the refusal does not
- * quote it: the text is a value a user wrote.
+ * as it is there. Text that is not one JSON value is refused, and so is a document that
+ * would not be stored as it was written, with the reason (`numberNotHeld`): what is stored,
+ * and what a printed digest is of, is then what the caller passed. No refusal quotes the
+ * text, which is a value a user wrote.
  */
 export function jsonArgument(
   text: string | undefined,
@@ -30,9 +73,29 @@ export function jsonArgument(
   try {
     // The label is for a message this function never lets out: its refusal says nothing of the text.
     const value = text === undefined ? null : parseTaskValueJson(text)
+    const notHeld = text === undefined ? null : numberNotHeld(text)
+    if (notHeld !== null) return { refused: `${notHeld}. What it was given is not printed` }
     return { json: serializeTaskValue('a JSON argument', value) }
   } catch {
     return { refused: 'takes one JSON value, as in {"a":1}. What it was given is not printed' }
+  }
+}
+
+/**
+ * Whether core's own check of an idempotency key refuses this one: the rule the port holds
+ * the string to, and the engine's reserved namespace. A refusal of the key is the one
+ * refusal of `spawn` that quotes a value a user wrote. So whether the words of a refusal
+ * may print is asked of the check that refuses a key, and never of the words: a key of one
+ * letter is in every sentence.
+ */
+export function refusesTheKey(key: string): boolean {
+  try {
+    requirePortString('idempotencyKey', key)
+    refuseReservedIdempotencyKey('enqueue', key)
+    return false
+  } catch (error) {
+    if (isPortRefusal(error)) return true
+    throw error
   }
 }
 

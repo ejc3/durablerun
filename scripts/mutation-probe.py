@@ -20467,6 +20467,34 @@ MUTATION_SPECS.extend(
             "cancel decides from a read made before the write that it will not call the port, so a task that appears between the two is not cancelled",
         ),
         (
+            "cli-enqueue-hides-only-a-refusal-of-the-key",
+            "packages/cli/src/main.ts",
+            "    if (!isPortRefusal(error) || reveal || !refusesTheKey(key)) throw error\n",
+            "    if (!isPortRefusal(error) || reveal || !error.message.includes(key)) throw error // MUTATION: the words are searched for the key\n",
+            "enqueue under a key of one letter hides every refusal of the port, and tells the operator its words quote the key",
+        ),
+        (
+            "cli-enqueue-says-whether-the-stored-name-matches",
+            "packages/cli/src/main.ts",
+            "      taskNameMatches: storedTaskName === taskName,\n",
+            "      taskNameMatches: true, // MUTATION: a repeat says the stored name is the one it passed\n",
+            "enqueue under a key another task name holds prints the caller's name beside the found task and says the two match",
+        ),
+        (
+            "cli-enqueue-refuses-an-empty-task-name",
+            "packages/cli/src/main.ts",
+            "  if (taskName === '') {\n",
+            "  if (false) { // MUTATION: an empty task name is spawned\n",
+            "enqueue with an empty task name spawns a task no handler can match",
+        ),
+        (
+            "cli-refuses-a-number-a-double-cannot-hold",
+            "packages/cli/src/drive.ts",
+            "    if (notHeld !== null) return { refused: `${notHeld}. What it was given is not printed` }\n",
+            "    if (false) return { refused: `${notHeld}. What it was given is not printed` } // MUTATION: a document is rewritten in silence\n",
+            "enqueue --params with 1e400 stores null, and with a 20 digit integer stores another integer, and prints the digest of what it stored",
+        ),
+        (
             "cli-explain-reads-again-when-an-instant-passes-between-its-reads",
             "packages/cli/src/explain.ts",
             "  if (passedBetween) return 'clock-passed'\n",
@@ -20816,6 +20844,30 @@ VERDICTS.update(
             "saga conformance [libsql] a cancellation that spares a saga cancels a task whose saga has not begun, and leaves one that is rolling back as it is",
             "mutation-verdict:behavior:cancel-spares-a-saga-that-began",
             "packages/conformance/src/sagas.ts",
+        ),
+        "cli-enqueue-hides-only-a-refusal-of-the-key": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL refuses a command line with no key, parameters that are no JSON and a key of the engine, and none changes anything",
+            "mutation-verdict:behavior:cli-enqueue-hides-only-a-refusal-of-the-key",
+        ),
+        "cli-enqueue-says-whether-the-stored-name-matches": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL spawns a task under its key with the parameters it was given, and a repeat under the key answers the same task",
+            "mutation-verdict:behavior:cli-enqueue-says-whether-the-stored-name-matches",
+        ),
+        "cli-enqueue-refuses-an-empty-task-name": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL refuses a command line with no key, parameters that are no JSON and a key of the engine, and none changes anything",
+            "mutation-verdict:behavior:cli-enqueue-refuses-an-empty-task-name",
+        ),
+        "cli-refuses-a-number-a-double-cannot-hold": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/drive-verbs.test.ts",
+            "enqueue on libSQL refuses parameters and a payload that would not be stored as they were written, says which number it is, and takes what a double holds",
+            "mutation-verdict:behavior:cli-refuses-a-number-a-double-cannot-hold",
         ),
         "cli-explain-reads-again-when-an-instant-passes-between-its-reads": ExpectedVerdict(
             "behavior",
@@ -25042,7 +25094,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1401:
+        if len(MUTATIONS) != 1405:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

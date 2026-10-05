@@ -176,6 +176,18 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       JSON.stringify({ secret: SENTINEL }),
       ...named(db),
     ]),
+    // Under a key a task holds, so the command reads the task it found.
+    {
+      ...writeAt('the current version, under a key a task holds', (db) => [
+        'enqueue',
+        'report',
+        '--key',
+        HELD_KEY,
+        ...named(db),
+      ]),
+      prepare: async (db) =>
+        (await db.store.spawn(QUEUE, 'report', 'null', { idempotencyKey: HELD_KEY })).taskId,
+    },
   ],
   // An emit sends each batch it declares: the event's state and its waiters before the
   // write, and its stored payload after. A run is parked on the event, so the write wakes it.
@@ -227,6 +239,9 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
     },
   ],
 }
+
+/** The idempotency key of the task the second `enqueue` scenario finds. */
+const HELD_KEY = 'a-key-a-task-holds'
 
 /** The idempotency key of the sleeping task the first `explain` scenario writes. */
 const ASLEEP_KEY = 'asleep-under-a-key'
