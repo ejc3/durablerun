@@ -6670,11 +6670,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
   record of the guard's conjuncts, so the corpus of `retry-task` differs by the one
   separator between two conjuncts. DESIGN.md section 3.11 holds each verb, the write
   window, `--yes`, `--target`, `--halt-rollback`, the retry causes, `tick` and the exit
-  table. The registry holds 1406 mutations where main held 1344: twenty-eight for what the
-  five verbs require, send and answer, eleven for `tick`, three for the drill, seven for
+  table. The registry holds 1412 mutations where main held 1344: thirty-two for what the
+  five verbs require, send and answer, twelve for `tick`, three for the drill, seven for
   `explain`, four for how core decodes the two reads, eight for what the reads answer on
-  libSQL against the engine, and one for the store's cancel that spares a saga. The base
-  gate's arm is keyed on main's digest and exempts their fifty-five markers. It re-aims nine entries of main's registry, whose lines moved
+  libSQL against the engine, one for the store's cancel that spares a saga, and one for
+  the port's check of that cancel's options. The base
+  gate's arm is keyed on main's digest and exempts their sixty-one markers. It re-aims nine entries of main's registry, whose lines moved
   out of the libSQL store's `retryTask` into the record of the guard's conjuncts.
   - Where the build differs from the plan, and why. (1) The version gate has no list of
     its own. Every verb's twin passes at every version of the libSQL window, 5 to 11, so
