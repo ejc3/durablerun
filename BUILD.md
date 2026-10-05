@@ -119,7 +119,13 @@ accepts it.
     store commands held to read batches and to exit 5 outside the window. The bin runs each,
     and runs `stuck --fail-if-any` to exit 9. On each dialect "stuck, stats and sizes print
     the JSON libSQL prints, and exit as it exits, for a queue with a move owed in every leg"
-    compares them on a queue with a row to list in every leg.
+    compares them on a queue with a row to list in every leg. PR5.3d's five drive verbs
+    are among the store commands held to exit 5 on a database a newer build migrated, and
+    the bin runs each: `enqueue`, `emit` without `--yes` (exit 2) and with it, `cancel`,
+    `retry` of a failed task and of a completed one (exit 3), `sweep`, and a `sweep` whose
+    `--target` is not its store (exit 2). `tick` opens no store, so its child-process case
+    is in `tick.test.ts`: "bin/durablerun.ts runs a tick of the deployment and exits 0 with
+    its body, and exits 4 for a token the deployment refuses".
 33. PR5.3a (extended by every later PR that adds a command): nothing
     user-authored and no store credential prints without `--reveal`. A sentinel
     planted in a task's params and headers, a checkpoint's state, an event
@@ -156,7 +162,13 @@ accepts it.
     task names, states, instants and counts, and no value a user wrote. Each has its
     sentinel case in the walk of the command table, with the refusals of a grace, an age and
     a limit that hold the sentinel among `stuck`'s lines, and each has its line in the
-    credential sweep. Redaction removed from the result renderer fails
+    credential sweep. PR5.3d's drive verbs print the key, the parameters and the payload
+    their caller passed as a length and a sha256. Each has its sentinel case in the walk of
+    the command table and its line in the credential sweep, `tick` among them, and "never
+    prints the text of the payload an event holds, --reveal or not, and prints the caller's
+    own only with --reveal" holds the payload an event already stores, which `emit` hashes
+    and never prints. "sends its token in the Authorization header of one POST to the tick
+    route, and nowhere else, and prints it in no stream" holds the tick token. Redaction removed from the result renderer fails
     "result prints no value a user wrote without --reveal". "result prints a
     failed rollback's error as its length and sha256" redacts errors named
     `$SagaStateCorrupt`, `$RollbackNotRegistered` and a name that is neither,
@@ -210,9 +222,12 @@ accepts it.
     command table declares is sent from some starting state" fails a declared
     label or per-label exit that no run sends, and the red, a read that maps
     StoreUnavailableError to exit 0, fails "a read that meets an unavailable
-    store before its batch exits 6 and changes nothing". The PRs that add
-    `enqueue`, `cancel`, `retry` and `selftest` hold what the line says of them,
-    and PR5.3d holds its red. PR5.3b1 adds `inspect` to the same surface, from
+    store before its batch exits 6 and changes nothing". PR5.3d adds
+    `enqueue`, `emit`, `cancel`, `retry` and `sweep` and holds what the line says of them,
+    and its red is the registered mutation `cli-enqueue-spawns-under-its-key`, which spawns
+    under no key and fails "an enqueue whose answer was lost, run again, finds the task
+    under its key and spawns no second one". The PR that adds `selftest` holds what the
+    line says of that command. PR5.3b1 adds `inspect` to the same surface, from
     the current version by an idempotency key, which sends the read by key and
     then every batch a read by a task id sends, so each batch it declares
     (`task-id-by-key`, `task-facts` and `fake-clock`) meets every fault. PR5.3b2
@@ -224,7 +239,16 @@ accepts it.
     `--older-than`, which sends each batch it declares (`stuck-runs`,
     `aged-tasks` and `fake-clock`), `stats` (`queue-status` and `fake-clock`)
     and `sizes` (`table-rows`), each from the current version and each after
-    the read of the schema version that every read sends.
+    the read of the schema version that every read sends. PR5.3d adds the five drive
+    verbs, each from the current version over seeded tasks: `enqueue` under a key no task
+    has, `emit` of an event a run awaits, `cancel` of a pending task, `retry` of a failed
+    task and of a live one, which makes it read the guard, and `sweep` of a queue with a
+    deadline passed, a launch lost and a lease lapsed. A drive verb mints ids and its
+    repeat is another process, so the repeat's ids go on from where the first run's stopped
+    and the two states are compared with the ids each run minted read as one placeholder.
+    `tick` opens no store and meets no executor, so it is not in this surface:
+    `tick.test.ts` holds what it exits with for a deployment that is gone, silent,
+    unavailable or no tick route.
 35. PR5.3b1: `OperatorReads.taskFacts`, `taskIdByKey` and `eventState` are one
     core implementation over `SqlExecutor` and the store's tree dialect, reached
     through a factory each store exports. They return identical canonical output
@@ -313,7 +337,9 @@ accepts it.
     8; cancellation deadline passed; unreadable; unexplained; and four corrupt
     forms, a wait that outlives its event, a terminal task with a live run, a
     live task without exactly one live run, and a task and a run whose states
-    differ. `explain --json` returns the seeded cause and verdict for each.
+    differ. PR5.3d adds three, each fixture-built, for a move the engine does not take: a
+    deadline no sweep cancels, a lapsed lease no sweep reclaims, and a due run no claim
+    admits. `explain --json` returns the seeded cause and verdict for each.
     Never-started and an untimed await get the verdict `waiting`, never `stuck`,
     and `stuck` means that a move the driver owes is late, or that no move can
     come, as for a ring of awaits that no clock ends: a run under a live lease
@@ -328,14 +354,14 @@ accepts it.
     from the command table and parse, never contain `--yes`, and never name
     `emit` or `cancel`: for an untimed await, `explain` prints as facts the event
     name and the step. It lists no waiting tasks: the list needs a read no port
-    has, and line 37 adds the read and the field. A cause whose command is not
-    in the command table yet (`sweep` and `tick`, which PR5.3d adds) prints no
-    suggestion, and a test lists those causes. Red: deleting any arm of
+    has, and line 37 adds the read and the field. PR5.3d added `sweep` and `tick`
+    to the command table, and the five causes that name them now print a suggestion filled
+    only from what `explain` was given, or say what it had no value for. Red: deleting any arm of
     `diagnose` fails the case seeded for it by name, a `diagnose` that answers
     `stuck` for every live state fails the six controls, and a suggestion that
     contains `--yes` fails. This is met.
-    `packages/cli/test/explain-seeds.ts` holds the twenty-six seeds, twenty
-    built through the store's ports alone and six fixture-built, and
+    `packages/cli/test/explain-seeds.ts` holds the twenty-nine seeds, twenty
+    built through the store's ports alone and nine fixture-built, and
     `packages/cli/test/cli-dialects.test.ts` runs each on every dialect, in
     `--json` and in text, as "<cause>: <seed>" under "explain names the seeded
     cause". The never-started seed runs the SDK's `runClaimedRun` with an empty
@@ -370,14 +396,14 @@ accepts it.
     await whether its event exists"; "every suggestion emitted parses, holds no
     --yes and never names emit"; "builds a next command the parser of the CLI
     reads, for a queue whose name begins with a dash"; "withholds a next command
-    it cannot fill, and says what it has no value for"; "names the causes whose
-    suggestion no command of the table carries yet"; and "prints its answer on
+    it cannot fill, and says what it has no value for"; "says what each cause that
+    names a drive verb suggests, filled only from what explain was given"; and "prints its answer on
     stdout whatever it exits with, and exits 10 for a row inspect exits 10 for".
     Under `diagnose`, "answers unexplained for facts no arm takes, and never a
     healthy verdict" hands it ten shapes of rows that disagree, and "says of a
     row that is not readable which row it is and which field, and quotes no
     stored value" holds what `unreadable` names. The reds are registered
-    mutations: each of the twenty-five `cli-explain-arm-<cause>` mutations
+    mutations: each of the twenty-eight `cli-explain-arm-<cause>` mutations
     deletes one arm and fails the case seeded for that cause,
     `cli-explain-answers-unexplained-by-default` fails the unexplained seed,
     `cli-explain-answers-stuck-for-no-healthy-state` fails the six controls, and
@@ -538,7 +564,35 @@ accepts it.
     excepted), and exits 4 on a wrong token. A mismatched `--url` sends nothing:
     a loopback listener records no connection. Red: removing the naming read
     fails the retry cases by name, a write without `--yes` fails the dump
-    control, and dropping the target check fails its case. NOT MET.
+    control, and dropping the target check fails its case. This is met.
+    `packages/cli/test/drive-twin.test.ts` holds the twins. "every drive verb leaves the
+    dump its port call leaves on a twin, at the build's schema version" runs on each
+    dialect: each verb's steps run in order against one pair of databases built by the same
+    calls with the same seeded ids, and after each step the two dumps are equal and the
+    command's answer is the port's. "leaves the dump its port call leaves on a twin the
+    same walk built, after every command" does the same on libSQL over ten walks of 100
+    steps, with floors under the 241 commands it ran (9 revivals, 61 cancellations, 12
+    transitions swept, 10 spawns and 22 emits). The version gate is data: "every drive verb
+    leaves the dump its port call leaves on a twin, at every version from 5 to the build's"
+    runs each verb's twin at each version of the libSQL window. Every verb passes at every
+    version, so all five are allowed from version 5, and the list of the verbs is the list
+    of the write commands of the command table. "a drive verb exits 5 on a database below
+    the window of its store's reads, names both versions, and changes nothing" holds the
+    refusal on each dialect: version 4 on libSQL, and one below the build's on PostgreSQL
+    and MySQL, whose windows are the build's version alone. `drive-verbs.test.ts` holds the
+    rest on libSQL: the `--target` control and the `--yes` control, each with a dump of
+    every table, no fallback to TURSO_* or DURABLERUN_QUEUE, `--key` required,
+    `--halt-rollback` with the rollback facts, `reserved-name`, an absent task apart from
+    one that ended, and the retry causes, in "plants a state for every conjunct of the
+    retry guard, and between them every cause the CLI names" and one case for each of the
+    thirteen conjuncts, which plant the conformance package's own states.
+    `tick.test.ts` runs `tick --url` against the driver package's hosted router behind a
+    listener on the loopback address, at a port the operating system picks, and
+    `exit-table.test.ts` holds the exit table. The reds are registered mutations:
+    `cli-retry-names-the-conjunct-that-refuses` drops the naming read and fails the retry
+    cases, `cli-emit-changes-nothing-without-yes`, `cli-cancel-changes-nothing-without-yes`
+    and `cli-retry-changes-nothing-without-yes` fail the dump control, and
+    `cli-a-drive-verb-names-its-store` fails the target case.
 39. PR5.3d: the operator drill. A script holding only `runCli(argv, env)`, a
     store URL and a loopback hosted-router URL finds each planted cause without
     being handed a task id, and `explain` names the cause the builder wrote down
@@ -552,7 +606,25 @@ accepts it.
     those two, the script acts as the human, runs `cancel --yes`, and each run
     ends cancelled. No healthy control comes back `stuck`. Red: dropping the
     aged-live leg makes the never-started and awaiting cases fail by name (not
-    found), and a suggestion the command table cannot parse fails. NOT MET.
+    found), and a suggestion the command table cannot parse fails. This is met.
+    `packages/cli/test/drill.test.ts` runs the drill on each dialect, in "finds each
+    planted cause without a task id, clears what is stuck by the command explain suggests,
+    and cancels what waits on nothing". The script holds a function that runs one command
+    line, and the store's URL. It asks `stuck --older-than 2m`, asks `explain` about each
+    task listed, runs what `explain` suggests for a verdict of `stuck`, and cancels the two
+    that wait on nothing. One `sweep` clears the lapsed lease and the overdue cancellation,
+    one `tick --url` against the router completes the due run, and the two cancels end the
+    never-started run, which the SDK's worker parked for want of a handler, and the untimed
+    await, which the router's own worker parked. Three healthy controls are found by their
+    age and stay as they are, and two more are in no list. A row no claim admits,
+    fixture-built, is planted beside them: `explain` names it `due-run-no-claim-admits`
+    and suggests `inspect`, and after the sweep and the tick `stuck` lists it still. "finds
+    neither the run that never started nor the untimed await without the leg of aged live
+    tasks" is the control. The reds are registered mutations:
+    `cli-drill-finds-each-planted-cause-without-an-id` takes the leg of aged live tasks out
+    of `stuck` and fails the case with both named not found,
+    `cli-drill-runs-each-suggestion-as-it-is-printed` prints a suggestion the table cannot
+    parse, and `cli-drill-clears-what-is-stuck` suggests a sweep for a due run.
 40. PR5.2a (spec first, no SQL): specs/Retention.tla passes TLC on each config:
     a spawning parent in the child's queue, one in another queue, a task with no
     parent, and a liveness config under weak fairness. It holds WholeUnit,
@@ -789,9 +861,10 @@ PR5.4 (after PR5.2d), and PR5.5, the docs PR that closes the milestone (after
 PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
 before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
-PR5.2c2. PR5.2a and PR5.2c2 do not merge before the maintainer decides on the
-two contract changes of DESIGN.md section 3.12, and PR5.2c2 does not merge
-before the maintainer decides on the `fence_at_ms` plan-reader gate change. The
+PR5.2c2. The maintainer approved the two contract changes of DESIGN.md section 3.12 on
+2026-10-03 and PR5.2a has merged, so they hold neither PR5.2a nor PR5.2c2. PR5.2c2 does
+not merge before the maintainer decides on the `fence_at_ms` plan-reader gate change and
+on the released-surface change the Held paragraph names. The
 maintainer approved PR5.3c's `enqueue_at_ms` plan-reader gate change on
 2026-10-04, with its metric definitions and the seven legs of `stuck`, so no
 decision holds PR5.3c. A refusal
@@ -6556,12 +6629,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     engine's leg answered, and it leaves rows of the window unsettled. Trigger: the first
     wrong answer the inference gives, or a statement tree that can select the engine's
     predicate as a value.
-  - Option for `explain`, not built, with its trigger: a cause of its own for a due run
-    that no claim admits. `explain` gives such a run the cause and the verdict it gives
-    any due run, and the next command those causes name is a tick, which will not take
-    it. The leg `stuck` lists the run in is what says so today. Trigger: PR5.3d, which
-    adds the drive verbs those causes name, or the first operator who ticks at
-    `explain`'s suggestion for a run no tick takes.
+  - Option for `explain`, built by PR5.3d, whose drive verbs were its trigger: a cause
+    of its own for a due run that no claim admits, and one each for a lapsed lease no sweep
+    reclaims and a deadline no sweep cancels. The entry of PR5.3d says how.
   - Option for a live task whose enqueue instant is not readable, not built, with its
     trigger: a bounded read of such tasks beside the legs of `aged-tasks` and of the
     gauge of live tasks. A leg reads in the order of the stored instant, so a task
@@ -6573,6 +6643,65 @@ these three things; nothing else in the system does I/O, time, or randomness.
     instant, and a value that is no integer needs a second shape of statement, which is
     more than the hour the option was given. Trigger: the first report of a corrupt
     instant hidden behind a limit, or the purge pull request.
+- **PR5.3d the drive verbs and the operator drill**: DONE. Exit test lines 38 and 39 of
+  the operable alpha milestone, with lines 32 to 34 extended. The CLI gains `enqueue`,
+  `emit`, `cancel`, `retry` and `sweep`, each one call of the store's port, and `tick
+  --url`, one bounded pass of a hosted deployment over HTTP. `OperatorReads` gains
+  `eventPayload` and `taskAdmission`, in the batches `event-payload` and `task-admission`,
+  both read-only. `explain` gains three causes and fills the commands it suggests. No
+  schema version is added and no released declaration changes. One engine statement
+  changes its text and nothing else: each store's retry guard is now built by core from a
+  record of the guard's conjuncts, so the corpus of `retry-task` differs by the one
+  separator between two conjuncts. DESIGN.md section 3.11 holds each verb, the write
+  window, `--yes`, `--target`, `--halt-rollback`, the retry causes, `tick` and the exit
+  table. The registry holds 1391 mutations where main held 1344: twenty-one for what the
+  five verbs require, send and answer, eight for `tick`, three for the drill, six for
+  `explain`, three for how core decodes the two reads, and six for what the reads answer
+  on libSQL against the engine. The base gate's arm is keyed on main's digest and exempts
+  their forty-one markers. It re-aims nine entries of main's registry, whose lines moved
+  out of the libSQL store's `retryTask` into the record of the guard's conjuncts.
+  - Where the build differs from the plan, and why. (1) The version gate has no list of
+    its own. Every verb's twin passes at every version of the libSQL window, 5 to 11, so
+    all five are allowed there and no verb needs a refusal: the window a read is held to
+    is the gate, and a verb outside it exits 5 naming both versions. PostgreSQL and MySQL
+    read their own version alone. A field in the command table that no verb would set was
+    not kept. (2) `retry`'s naming read is not built beside the guard. The guard and the
+    read are built from one record of thirteen conjuncts, which each store names once, so
+    a conjunct the guard gains is read and must be given a cause. Thirteen conjuncts give
+    the nine causes the comment on `retryTask` listed and a saga that began, less a task
+    that is not there, which has no conjunct: nine causes and a tenth. (3) A later `emit`
+    is still a write. It changes no payload and wakes nothing, and the engine stamps the
+    event's row, so the answer says `already-emitted` and the twin holds the stamp.
+    (4) `explain` asks the engine's predicates before it calls the driver late, in a
+    second snapshot, and reads a row that moved between the two as it stood. (5) The
+    never-started run of the drill is parked ten seconds short of the grace before the
+    script runs, as a live driver would leave it, so no owed move lists it and only its
+    age finds it. A run parked longer ago than the grace is in the leg of runs past their
+    wake as well. (6) A swept lease is not due at once: the engine holds the run for its
+    relaunch delay, so the drill writes down `pending-delayed`, a `waiting` verdict, for
+    it. (7) `tick`'s child-process case is in `tick.test.ts` and waits for the child
+    without blocking, because the listener it calls is in the test's own process.
+    (8) `retry` of a task that is live at the read after a null answer exits 0, as
+    `revived` when the task was failed before the write and as `already-live` when it was
+    not. (9) `enqueue` hides a port refusal that quotes the key unless `--reveal` is given.
+  - What each suggestion `explain` withheld now prints. `cancellation-deadline-passed` and
+    `lease-lapsed-unswept`, once `stuck`, print `sweep --queue=<queue> --target=<target>`,
+    where the target is the one of the store `explain` opened. `woken-unclaimed`,
+    `pending-due-unclaimed` and `sleeping-past-its-wake` print `tick --url=<origin>`, the
+    origin of `DURABLERUN_BASE_URL`, and with no deployment named they print `explain knows
+    no value for --url of tick`. No suggestion carries `--yes`, and none names `emit`,
+    `cancel` or `retry`.
+  - Options settled. The option for `explain` that PR5.3c recorded is built: a due run no
+    claim admits is `due-run-no-claim-admits`, a lapsed lease the sweep's scan does not
+    answer is `lapsed-lease-no-sweep-reclaims`, and a deadline it does not answer is
+    `deadline-no-sweep-cancels`. Each is `inconsistent` and suggests `inspect`, and the
+    drill plants one and shows that a sweep and a tick leave it. The option for the legs of
+    what the engine does not take has a trigger this pull request meets: `taskAdmission`
+    selects the engine's predicate as a value, one flag to a predicate. The legs are not
+    rebuilt here. This pull request changes no statement of `stuck-runs`, and the rebuild
+    replaces three reads whose plans PR5.3c pinned, which is a pull request of its own.
+    Trigger now: the first wrong answer the inference gives, or the next pull request that
+    changes `stuck-runs`.
 - **PR5.2c1 the terminal stamp and the retention row checks**: DONE (#116). Exit test line
   41 of the operable alpha milestone. No statement, no batch and no schema version is added,
   no released declaration changes, and core, the stores, the SDK and the CLI are unchanged
