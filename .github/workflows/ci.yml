@@ -389,6 +389,7 @@ jobs:
                   "mutation-verdict:behavior:cli-explain-fills-a-drive-verb-from-what-it-was-given",
                   "mutation-verdict:behavior:cli-explain-names-a-move-the-engine-does-not-take",
                   "mutation-verdict:behavior:cli-explain-reads-a-row-that-moved-as-it-stood",
+                  "mutation-verdict:behavior:cli-explain-reads-again-when-an-instant-passes-between-its-reads",
                   "mutation-verdict:behavior:cli-retry-names-the-conjunct-that-refuses",
                   "mutation-verdict:behavior:cli-retry-reports-the-live-run-a-repeat-finds",
                   "mutation-verdict:behavior:cli-store-url-has-no-fallback",

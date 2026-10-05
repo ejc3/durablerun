@@ -5709,7 +5709,8 @@ one name.
   the read: each conjunct of the retry guard, as true, false or not asked, whether the
   sweep's scan of due cancellations takes the task, and for each run whether a claim takes it and whether the
   sweep's scan of expired claims does, each beside the state and the instants it was read
-  with. `retry` reads it to name a refusal, and `explain` reads it to tell a move the driver
+  with, and beside database time as its own statement read it. `retry` reads it to name a
+  refusal, and `explain` reads it to tell a move the driver
   is late for from a move the engine does not take.
 
 Five read one queue: `stuckRuns`, `agedTasks`, `queueStatus`, `tableRows` and
@@ -6246,7 +6247,12 @@ it does not answer (`deadline-no-sweep-cancels`). `explain` reads the facts and 
 predicates in two snapshots. When the row moved between them, so that a state, a claim
 generation or an instant the flags were read beside is not the one the facts hold, the
 predicates decide nothing, the late cause answers for the row as it stood, and asking again
-answers it.
+answers it. The predicates read the clock as well as the row, so `taskAdmission` answers
+the database time it was read at. When a deadline, a wake or the end of a lease lies after
+the facts' database time and at or before the predicates', it passed between the two reads
+and no row moved: the facts hold it as ahead and the predicates as behind. `explain` then
+reads the facts again, once, and answers from them. So a deadline that passes while the
+command runs is named as a deadline that passed, and not as a row the engine does not take.
 
 The legs of the sweep relate to the gauges the same way. The running runs
 `runningRunsLapsed` counts are the rows of `leaseLapsed` and `lapsedNotReclaimed`, and the

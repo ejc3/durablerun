@@ -402,6 +402,13 @@ export interface RunAdmission {
  * snapshot of the task can tell whether the rows moved between the two.
  */
 export interface TaskAdmission {
+  /**
+   * Database time as the read's own statement read it: the instant every flag here is of.
+   * A reader that holds facts of an earlier instant compares the two with the instants the
+   * flags depend on. Null when it is outside the bounds of an instant, and it is then
+   * listed in `corrupt`.
+   */
+  readonly nowMs: number | null
   readonly state: string
   readonly cancelAtMs: number | null
   /**

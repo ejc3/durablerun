@@ -579,13 +579,16 @@ async function checkpointCount(
  * awaits, which is diagnosed the same way. A child that is already on the way, the task itself among them, closes a ring and is
  * not read again, and the evidence says whether a clock of any task of the ring ends its
  * wait. A task that is CHILD_HOPS awaits from the one named has its own child
- * left unread, so a chain of awaits costs a bounded number of reads.
+ * left unread, so a chain of awaits costs a bounded number of reads. When a deadline, a wake
+ * or the end of a lease passes between the read of the facts and the read of the guards,
+ * the facts are read again, once, and the answer is of them.
  */
 export async function explained(
   store: Pick<OpenedStore, 'operator' | 'scheduler'>,
   queue: string,
   taskId: string,
   onTheWay: readonly TaskOnTheWay[] = [],
+  factsReadAgain = false,
 ): Promise<{ readonly facts: TaskFacts; readonly diagnosis: Diagnosis } | null> {
   const facts = await store.operator.taskFacts(queue, taskId)
   if (facts === null) return null
@@ -604,7 +607,14 @@ export async function explained(
       evidence = { ...evidence, waiters }
     } else if (asked.needs === 'admission') {
       const read = await store.operator.taskAdmission(queue, taskId)
-      evidence = { ...evidence, admission: admissionOf(facts, read) }
+      const admission = admissionOf(facts, read)
+      // No row moved, and the facts are of an instant before the one that passed. Read
+      // again, they answer for themselves. A second instant that passes is taken as a row
+      // that moved, so the command reads a task's facts at most twice for this.
+      if (admission === 'clock-passed' && !factsReadAgain) {
+        return explained(store, queue, taskId, onTheWay, true)
+      }
+      evidence = { ...evidence, admission: admission === 'clock-passed' ? 'moved' : admission }
     } else if (ring !== null) {
       evidence = { ...evidence, child: ring }
     } else if (hop === CHILD_HOPS) {

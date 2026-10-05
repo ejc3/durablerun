@@ -1604,7 +1604,7 @@ describe('how the reads a drive verb asks decode a row', () => {
     ...Object.fromEntries(RETRY_CONJUNCTS.map((name) => [name, 1])),
     ...Object.fromEntries(refused.map((name) => [name, 0])),
   })
-  const task: SqlRow = { state: 'failed', cancel_at_ms: null, sweepCancels: 0 }
+  const task: SqlRow = { state: 'failed', cancel_at_ms: null, sweepCancels: 0, now_ms: 5000 }
   const admitted = (row: Partial<SqlRow> & { run_id: string }): SqlRow => ({
     state: 'pending',
     claim_gen: 0,
@@ -1654,6 +1654,7 @@ describe('how the reads a drive verb asks decode a row', () => {
       read,
       'mutation-verdict:behavior:operator-reads-read-each-conjunct-as-its-own-flag',
     ).toEqual({
+      nowMs: 5000,
       state: 'failed',
       cancelAtMs: null,
       retry: {
@@ -1666,7 +1667,7 @@ describe('how the reads a drive verb asks decode a row', () => {
       runs: [],
       corrupt: [],
     })
-    // One batch, and no read of the test clock: the answer is dated by nothing.
+    // One batch. Database time is a column of it, and whether the clock is a test's is not read.
     expect(sent).toEqual(['task-admission'])
     // A task that is not there has no row in either read of it.
     const absent = readsAnswering({ 'task-admission': [[], [], []] }).reads

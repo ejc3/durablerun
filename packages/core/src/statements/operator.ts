@@ -420,7 +420,8 @@ export const taskAdmissionRetryRead = defineStatement(
 /**
  * `task-admission`'s second read: whether the sweep's scan of due cancellations takes the
  * task now, with the state and the deadline the answer was read beside. `dueCancels` is
- * the store's whole admission of the task `t`, the one its sweep reads by.
+ * the store's whole admission of the task `t`, the one its sweep reads by. It selects
+ * database time too, so the answer says the instant its flags are of.
  */
 export const taskAdmissionSweepRead = defineStatement(
   'task-admission sweep',
@@ -428,7 +429,7 @@ export const taskAdmissionSweepRead = defineStatement(
     treeBuilder
       .selectFrom('tasks as t')
       .select(['t.state', 't.cancel_at_ms'])
-      .select(() => [flagOf(binds.dueCancels, 'sweepCancels')])
+      .select(() => [flagOf(binds.dueCancels, 'sweepCancels'), aliasedAs(nowValue, 'now_ms')])
       .where('t.task_id', '=', binds.taskId)
       .where('t.queue', '=', binds.queue),
 )

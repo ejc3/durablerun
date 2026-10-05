@@ -908,7 +908,7 @@
         "bindArity": 2
       },
       {
-        "sql": "select \"t\".\"state\", \"t\".\"cancel_at_ms\", case when (t.queue = ? AND ((typeof(t.cancel_at_ms) = 'integer' AND t.cancel_at_ms BETWEEN 0 AND 253402300799000)\n    AND t.cancel_at_ms <= COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n))\n  AND t.state IN ('pending','running','sleeping')\n  AND NOT EXISTS (\n    SELECT 1 FROM runs ownership_run\n    WHERE ownership_run.task_id = t.task_id\n      AND ownership_run.queue <> t.queue\n  )) then 1 else 0 end as \"sweepCancels\" from \"tasks\" as \"t\" where \"t\".\"task_id\" = ? and \"t\".\"queue\" = ?",
+        "sql": "select \"t\".\"state\", \"t\".\"cancel_at_ms\", case when (t.queue = ? AND ((typeof(t.cancel_at_ms) = 'integer' AND t.cancel_at_ms BETWEEN 0 AND 253402300799000)\n    AND t.cancel_at_ms <= COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n))\n  AND t.state IN ('pending','running','sleeping')\n  AND NOT EXISTS (\n    SELECT 1 FROM runs ownership_run\n    WHERE ownership_run.task_id = t.task_id\n      AND ownership_run.queue <> t.queue\n  )) then 1 else 0 end as \"sweepCancels\", COALESCE(\n  (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(unixepoch('subsec') * 1000 AS INTEGER)\n) as \"now_ms\" from \"tasks\" as \"t\" where \"t\".\"task_id\" = ? and \"t\".\"queue\" = ?",
         "bindArity": 3
       },
       {

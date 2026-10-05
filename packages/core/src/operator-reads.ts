@@ -1193,9 +1193,11 @@ async function taskAdmission(
   })
   // By id. The read hands no ordinal over: one at the edge of its column is no number.
   runs.sort((left, right) => byCodePoints(left.runId, right.runId))
+  const beside = integersOf(task, corrupt, { taskId })
   return {
+    nowMs: beside.now('now_ms'),
     state: stringFrom(task.state),
-    cancelAtMs: integersOf(task, corrupt, { taskId })(TASK.cancel_at_ms),
+    cancelAtMs: beside(TASK.cancel_at_ms),
     retry: freeze(retry),
     sweepCancels: flagOf('task-admission sweepCancels', task.sweepCancels),
     runs,

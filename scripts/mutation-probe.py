@@ -20467,6 +20467,13 @@ MUTATION_SPECS.extend(
             "cancel decides from a read made before the write that it will not call the port, so a task that appears between the two is not cancelled",
         ),
         (
+            "cli-explain-reads-again-when-an-instant-passes-between-its-reads",
+            "packages/cli/src/explain.ts",
+            "  if (passedBetween) return 'clock-passed'\n",
+            "  if (false) return 'clock-passed' // MUTATION: an instant that passed between the reads is taken as the guards' answer\n",
+            "explain names a healthy task whose deadline passed while the command ran as a run no claim admits, with the verdict inconsistent",
+        ),
+        (
             "cli-tick-refuses-a-wait-a-timer-cannot-hold",
             "packages/cli/src/commands.ts",
             "  return seconds === null || seconds === 0 || seconds > TICK_MAX_TIMEOUT_SECONDS ? null : seconds\n",
@@ -20809,6 +20816,12 @@ VERDICTS.update(
             "saga conformance [libsql] a cancellation that spares a saga cancels a task whose saga has not begun, and leaves one that is rolling back as it is",
             "mutation-verdict:behavior:cancel-spares-a-saga-that-began",
             "packages/conformance/src/sagas.ts",
+        ),
+        "cli-explain-reads-again-when-an-instant-passes-between-its-reads": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/explain.test.ts",
+            "explain while the clock moves between its two reads reads the facts again when a deadline passes between its two reads, and names the deadline",
+            "mutation-verdict:behavior:cli-explain-reads-again-when-an-instant-passes-between-its-reads",
         ),
         "cli-tick-refuses-a-wait-a-timer-cannot-hold": ExpectedVerdict(
             "behavior",
@@ -25029,7 +25042,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1400:
+        if len(MUTATIONS) != 1401:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

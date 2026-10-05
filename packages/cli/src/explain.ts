@@ -317,8 +317,16 @@ export type Needed =
  * state, generation and instants. Anything else, a task that is gone and an integer that
  * read as corrupt among it, is `moved`: the engine took the row between the two reads, and
  * asking again answers it.
+ *
+ * The guards read the clock as well as the row. A deadline, a wake or the end of a lease
+ * that lies after the facts' database time and at or before the guards' passed between the
+ * two reads: the facts hold it as ahead and the guards as behind, and no row moved. That
+ * is `clock-passed`, and the caller reads the facts again.
  */
-export function admissionOf(facts: TaskFacts, read: TaskAdmission | null): Admission | 'moved' {
+export function admissionOf(
+  facts: TaskFacts,
+  read: TaskAdmission | null,
+): Admission | 'moved' | 'clock-passed' {
   const live = facts.runs.filter((run) => isLiveState(run.state))
   const [run] = live
   const now = read?.runs.find((one) => one.runId === run?.runId)
@@ -331,13 +339,20 @@ export function admissionOf(facts: TaskFacts, read: TaskAdmission | null): Admis
     now.claimGen === run.claimGen &&
     now.availableAtMs === run.availableAtMs &&
     now.claimExpiresAtMs === run.claimExpiresAtMs
-  return same
-    ? {
-        claimTakes: now.claimTakes,
-        sweepReclaims: now.sweepReclaims,
-        sweepCancels: read.sweepCancels,
-      }
-    : 'moved'
+  if (!same) return 'moved'
+  const passed = (at: number | null): boolean =>
+    at !== null &&
+    facts.nowMs !== null &&
+    read.nowMs !== null &&
+    facts.nowMs < at &&
+    at <= read.nowMs
+  const passedBetween = [read.cancelAtMs, now.availableAtMs, now.claimExpiresAtMs].some(passed)
+  if (passedBetween) return 'clock-passed'
+  return {
+    claimTakes: now.claimTakes,
+    sweepReclaims: now.sweepReclaims,
+    sweepCancels: read.sweepCancels,
+  }
 }
 
 interface View {

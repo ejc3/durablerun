@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_MAX_ATTEMPTS,
   SAGA_STARTED_PREFIX,
+  type TaskAdmission,
   type TaskFacts,
   taskDoneEventName,
 } from '@durablerun/core'
@@ -21,12 +22,13 @@ import {
   HUNG_RUN_MS,
   VERDICTS,
   type Verdict,
+  admissionOf,
   answerView,
   diagnose,
   pastedLine,
   suggestion,
 } from '../src/explain.js'
-import type { StoreOpener } from '../src/open-store.js'
+import { type StoreOpener, openStore } from '../src/open-store.js'
 import {
   EXPLAIN_SEEDS,
   type ExplainSeed,
@@ -1250,6 +1252,141 @@ function answered(asked: ReturnType<typeof diagnose>): Diagnosis {
 
 /** The engine's guards admit the row: its claim takes the run, and its sweep the run and the task. */
 const THE_ENGINE_TAKES_IT = { claimTakes: true, sweepReclaims: true, sweepCancels: true }
+
+describe('explain while the clock moves between its two reads', () => {
+  it('reads the facts again when a deadline passes between its two reads, and names the deadline', async () => {
+    const db = await openCliDb('libsql', 'explain-deadline-between-reads')
+    try {
+      const task = await db.store.spawn(QUEUE, 'job', '{}', {
+        cancellation: { maxDelaySeconds: 300 },
+      })
+      const deadline = NOW_MS + 300_000
+      // One millisecond before its deadline the run has been due for longer than the grace,
+      // so the command asks the engine's guards about it.
+      await db.admin.setFakeNowEpochMs(deadline - 1)
+      let factsRead = 0
+      let passed = false
+      const theDeadlinePassesBetween: StoreOpener = async (url, token, ids, options) => {
+        const opened = await openStore(url, token, ids, options)
+        return {
+          ...opened,
+          operator: {
+            ...opened.operator,
+            taskFacts: (queue, id) => {
+              factsRead += 1
+              return opened.operator.taskFacts(queue, id)
+            },
+            taskAdmission: async (queue, id) => {
+              // The facts were read before the deadline, and the guards are read after it.
+              if (!passed) {
+                passed = true
+                await db.admin.setFakeNowEpochMs(deadline + 1)
+              }
+              return opened.operator.taskAdmission(queue, id)
+            },
+          },
+        }
+      }
+      const answer = await explain(db, task.taskId, theDeadlinePassesBetween)
+      expect(
+        { passed, cause: answer.cause, verdict: answer.verdict, factsRead },
+        'mutation-verdict:behavior:cli-explain-reads-again-when-an-instant-passes-between-its-reads',
+      ).toEqual({
+        passed: true,
+        // The deadline passed a millisecond ago, and the sweep is not late for it yet.
+        cause: 'cancellation-deadline-passed',
+        verdict: 'waiting',
+        factsRead: 2,
+      })
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('tells an instant that passed between the reads from a row that moved, and takes the guards only when neither happened', () => {
+    // A sleeping run that wakes in 20 ms, under a lease field of 30 ms and a deadline of 10.
+    const facts = factsOf(
+      { state: 'sleeping', availableAtMs: NOW_MS + 20, claimExpiresAtMs: NOW_MS + 30 },
+      { task: { cancelAtMs: NOW_MS + 10 } },
+    )
+    const guards = (
+      nowMs: number | null,
+      task: Partial<TaskAdmission> = {},
+      run: Partial<TaskAdmission['runs'][number]> = {},
+    ): TaskAdmission => ({
+      nowMs,
+      state: facts.task.state,
+      cancelAtMs: facts.task.cancelAtMs,
+      retry: {} as TaskAdmission['retry'],
+      sweepCancels: false,
+      runs: facts.runs.map((one) => ({
+        runId: one.runId,
+        state: one.state,
+        claimGen: one.claimGen,
+        availableAtMs: one.availableAtMs,
+        claimExpiresAtMs: one.claimExpiresAtMs,
+        claimTakes: false,
+        sweepReclaims: false,
+        ...run,
+      })),
+      corrupt: [],
+      ...task,
+    })
+    const taken = { claimTakes: false, sweepReclaims: false, sweepCancels: false }
+    const without = (
+      cleared: Partial<TaskFacts['task']>,
+      run: Partial<TaskFacts['runs'][number]>,
+    ) =>
+      factsOf(
+        { state: 'sleeping', availableAtMs: NOW_MS + 20, claimExpiresAtMs: NOW_MS + 30, ...run },
+        { task: { cancelAtMs: NOW_MS + 10, ...cleared } },
+      )
+    const onlyTheWake = without({ cancelAtMs: null }, { claimExpiresAtMs: null })
+    const onlyTheLease = without({ cancelAtMs: null }, { availableAtMs: null })
+    const of = (given: TaskFacts, nowMs: number | null) =>
+      admissionOf(given, {
+        ...guards(nowMs),
+        cancelAtMs: given.task.cancelAtMs,
+        runs: guards(nowMs).runs.map((one) => ({
+          ...one,
+          availableAtMs: given.runs[0]?.availableAtMs ?? null,
+          claimExpiresAtMs: given.runs[0]?.claimExpiresAtMs ?? null,
+        })),
+      })
+    expect({
+      // Read at one instant, and a moment later with every instant still ahead.
+      atOnce: admissionOf(facts, guards(NOW_MS)),
+      before: admissionOf(facts, guards(NOW_MS + 9)),
+      // The deadline is passed at its own millisecond, as the engine holds it.
+      atTheDeadline: admissionOf(facts, guards(NOW_MS + 10)),
+      afterTheDeadline: admissionOf(facts, guards(NOW_MS + 11)),
+      // A wake and the end of a lease are instants the guards read too.
+      beforeTheWake: of(onlyTheWake, NOW_MS + 19),
+      atTheWake: of(onlyTheWake, NOW_MS + 20),
+      beforeTheLeaseEnds: of(onlyTheLease, NOW_MS + 29),
+      whenTheLeaseEnds: of(onlyTheLease, NOW_MS + 30),
+      // A row that differs is a row that moved, whatever the clock did.
+      rowMoved: admissionOf(facts, guards(NOW_MS + 11, { state: 'cancelled' })),
+      generationMoved: admissionOf(facts, guards(NOW_MS, {}, { claimGen: 2 })),
+      gone: admissionOf(facts, null),
+      // With no database time to compare, the rows alone decide, as they did.
+      noClock: admissionOf(facts, guards(null)),
+    }).toEqual({
+      atOnce: taken,
+      before: taken,
+      atTheDeadline: 'clock-passed',
+      afterTheDeadline: 'clock-passed',
+      beforeTheWake: taken,
+      atTheWake: 'clock-passed',
+      beforeTheLeaseEnds: taken,
+      whenTheLeaseEnds: 'clock-passed',
+      rowMoved: 'moved',
+      generationMoved: 'moved',
+      gone: 'moved',
+      noClock: taken,
+    })
+  })
+})
 
 describe('diagnose', () => {
   it('answers unexplained for facts no arm takes, and never a healthy verdict', () => {

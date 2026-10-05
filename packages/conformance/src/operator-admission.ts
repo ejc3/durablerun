@@ -515,6 +515,8 @@ export function operatorAdmissionConformance(
           ...over,
         })
         const task = (state: string, runs: unknown[], over: Record<string, unknown> = {}) => ({
+          // The instant the read was made at, which is the instant its flags are of.
+          nowMs: LATER,
           state,
           cancelAtMs: null,
           sweepCancels: false,
@@ -587,6 +589,7 @@ export function operatorAdmissionConformance(
         expect(
           besideTheGuard(await f.operatorReadsOver(f.raw).taskAdmission(Q, task.taskId)),
         ).toEqual({
+          nowMs: START,
           state: 'pending',
           cancelAtMs: null,
           sweepCancels: false,
