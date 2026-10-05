@@ -1054,13 +1054,7 @@ describe('cancel on libSQL', () => {
           testIdSource(`says-halted-${taskId}`),
         )
         const answer = JSON.parse(run.stdout) as JsonAnswer
-        return [
-          run.exit,
-          answer.outcome,
-          answer.stateBefore,
-          answer.sagaBegan,
-          answer.haltedRollback,
-        ]
+        return [run.exit, answer.outcome, answer.stateBefore, answer.sagaBegan]
       }
       // The saga begins once the command has read the task, and the operator said to halt.
       const beside = await sagaStepStarted(db)
@@ -1082,10 +1076,10 @@ describe('cancel on libSQL', () => {
         'mutation-verdict:behavior:cli-cancel-says-whether-it-halted-a-rollback',
       ).toEqual({
         // `stateBefore` is of the read before the call, when the task was still running.
-        besideTheCommand: [0, 'cancelled', 'running', true, true],
-        knownBefore: [0, 'cancelled', 'pending', true, true],
-        noSaga: [0, 'cancelled', 'pending', false, false],
-        spared: [0, 'cancelled', 'pending', false, false],
+        besideTheCommand: [0, 'cancelled', 'running', true],
+        knownBefore: [0, 'cancelled', 'pending', true],
+        noSaga: [0, 'cancelled', 'pending', false],
+        spared: [0, 'cancelled', 'pending', false],
       })
     }))
 

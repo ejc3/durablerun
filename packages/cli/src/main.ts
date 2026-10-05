@@ -951,9 +951,9 @@ const emitEvent: Handler = async (context) => {
  * queue. The read before the call is for what a run without --yes says it would do, and
  * for `stateBefore`. The task is read again after the call, whatever the port answered.
  * Beside the outcome `cancelled`, `sagaBegan` is of that later read, so it is true of the
- * task this call cancelled, and `haltedRollback` says the same thing in the operator's
- * words: the cancellation halted a rollback. A saga that began between the first read and
- * the call shows there, where the first read would have said no saga began. That read
+ * task this call cancelled: `sagaBegan: true` there means the cancellation halted a
+ * rollback where it stood. A saga that began between the first read and the call shows
+ * there, where the first read would have said no saga began. That read
  * follows a write the store answered, and a failure of it exits as any read's does: the
  * task is cancelled, and the command run again reports `already-cancelled`.
  */
@@ -995,17 +995,7 @@ const cancel: Handler = async (context) => {
   const asked: CancelOptions = haltRollback ? {} : { unlessSagaBegan: true }
   const cancelled = await store.scheduler.cancelTask(queue, taskId, asked)
   const after = await store.operator.taskFacts(queue, taskId)
-  if (cancelled) {
-    const said = namedAt(after)
-    return {
-      exit: 'done',
-      view: {
-        ...said,
-        ...('sagaBegan' in said ? { haltedRollback: said.sagaBegan } : {}),
-        outcome: 'cancelled',
-      },
-    }
-  }
+  if (cancelled) return { exit: 'done', view: { ...namedAt(after), outcome: 'cancelled' } }
   if (after === null) return noSuchTask(queue, taskId)
   const named = namedAt(after)
   const state = after.task.state

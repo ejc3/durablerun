@@ -21219,8 +21219,8 @@ MUTATION_SPECS.extend(
         (
             "cli-cancel-says-whether-it-halted-a-rollback",
             "packages/cli/src/main.ts",
-            "    const said = namedAt(after)\n",
-            "    const said = namedAt(before) // MUTATION: a cancellation prints the saga as the read before the call found it\n",
+            "  if (cancelled) return { exit: 'done', view: { ...namedAt(after), outcome: 'cancelled' } }\n",
+            "  if (cancelled) return { exit: 'done', view: { ...namedAt(before), outcome: 'cancelled' } } // MUTATION: a cancellation prints the saga as the read before the call found it\n",
             "cancel --halt-rollback of a task whose saga began beside the command halts the rollback and prints sagaBegan false, so the operator cannot see that a rollback was halted",
         ),
         (

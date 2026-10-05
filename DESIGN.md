@@ -6492,9 +6492,10 @@ reach.
   whatever the command read before. The task is read before the call for its name and
   `stateBefore`, and again after the call, whatever the port answered. Beside the outcome
   `cancelled`, `sagaBegan` is of the read after, so it is true of the task the call
-  cancelled, and `haltedRollback` says whether the cancellation halted a rollback. With
-  `--halt-rollback`, a saga that began between the first read and the call shows there as
-  halted. A failure of the read after exits as any read's does: the task is cancelled, and
+  cancelled: `sagaBegan: true` there means the cancellation halted a rollback where it
+  stood, and `result` then says whether a step was left uncompensated. With
+  `--halt-rollback`, a saga that began between the first read and the call shows there.
+  A failure of the read after exits as any read's does: the task is cancelled, and
   the command run again reports `already-cancelled`. When the port answers false it wrote
   nothing, and the task as it stands
   after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`), rolling

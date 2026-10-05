@@ -247,7 +247,7 @@ export function retryForecast(
         conjunctsNotHeld: refusal.conjunctsNotHeld,
         conjunctsNotAsked: refusal.conjunctsNotAsked,
       },
-      message: `retry would be refused for task ${taskId}, with or without --yes. As of this read: ${refusal.causes.map((one) => CAUSE_SAYS[one]).join('; ')}. Nothing was changed`,
+      message: `retry would be refused for task ${taskId}, so --yes would change nothing. As of this read: ${refusal.causes.map((one) => CAUSE_SAYS[one]).join('; ')}. Nothing was changed`,
     }
   }
   return {
