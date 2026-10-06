@@ -577,10 +577,13 @@ it("walks a saga's names among one task's rows of the key, and reads no attempt 
  * How each statement a recorder saw reaches its rows, planned with sequential and bitmap
  * scans disabled: every index scan with its condition, and every scan of a table that
  * remains, which is a table no index of the statement reaches. `meta` is left out of both.
+ * `sorts` is every sort of all the rows a statement reads. An incremental sort is not one:
+ * it sorts one group of rows that an index hands out together, and stops at a LIMIT.
  */
 async function indexesAndScans(client: Client, recorder: RecordingExecutor) {
   const reached: Record<string, string[]> = {}
   const scans: string[] = []
+  const sorts: string[] = []
   const seen = recorder.batches.flatMap(({ label, statements }) =>
     statements.map((sql, index) => ({ name: `${label}#${index}`, sql })),
   )
@@ -597,8 +600,13 @@ async function indexesAndScans(client: Client, recorder: RecordingExecutor) {
         .filter((line) => /Seq Scan|Bitmap/.test(line) && !/ on meta\b/.test(line))
         .map((line) => `[${name}] ${line.trim()}`),
     )
+    sorts.push(
+      ...lines
+        .filter((line) => /^(?:->\s+)?Sort$/.test(line.trim()))
+        .map((line) => `[${name}] ${line.trim()}`),
+    )
   }
-  return { reached, scans }
+  return { reached, scans, sorts }
 }
 
 /**
@@ -1023,8 +1031,15 @@ it('reaches every row a purge reads or deletes through an index, beside a histor
       purged: { tasks: 1, runs: 1, checkpoints: 1, waits: 0, events: 1 },
     })
 
-    const { reached, scans } = await indexesAndScans(client, recorder)
+    const { reached, scans, sorts } = await indexesAndScans(client, recorder)
     expect(scans).toEqual([])
+    // The candidates are read in the order of their stamps and then of their ids. The
+    // index ends at the stamp, so PostgreSQL sorts each group of tasks that ended at one
+    // instant, an incremental sort that stops at the LIMIT. A sort of every ended task of
+    // the state, which no LIMIT bounds, would be listed here. The one sort there is sorts
+    // one row: the compare-and-set reads its unit's parent by the primary key through a
+    // DISTINCT, which is what keeps that read a table of its own on every dialect.
+    expect(sorts).toEqual(['[purge-unit#0] ->  Sort'])
     expect(reached).toEqual({
       'purge-candidates#0': [
         "tasks_terminal on tasks t: ((queue = $1) AND (state = 'completed'::text) AND (fence_at_ms >= 0) AND (fence_at_ms <= '253402300799000'::bigint) AND (fence_at_ms <= (COALESCE((InitPlan 1).col1, (floor((EXTRACT(epoch FROM statement_timestamp()) * '1000'::numeric)))::bigint) - $2)) AND (fence_at_ms >= $3))",
