@@ -303,6 +303,11 @@ async function contestRound(
       ? []
       : [`${key} made ${answer.taskId} while ${original} still held it, or the new task is gone`]
   })
+  // A part is orphaned in the snapshot it was read in when its task's row is not in that
+  // snapshot. Each snapshot is judged against its own tasks, so a row the last purger
+  // left behind is seen though its task was still there while the others ran.
+  const orphans = (rows: Rows): string[] =>
+    rows.parts.filter((part) => !rows.tasks.has(part.slice(0, part.indexOf(' '))))
   return {
     round,
     failures,
@@ -311,12 +316,7 @@ async function contestRound(
       .filter((taskId) => during.tasks.has(taskId))
       .concat(afterwards.filter((taskId) => after.tasks.has(taskId))),
     goneUnpurged: gone.filter((taskId) => !answeredFor.has(taskId)),
-    partUnits: [...during.parts, ...after.parts]
-      .filter((part, index, all) => all.indexOf(part) === index)
-      .filter((part) => {
-        const taskId = part.slice(0, part.indexOf(' '))
-        return !(during.parts.includes(part) ? during : after).tasks.has(taskId)
-      }),
+    partUnits: [...new Set([...orphans(during), ...orphans(after)])],
     violations: await engineHistoryViolations(f.raw),
     leftBehind: [...after.tasks]
       .filter(

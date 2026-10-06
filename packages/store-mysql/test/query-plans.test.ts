@@ -1456,14 +1456,12 @@ describe('a purge beside a spawn under the key of its unit, on MySQL', () => {
       )
       const victimsBefore = db.raw.deadlocks
       let purged = 0
-      let created = 0
       for (const unit of units) {
-        const [gone, again] = await Promise.all([
+        const [gone] = await Promise.all([
           purges.purgeUnit(Q, unit, policy),
           store.spawn(Q, 'again', '{}', { idempotencyKey: unit.idempotencyKey }),
         ])
         if (gone !== null) purged += 1
-        if (again.created) created += 1
       }
       expect(
         {
@@ -1471,10 +1469,9 @@ describe('a purge beside a spawn under the key of its unit, on MySQL', () => {
           // A purge that came first frees the key and the spawn creates a task. A spawn that
           // came first finds the task, and the purge then takes its unit all the same.
           everyUnitPurged: purged === units.length,
-          aSpawnMetItsTask: created < units.length || created === units.length,
         },
         'mutation-verdict:behavior:mysql-purge-takes-the-key-before-the-row',
-      ).toEqual({ deadlockVictims: 0, everyUnitPurged: true, aSpawnMetItsTask: true })
+      ).toEqual({ deadlockVictims: 0, everyUnitPurged: true })
     } finally {
       await db.close()
     }

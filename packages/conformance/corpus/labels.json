@@ -38,5 +38,5 @@
   "task-admission": ["read"],
   "aged-tasks": ["read"],
   "purge-candidates": ["read"],
-  "purge-unit": ["purged"]
+  "purge-unit": ["purged", "purged-by-its-key"]
 }

@@ -197,6 +197,10 @@ describe('generated SQL corpus', () => {
         expect(swept).toContainEqual(
           expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
         )
+        // A task spawned under a key and then cancelled, for the purge below: MySQL reaches
+        // a task that has a key through the key's index, a second shape of the batch.
+        const keyed = await store.spawn('q', 'job', '{}', { idempotencyKey: 'purged-by-its-key' })
+        expect(await store.cancelTask('q', keyed.taskId)).toBe(true)
         // Retention, last of all, because it removes what the scenario made. A window after
         // the sweep cancelled it, the task that never started is listed, and its unit goes.
         await fixture.admin.setFakeNowEpochMs(1_061_000 + 3_600_000)
@@ -207,6 +211,13 @@ describe('generated SQL corpus', () => {
         const listed = await retention.purgeCandidates('q', policy, { limit: 10 })
         expect(listed.candidates.map(({ taskId }) => taskId)).toContain(late.taskId)
         expect(await retention.purgeUnit('q', { taskId: late.taskId }, policy)).not.toBeNull()
+        expect(
+          await retention.purgeUnit(
+            'q',
+            { taskId: keyed.taskId, idempotencyKey: 'purged-by-its-key' },
+            policy,
+          ),
+        ).not.toBeNull()
       })
       const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, CORPUS_VARIANT_NAMERS)
       const path = new URL(`../corpus/${dialect}.json`, import.meta.url)

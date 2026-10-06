@@ -1,7 +1,9 @@
 import {
   ChildAwaitRefusedError,
   InvalidDurableStringError,
+  MAX_EPOCH_MS,
   PortRefusalError,
+  type PurgeCursor,
   type PurgeUnitTarget,
   RETENTION_METHODS,
   RETENTION_STRINGS,
@@ -598,6 +600,47 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
               ? Object.values(place).reduce((count: number, inner) => count + named(inner), 0)
               : 0
         expect({ places, named: named(RETENTION_STRINGS) }).toEqual({ places: 5, named: 5 })
+      })
+    })
+
+    it('refuses a cursor whose instant is no whole epoch-ms in range, and sends nothing', async () => {
+      await withFixture(makeFixture, 'retention-cursor', async (f) => {
+        const recorder = new RecordingExecutor(f.raw)
+        const retention = f.retentionOver(recorder)
+        const instants: Readonly<Record<string, unknown>> = {
+          'an instant before the epoch': -1,
+          'an instant that is no whole number': 1.5,
+          'an instant past the last the engine takes': MAX_EPOCH_MS + 1,
+          'an instant written as text': '0',
+          'an instant that is null': null,
+          'no instant': undefined,
+        }
+        const accepted: string[] = []
+        for (const [what, endedAtMs] of Object.entries(instants)) {
+          const after = { endedAtMs, taskId: 't' } as PurgeCursor
+          const refused = await retention
+            .purgeCandidates('q', CONTEST_POLICY, { limit: 1, after })
+            .then(
+              () => false,
+              (error: unknown) => error instanceof PortRefusalError,
+            )
+          if (!refused) accepted.push(what)
+        }
+        expect({ accepted, sent: recorder.batches.map((batch) => batch.label) }).toEqual({
+          accepted: [],
+          sent: [],
+        })
+        // The first and the last instant the engine takes are taken.
+        for (const endedAtMs of [0, MAX_EPOCH_MS]) {
+          await retention.purgeCandidates('q', CONTEST_POLICY, {
+            limit: 1,
+            after: { endedAtMs, taskId: 't' },
+          })
+        }
+        expect(recorder.batches.map((batch) => batch.label)).toEqual([
+          'purge-candidates',
+          'purge-candidates',
+        ])
       })
     })
 
