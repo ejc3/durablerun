@@ -21970,14 +21970,14 @@ MUTATION_SPECS.extend(
             "cli-purge-prints-exactly-the-units-that-went",
             "packages/cli/src/main.ts",
             "      rows === null ? unitView(candidate) : { ...unitView(candidate), rows },\n",
-            "      unitView(candidate),\n",
+            "      rows === null ? unitView(candidate) : unitView(candidate),\n",
             "purge deletes a unit and prints it without the rows that went",
         ),
         (
             "cli-purge-is-the-retention-port-over-a-walk",
             "packages/cli/src/purge.ts",
             "      ...(failedSeconds === undefined ? {} : { failedSeconds }),\n",
-            "",
+            "      ...(failedSeconds === undefined ? {} : {}),\n",
             "purge drops the window a command line names for failed tasks, and keeps every failed task the port takes",
         ),
     )
@@ -22127,7 +22127,7 @@ MUTATION_SPECS.extend(
             "purge-walk-answers-where-it-stopped",
             "packages/core/src/retention-walk.ts",
             "    resumeAfter: failed === null && unread ? cursor : null,\n",
-            "    resumeAfter: null,\n",
+            "    resumeAfter: failed === null && unread ? null : null,\n",
             "a walk that stops with candidates unread answers no place to resume from, so what stands behind kept units is never reached",
         ),
         (
@@ -22183,7 +22183,7 @@ MUTATION_SPECS.extend(
             "cli-purge-resumes-after-its-cursor",
             "packages/cli/src/main.ts",
             "    ...(after === null ? {} : { after }),\n",
-            "",
+            "    ...(after === null ? {} : {}),\n",
             "purge ignores --after and begins at the oldest candidate, so a resumed run reads every kept unit again",
         ),
         (
