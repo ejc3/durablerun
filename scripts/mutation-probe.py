@@ -21584,6 +21584,27 @@ MUTATION_SPECS.extend(
             "    target === 'no-such-table' &&\n",
             "a purge reaches its task by the primary key, and deadlocks with a spawn that reuses the key of the unit being purged",
         ),
+        (
+            "entry-exports-no-builder-of-a-purge",
+            "packages/core/src/index.ts",
+            "export { type HeldRetention, type RetentionDialect, createRetention } from './retention.js'\n",
+            "export * from './retention.js'\n",
+            "core's entry exports the function that adds a purge's statements to a batch, and its caller chooses the barrier's inputs",
+        ),
+        (
+            "retention-port-reads-each-member-once",
+            "packages/core/src/retention.ts",
+            "      return apply(entry, undefined, once)\n",
+            "      return apply(entry, undefined, args)\n",
+            "a method of the retention port reads a member of its argument again after the check read it, and binds what the second reading answered",
+        ),
+        (
+            "purge-candidates-holds-its-limit",
+            "packages/core/src/retention.ts",
+            "  const limit = requireListLimit(options.limit)\n",
+            "  const limit = options.limit\n",
+            "a listing of purge candidates takes any limit, and one of a million reads a million rows of each state in one batch",
+        ),
     )
 )
 VERDICTS.update(
@@ -21750,6 +21771,26 @@ VERDICTS.update(
             "packages/store-mysql/test/query-plans.test.ts",
             "a purge beside a spawn under the key of its unit, on MySQL takes the key and then the row, as the spawn does, so the server chooses no deadlock victim",
             "mutation-verdict:behavior:mysql-purge-takes-the-key-before-the-row",
+        ),
+        "entry-exports-no-builder-of-a-purge": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retention.test.ts",
+            "what core's entry exports of retention exports the factory of the port, and no builder of a purge, no maker of windows and no mark",
+            "mutation-verdict:behavior:entry-exports-no-builder-of-a-purge",
+        ),
+        "retention-port-reads-each-member-once": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what the retention port refuses [libsql] reads each member of an object argument once, so what the check read is what is bound",
+            "mutation-verdict:behavior:retention-port-reads-each-member-once",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-candidates-holds-its-limit": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what the retention port refuses [libsql] refuses a limit that is no whole number from 1 to 1000 and options that are no object, and sends nothing",
+            "mutation-verdict:behavior:purge-candidates-holds-its-limit",
+            "packages/conformance/src/retention-purge.ts",
         ),
     }
 )
@@ -25683,7 +25724,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1445:
+        if len(MUTATIONS) != 1448:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

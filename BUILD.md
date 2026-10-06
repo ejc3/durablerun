@@ -6952,12 +6952,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   spawn sends its batch once more when its insert lost and no task explains it, through
   one function of core, which landed as a failing case and then the fix. DESIGN.md section 3.12 holds the port, the
   batch, the cap with its measurement, MySQL's lock order and each property's twin. The
-  registry holds 1445 mutations where main held 1412: eight for the rule that only a purge
+  registry holds 1448 mutations where main held 1412: eight for the rule that only a purge
   deletes, one for the row check of a completion event whose task is gone, nine caught by
   a block of the barrier grid, nine by a case of a condition no engine path reaches, three
-  by core's cases of the batch, one for the spawn that sends once more, and two for
-  MySQL's index rules. The base gate's arm is keyed on main's digest, exempts their
-  thirty-one markers, lists the four condition lines of the tree rule, and re-aims one
+  by core's cases of the batch, one for the spawn that sends once more, two for
+  MySQL's index rules, and three for the port: what core's entry exports of retention, one
+  reading of an argument's member, and the limit of a listing. The base gate's arm is keyed on main's digest, exempts their
+  thirty-four markers, lists the four condition lines of the tree rule, and re-aims one
   entry of main's registry, whose line moved when the MySQL compiler's table of stamp
   indexes gained `tasks`.
   - What the maintainer approved, on 2026-10-06, each as built: the two relations

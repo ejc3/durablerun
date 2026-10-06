@@ -305,7 +305,9 @@ describe("what core's entry exports of retention", () => {
     const exported = Object.keys(inside)
       .filter((name) => name in entry)
       .sort()
-    expect(exported).toEqual(['createRetention'])
+    expect(exported, 'mutation-verdict:behavior:entry-exports-no-builder-of-a-purge').toEqual([
+      'createRetention',
+    ])
   })
 })
 

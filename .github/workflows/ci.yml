@@ -378,22 +378,26 @@ jobs:
               )
               return repaired[:at] + entries + repaired[at:]
           if digest == 'c0ab173f979858262d512a6d91b097dec10d0ec08f5a5cbb03f0b8acc379d90a':
-              # The retention purge registers thirty-three mutations: eight for the tree rule
+              # The retention purge registers thirty-six mutations: eight for the tree rule
               # that lets only the purge of a unit delete a row of it, one for the row check
               # that names a completion event whose task is gone, nine caught by a block of
               # the barrier grid, nine by a case of a condition no engine path reaches, three
               # by core's own cases of the purge's batch, one for the spawn that sends once
-              # more, and two for MySQL's index rules. Their cases carry
-              # thirty-one verdict markers. Each is newer than the base registry, so each is
+              # more, two for MySQL's index rules, and three for the port: what core's entry
+              # exports of retention, one reading of an argument's member, and the limit of a
+              # listing. Their cases carry
+              # thirty-four verdict markers. Each is newer than the base registry, so each is
               # exempted there. The four lines of the tree rule hold conditions, and the base's
               # coverage check asks a mutation of each, so they are listed for it.
               # One base entry is re-aimed: the MySQL compiler's table of stamp indexes gained
               # an entry and is written a line to a table, so the mutation that reads a
               # delete's keys through another index of runs names the line that holds runs.
               repaired = exempt(previous, candidate, (
+                  "mutation-verdict:behavior:entry-exports-no-builder-of-a-purge",
                   "mutation-verdict:behavior:history-names-a-completion-event-without-its-task",
                   "mutation-verdict:behavior:mysql-purge-reads-its-keys-by-the-stamp-of-tasks",
                   "mutation-verdict:behavior:mysql-purge-takes-the-key-before-the-row",
+                  "mutation-verdict:behavior:purge-candidates-holds-its-limit",
                   "mutation-verdict:behavior:purge-deletes-the-task-row-last",
                   "mutation-verdict:behavior:purge-finds-a-parent-in-any-queue",
                   "mutation-verdict:behavior:purge-holds-the-key-the-unit-was-spawned-under",
@@ -411,6 +415,7 @@ jobs:
                   "mutation-verdict:behavior:purge-reads-an-age-only-from-a-stamp-in-range",
                   "mutation-verdict:behavior:purge-takes-a-unit-at-the-checkpoint-cap",
                   "mutation-verdict:behavior:purge-takes-a-unit-exactly-a-window-old",
+                  "mutation-verdict:behavior:retention-port-reads-each-member-once",
                   "mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone",
                   "mutation-verdict:construction:purge-alone-deletes-checkpoints",
                   "mutation-verdict:construction:purge-alone-deletes-events",

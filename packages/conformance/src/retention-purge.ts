@@ -691,7 +691,10 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
         }
         // Three members are strings the table names: the task and the key of a unit, and
         // the task of a cursor.
-        expect({ readAgain, secondBound, named }).toEqual({
+        expect(
+          { readAgain, secondBound, named },
+          'mutation-verdict:behavior:retention-port-reads-each-member-once',
+        ).toEqual({
           readAgain: [],
           secondBound: [],
           named: 3,
@@ -745,10 +748,10 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           ...Object.keys(limits).map((what) => [what, 'a number out of range']),
           ...Object.keys(options).map((what) => [what, 'an invalid argument']),
         ])
-        expect({ answered, sent: recorder.batches.map((batch) => batch.label) }).toEqual({
-          answered: expected,
-          sent: [],
-        })
+        expect(
+          { answered, sent: recorder.batches.map((batch) => batch.label) },
+          'mutation-verdict:behavior:purge-candidates-holds-its-limit',
+        ).toEqual({ answered: expected, sent: [] })
         // The cap itself is taken, in one batch.
         await retention.purgeCandidates('q', CONTEST_POLICY, { limit: 1_000 })
         expect(recorder.batches.map((batch) => batch.label)).toEqual(['purge-candidates'])
