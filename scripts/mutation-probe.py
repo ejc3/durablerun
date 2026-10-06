@@ -21332,8 +21332,8 @@ MUTATION_SPECS.extend(
             "purge-rule-asks-for-the-purge",
             "packages/core/src/fenced-batch.ts",
             "        if (gate?.purges !== true) {\n",
-            "        if (gate?.purges === true) {\n",
-            "a delete of a unit's rows is taken under any stamp but the purge's own",
+            "        if (gate?.name === undefined) {\n",
+            "a delete of a unit's rows is taken under the stamp of any statement of the batch, the one the purge writes on its unit's runs included",
         ),
     )
 )
