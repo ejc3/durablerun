@@ -1157,6 +1157,92 @@ describe('after a purge', () => {
       }).toEqual({ exit: exitCode('not-found'), stdout: '', says: true })
     }))
 
+  it('inspect and explain by a key whose task a purge takes between their two reads answer not-found, and say the task the key named is gone', () =>
+    onDb('purge-between-reads', async (db) => {
+      // Four tasks under keys of their own, each completed: one for each command and stream.
+      const keyed: Record<string, string> = {}
+      for (const key of ['inspect-json', 'inspect-text', 'explain-json', 'explain-text']) {
+        const task = await db.store.spawn(QUEUE, 'report', '{}', { idempotencyKey: key })
+        const run = await claimActivated(db, `worker-${key}`, task.taskId)
+        await db.store.complete(QUEUE, run.runId, run.claimToken, '{}')
+        keyed[key] = task.taskId
+      }
+      await aged(db)
+      /** An opener whose store purges the task of `key` straight after the read of its id by its key. */
+      const purgedBetween = (key: string): StoreOpener => {
+        let fired = false
+        return openerWrapping((real) => ({
+          batch: async (label, statements, control) => {
+            const results = await real.batch(label, statements, control)
+            if (label === 'task-id-by-key' && !fired) {
+              fired = true
+              const took = await db
+                .retentionWith(testIdSource(`between-${key}`))
+                .purgeUnit(QUEUE, { taskId: String(keyed[key]), idempotencyKey: key }, POLICY)
+              if (took === null)
+                throw new Error(`the purge between the reads took nothing of ${key}`)
+            }
+            return results
+          },
+        }))
+      }
+      const said = (taskId: string | undefined) =>
+        `the idempotency key named task ${taskId} in queue ${QUEUE}, and the task is gone as of the next read: a purge retained it out between the two reads`
+      const answers: unknown[] = []
+      for (const verb of ['inspect', 'explain']) {
+        const key = `${verb}-json`
+        const run = await runCli(
+          [verb, '--key', key, '--queue', QUEUE, '--json'],
+          db.env,
+          purgedBetween(key),
+        )
+        const answer = JSON.parse(run.stdout) as JsonAnswer
+        answers.push([verb, run.exit, answer.error?.kind, answer.taskId, answer.error?.message])
+      }
+      expect(answers, 'mutation-verdict:behavior:cli-a-read-by-key-says-its-task-is-gone').toEqual(
+        ['inspect', 'explain'].map((verb) => [
+          verb,
+          exitCode('not-found'),
+          'not-found',
+          keyed[`${verb}-json`],
+          said(keyed[`${verb}-json`]),
+        ]),
+      )
+      // In text the refusal prints on stderr, with the exit of a task that is not there.
+      for (const verb of ['inspect', 'explain']) {
+        const key = `${verb}-text`
+        const text = await runCli(
+          [verb, '--key', key, '--queue', QUEUE],
+          db.env,
+          purgedBetween(key),
+        )
+        expect({
+          verb,
+          exit: text.exit,
+          stdout: text.stdout,
+          says: text.stderr.includes('is gone as of the next read'),
+        }).toEqual({ verb, exit: exitCode('not-found'), stdout: '', says: true })
+      }
+      // The neighbours answer as they did. A key that names no task is answered by the
+      // first read, and a task named by its id that is not there is not said to be gone.
+      for (const verb of ['inspect', 'explain']) {
+        const noKey = await runCli(
+          [verb, '--key', 'a-key-no-task-has', '--queue', QUEUE, '--json'],
+          db.env,
+        )
+        const byId = await runCli([verb, 'no-such-task', '--queue', QUEUE, '--json'], db.env)
+        expect({
+          verb,
+          noKey: [noKey.exit, (JSON.parse(noKey.stdout) as JsonAnswer).error?.message],
+          byId: [byId.exit, (JSON.parse(byId.stdout) as JsonAnswer).error?.message],
+        }).toEqual({
+          verb,
+          noKey: [8, `no task in queue ${QUEUE} was spawned under that idempotency key`],
+          byId: [8, `no task no-such-task in queue ${QUEUE}`],
+        })
+      }
+    }))
+
   it('result and inspect, by id and by key, answer not-found for a purged task', () =>
     onDb('purge-then-read', async (db) => {
       const seeded = await seedTasks(db)

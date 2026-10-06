@@ -22077,6 +22077,25 @@ VERDICTS.update(
     }
 )
 
+# A read by key reads twice, and a purge can take the task between the two (DESIGN.md §3.11).
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-a-read-by-key-says-its-task-is-gone",
+            "packages/cli/src/main.ts",
+            "  if (byKey) {\n",
+            "  if (byKey && queue === undefined) {\n",
+            "a key that found a task a purge then took is answered as a task that never was, with nothing of the key having named one",
+        ),
+    )
+)
+VERDICTS["cli-a-read-by-key-says-its-task-is-gone"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge.test.ts",
+    "after a purge inspect and explain by a key whose task a purge takes between their two reads answer not-found, and say the task the key named is gone",
+    "mutation-verdict:behavior:cli-a-read-by-key-says-its-task-is-gone",
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -26012,7 +26031,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1467:
+        if len(MUTATIONS) != 1468:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

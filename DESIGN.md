@@ -5810,7 +5810,14 @@ whose test clock was left set never sees a run come due. `inspect --key` reads t
 `task-id-by-key` finds the task, and `task-facts` then reads it. A task that is gone between
 the two answers exit 8 for a key that found it a moment before. Only the retention purge
 of section 3.12 deletes a task, which `purge --execute` runs, so an `inspect --key` beside
-a purge can find a task by its key and then find it gone.
+a purge can find a task by its key and then find it gone. It then exits 8 and says that the
+key named the task, by its id, and that the task is gone as of the next read, retained out
+between the two. `explain --key` reads the same way and answers the same. A key that names
+no task is answered by the first read, and a task named by its id that is not there is
+answered as one that is not there: no read says whether it ever was. The two reads stay
+two. One batch would add three statement shapes to `task-facts` on every dialect, and what
+an operator needs from the race is to be told which of two things happened, which the two
+reads say.
 
 The events of a snapshot are those of the task's own queue, and the reads name an event by
 its name alone. A run takes its queue from its task's row or from the run it succeeds, a

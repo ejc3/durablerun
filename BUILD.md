@@ -6396,12 +6396,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     PR5.3c, whose `stats` reads the flag in its one read batch by design, and `taskFacts`
     follows it then. PR5.3c did not build it, and its entry says why and names the trigger
     now.
-  - Option for `inspect --key`, not built, with its trigger: find the task by its key and
-    read its facts in one batch. Today they are two reads. Only a purge deletes a task
-    between them, and then a key that found a task answers exit 8, as a CLI case holds
-    for a task purged before either read. PR5.2c2 did not build it, because nothing an
-    operator runs calls a purge yet. Trigger: PR5.2d, whose `purge` verb can run beside
-    an `inspect --key`.
+  - The option for `inspect --key`, settled by PR5.2d and withdrawn: find the task by its
+    key and read its facts in one batch. Its trigger fired, because the `purge` verb can
+    run beside an `inspect --key`. What was built instead is what the two reads say. When
+    a key found a task and the next read finds none, `inspect --key` and `explain --key`
+    exit 8 and say that the key named the task and that the task is gone as of the next
+    read, retained out between the two. A CLI case purges the task between the two reads
+    and holds that answer for both commands, and holds that a key that names no task is
+    answered as before. The one batch was not built: it would add three statement shapes
+    to `task-facts` on three dialects to hold a property no line of an exit test asks
+    for, `explain --key` would read twice whatever was built, and what an operator needs
+    from the race is to be told which of two things happened. Nothing of it is kept as an
+    option.
   - Option for the event's instant, not built, with its trigger: a schema version that sets
     `events.emitted_at_ms` NOT NULL on the three dialects, as version 10 did for `payload`.
     `PERSISTED_TEMPORAL_FIELDS` and `STORE_TABLE_COLUMNS` record the column as nullable

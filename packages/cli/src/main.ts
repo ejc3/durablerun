@@ -557,14 +557,36 @@ function noTaskToRevive(queue: string, taskId: string): Answer {
   )
 }
 
+/** The task a command names, and whether it was named by the key it was spawned under. */
+interface NamedTask {
+  readonly queue: string
+  readonly taskId: string
+  readonly byKey: boolean
+}
+
+/**
+ * The answer for a named task that the read of it does not find. A command that takes a
+ * key reads twice, the task's id by its key and then the task. Only a purge deletes a
+ * task, so a task its key found and the next read does not was retained out between the
+ * two, and the answer says that, with the id the key found. A key that names no task is
+ * answered by the first read and never reaches this. A task named by its id that is not
+ * there is answered as it always was: no read says whether it ever existed.
+ */
+function taskNotThere({ queue, taskId, byKey }: NamedTask): Answer {
+  if (byKey) {
+    return notFound(
+      { queue, taskId },
+      `the idempotency key named task ${taskId} in queue ${queue}, and the task is gone as of the next read: a purge retained it out between the two reads`,
+    )
+  }
+  return noSuchTask(queue, taskId)
+}
+
 /**
  * The task a command names by its id or by the idempotency key it was spawned under, read
  * after the schema window is checked, or the answer that refuses.
  */
-async function namedTask({
-  invocation,
-  store,
-}: Context): Promise<{ readonly queue: string; readonly taskId: string } | Answer> {
+async function namedTask({ invocation, store }: Context): Promise<NamedTask | Answer> {
   const queue = invocation.strings.queue ?? ''
   const key = invocation.strings.key
   const version = await readableVersion(store)
@@ -577,7 +599,7 @@ async function namedTask({
     // The key is a value a user wrote, so the answer does not quote it.
     return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
   }
-  return { queue, taskId }
+  return { queue, taskId, byKey: key !== undefined }
 }
 
 /**
@@ -593,7 +615,7 @@ const inspect: Handler = async (context) => {
   const { queue, taskId } = named
   const { store, reveal } = context
   const facts = await store.operator.taskFacts(queue, taskId)
-  if (facts === null) return noSuchTask(queue, taskId)
+  if (facts === null) return taskNotThere(named)
   // The outcome is rendered as `result` renders it, a refused row included.
   const outcome =
     'result' in facts.outcome
@@ -681,7 +703,7 @@ const explain: Handler = async (context) => {
   if ('exit' in named) return named
   const { queue, taskId } = named
   const found = await explained(context.store, queue, taskId)
-  if (found === null) return noSuchTask(queue, taskId)
+  if (found === null) return taskNotThere(named)
   const { facts, diagnosis } = found
   return {
     exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',
