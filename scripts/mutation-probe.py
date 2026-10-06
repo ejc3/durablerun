@@ -7849,8 +7849,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-keyed-delete-reads-its-keys-by-their-stamp",
             "packages/store-mysql/src/tree.ts",
-            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: RUNS_STAMP_INDEX }\n",
-            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_poll' }\n",
+            "  runs: RUNS_STAMP_INDEX,\n",
+            "  runs: 'runs_poll',\n",
             "a delete reads its keys through the queue's poll index, takes shared locks on the runs other claimers hold, and a second claimer waits for the first",
         ),
         (
@@ -21274,6 +21274,122 @@ VERDICTS.update(
     }
 )
 
+# Retention (DESIGN.md §3.12): a row of a task's unit is deleted by the purge of that unit
+# and by nothing else. One mutation drops each table from the rule, and one bends each
+# condition of it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "purge-alone-deletes-tasks",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['runs', 'checkpoints', 'events']\n",
+            "a batch that is no purge deletes a task row and leaves its runs, its checkpoints and its completion event behind",
+        ),
+        (
+            "purge-alone-deletes-runs",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'checkpoints', 'events']\n",
+            "a batch that is no purge deletes the runs of a task whose row stays, and the task has no run",
+        ),
+        (
+            "purge-alone-deletes-checkpoints",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'events']\n",
+            "a batch that is no purge deletes the checkpoints of a task that can still be revived, and every step then runs again",
+        ),
+        (
+            "purge-alone-deletes-events",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints']\n",
+            "a batch that is no purge deletes a completion event while its task can still be awaited",
+        ),
+        (
+            "purge-rule-reads-deletes",
+            "packages/core/src/fenced-batch.ts",
+            "        tree.kind === 'DeleteQueryNode' &&\n",
+            "        tree.kind !== 'DeleteQueryNode' &&\n",
+            "the rule refuses every update of a task or a run under a stamp that is no purge, and lets every delete through",
+        ),
+        (
+            "purge-rule-spares-other-tables",
+            "packages/core/src/fenced-batch.ts",
+            "        DELETED_BY_A_PURGE_ALONE.some((table) => table === written)\n",
+            "        DELETED_BY_A_PURGE_ALONE.some((table) => table !== written)\n",
+            "a delete of waits under the stamp of a batch that ends or parks a run is refused, so no such batch can be built",
+        ),
+        (
+            "purge-rule-reads-the-gating-statement",
+            "packages/core/src/fenced-batch.ts",
+            "        const gate = this.statements.find((earlier) => earlier.name === gateName)\n",
+            "        const gate = this.statements.find((earlier) => earlier.name !== gateName)\n",
+            "the rule asks another statement of the batch whether it is the purge, and refuses the purge's own deletes",
+        ),
+        (
+            "purge-rule-asks-for-the-purge",
+            "packages/core/src/fenced-batch.ts",
+            "        if (gate?.purges !== true) {\n",
+            "        if (gate?.purges === true) {\n",
+            "a delete of a unit's rows is taken under any stamp but the purge's own",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "purge-alone-deletes-tasks": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of tasks under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-tasks",
+        ),
+        "purge-alone-deletes-runs": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of runs under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-runs",
+        ),
+        "purge-alone-deletes-checkpoints": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of checkpoints under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-checkpoints",
+        ),
+        "purge-alone-deletes-events": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of events under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-events",
+        ),
+        "purge-rule-reads-deletes": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit takes an update of a task under a stamp that is no purge, because the rule reads deletes",
+            "mutation-verdict:construction:purge-rule-reads-deletes",
+        ),
+        "purge-rule-spares-other-tables": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit takes a delete of waits under any stamp, as every batch that ends or parks a run sends one",
+            "mutation-verdict:construction:purge-rule-spares-other-tables",
+        ),
+        "purge-rule-reads-the-gating-statement": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit takes every delete of a unit under the stamp of the purge, in the order the batch sends them",
+            "mutation-verdict:construction:purge-rule-reads-the-gating-statement",
+        ),
+        "purge-rule-asks-for-the-purge": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of a unit's rows under a stamp of the purge's batch that is not the purge's own",
+            "mutation-verdict:construction:purge-rule-asks-for-the-purge",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -25203,7 +25319,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1412:
+        if len(MUTATIONS) != 1420:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

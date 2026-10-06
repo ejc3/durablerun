@@ -16,7 +16,16 @@ import {
   sqlFragment,
   stampValue,
 } from '../src/index.js'
-import { batch, capturingExecutor, statement, withCas } from './tree-fixtures.js'
+import {
+  accepts,
+  batch,
+  capturingExecutor,
+  followOn,
+  refuses,
+  statement,
+  taskFollowOn,
+  withCas,
+} from './tree-fixtures.js'
 
 const HOUR: RetentionPolicy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
 
@@ -121,35 +130,74 @@ const deleteUnder = (table: 'tasks' | 'runs' | 'checkpoints' | 'events' | 'waits
   }
 }
 
+/** What a purge of one unit is given, for a batch built over the fixtures' dialect. */
+const UNIT = {
+  queue: 'q',
+  taskId: 't1',
+  idempotencyKey: 'order-7',
+  parentTaskId: null,
+  windowsMs: { completed: 3_600_000, failed: null, cancelled: 3_600_000 },
+  stampStored: sqlFragment("typeof(fence_at_ms) = 'integer'"),
+}
+
 describe("the rule that only a purge deletes a row of a task's unit", () => {
-  for (const table of ['tasks', 'runs', 'checkpoints', 'events'] as const) {
-    it(`refuses a delete of ${table} under the stamp of a compare-and-set that is no purge`, () => {
-      expect(() =>
-        withCas().followOnTree('gone', statement(deleteUnder(table)), { many: 'a test' }),
-      ).toThrow(
-        new RegExp(
-          `deletes from ${table}, and the stamp that gates it is not the purge of a task's unit`,
-        ),
-      )
-    })
-  }
+  const REFUSED = (table: string) =>
+    new RegExp(
+      `deletes from ${table}, and the stamp that gates it is not the purge of a task's unit`,
+    )
+  const deleteUnderAnotherStamp = (table: Parameters<typeof deleteUnder>[0]) => () =>
+    withCas().followOnTree('gone', statement(deleteUnder(table)), { many: 'a test' })
+
+  it('refuses a delete of tasks under the stamp of a compare-and-set that is no purge', () => {
+    refuses(
+      'mutation-verdict:construction:purge-alone-deletes-tasks',
+      REFUSED('tasks'),
+      deleteUnderAnotherStamp('tasks'),
+    )
+  })
+
+  it('refuses a delete of runs under the stamp of a compare-and-set that is no purge', () => {
+    refuses(
+      'mutation-verdict:construction:purge-alone-deletes-runs',
+      REFUSED('runs'),
+      deleteUnderAnotherStamp('runs'),
+    )
+  })
+
+  it('refuses a delete of checkpoints under the stamp of a compare-and-set that is no purge', () => {
+    refuses(
+      'mutation-verdict:construction:purge-alone-deletes-checkpoints',
+      REFUSED('checkpoints'),
+      deleteUnderAnotherStamp('checkpoints'),
+    )
+  })
+
+  it('refuses a delete of events under the stamp of a compare-and-set that is no purge', () => {
+    refuses(
+      'mutation-verdict:construction:purge-alone-deletes-events',
+      REFUSED('events'),
+      deleteUnderAnotherStamp('events'),
+    )
+  })
+
+  it('takes an update of a task under a stamp that is no purge, because the rule reads deletes', () => {
+    accepts('mutation-verdict:construction:purge-rule-reads-deletes', () =>
+      followOn(taskFollowOn()),
+    )
+  })
 
   it('takes a delete of waits under any stamp, as every batch that ends or parks a run sends one', () => {
-    expect(() =>
-      withCas().followOnTree('gone', statement(deleteUnder('waits')), { many: 'a test' }),
-    ).not.toThrow()
+    accepts(
+      'mutation-verdict:construction:purge-rule-spares-other-tables',
+      deleteUnderAnotherStamp('waits'),
+    )
   })
 
   it('takes every delete of a unit under the stamp of the purge, in the order the batch sends them', async () => {
     const b = batch('purge-unit')
-    addUnitPurge(b, {
-      queue: 'q',
-      taskId: 't1',
-      idempotencyKey: 'order-7',
-      parentTaskId: null,
-      windowsMs: { completed: 3_600_000, failed: null, cancelled: 3_600_000 },
-      stampStored: sqlFragment("typeof(fence_at_ms) = 'integer'"),
-    })
+    accepts('mutation-verdict:construction:purge-rule-reads-the-gating-statement', () =>
+      addUnitPurge(b, UNIT),
+    )
     const { captured, executor } = capturingExecutor(1)
     await b.run(executor).catch(() => undefined)
     // Each statement by its verb and the table it writes, or by its verb alone for a read.
@@ -167,6 +215,35 @@ describe("the rule that only a purge deletes a row of a task's unit", () => {
       'delete from events',
       'delete from tasks',
     ])
+  })
+
+  it("refuses a delete of a unit's rows under a stamp of the purge's batch that is not the purge's own", () => {
+    // The purge stamps the runs of its unit so that their waits can be found. That stamp
+    // is a follow-on's, and nothing of the unit is deleted under it but the waits.
+    const b = batch('purge-unit')
+    addUnitPurge(b, UNIT)
+    refuses(
+      'mutation-verdict:construction:purge-rule-asks-for-the-purge',
+      REFUSED('checkpoints'),
+      () =>
+        b.followOnTree(
+          'more',
+          statement(
+            db
+              .deleteFrom('checkpoints')
+              .where(
+                'task_id',
+                'in',
+                db
+                  .selectFrom('runs as f')
+                  .select('f.task_id')
+                  .where('f.task_id', '=', 't1')
+                  .where('f.fence_stamp', '=', fenceValue('runs')),
+              ),
+          ),
+          { many: 'a test' },
+        ),
+    )
   })
 })
 
