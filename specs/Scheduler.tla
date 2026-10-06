@@ -358,6 +358,9 @@
 \*   'purge-candidates' [read] -- retention's read of a queue's ended tasks that
 \*     are a window old, oldest first; a candidate decides nothing, the barrier
 \*     is held by 'purge-unit', and no engine actor sends it
+\*   'purge-admission' [read] -- retention's read of what each condition of the
+\*     barrier says of one unit now, by the predicates 'purge-unit' holds; it
+\*     decides nothing, and no engine actor sends it
 \*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
 \*   'migrate:version' [setup] -- infrastructure, not protocol
 \*   'admin:set-fake-now' [setup] -- infrastructure, not protocol

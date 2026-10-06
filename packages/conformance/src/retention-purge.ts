@@ -128,6 +128,8 @@ async function bentPurge(
   keptBy: readonly KeptBy[]
   purged: boolean | string
   differences: readonly string[]
+  /** Each condition a read of the barrier answers otherwise than the model reads it. */
+  saysOtherwise: readonly string[]
 }> {
   return withFixture(makeFixture, `bent ${name}`, async (f) => {
     const built = await buildCell(f, cell, 'c')
@@ -135,16 +137,25 @@ async function bentPurge(
     const target = (await bend(f, built)) ?? built.target
     const before = await snapshot(f.raw)
     const oracle = purgeOracle(before, built.purgeAtMs, built.queue, target, policy)
+    const retention = f.retentionOver(f.raw)
+    const said = await retention.purgeAdmission(built.queue, target, policy)
     // A purge that throws has refused its own batch after the fact, by the count of what
     // the unit held. What it threw is the answer the case compares.
-    const purged = await f
-      .retentionOver(f.raw)
+    const purged = await retention
       .purgeUnit(built.queue, target, policy)
       .then((answer) => answer !== null, describeFailure)
     return {
       keptBy: oracle.keptBy,
       purged,
       differences: dumpDifferences(oracle.after, await snapshot(f.raw)),
+      saysOtherwise:
+        said === null || oracle.holds === null
+          ? [`the read answered ${said === null ? 'no task' : 'a task'}`]
+          : Object.entries(oracle.holds)
+              .filter(
+                ([condition, holds]) => said.holds[condition as keyof typeof said.holds] !== holds,
+              )
+              .map(([condition, holds]) => `${condition}: the model says ${holds}`),
     }
   })
 }
@@ -317,7 +328,12 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
   })
 
   describe(`what keeps a unit that no engine path leaves [${dialect}]`, () => {
-    const kept = (...keptBy: KeptBy[]) => ({ keptBy, purged: false, differences: [] })
+    const kept = (...keptBy: KeptBy[]) => ({
+      keptBy,
+      purged: false,
+      differences: [],
+      saysOtherwise: [],
+    })
 
     it('a failed unit is kept under a policy that names no window for failed tasks', async () => {
       expect(
@@ -448,7 +464,42 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           },
         ),
         'mutation-verdict:behavior:purge-is-not-kept-by-its-own-run',
-      ).toEqual({ keptBy: [], purged: true, differences: [] })
+      ).toEqual({ keptBy: [], purged: true, differences: [], saysOtherwise: [] })
+    })
+  })
+
+  describe(`what a read of the barrier says of a unit [${dialect}]`, () => {
+    it('answers each condition by a flag of its own: a child a window old under a live parent is kept by its parent alone, under a longer window by its age too, and a task that is not there has no answer', async () => {
+      await withFixture(makeFixture, 'purge-admission', async (f) => {
+        const built = await buildCell(f, keptByItsParent('live', "the child's"), 'c')
+        await f.admin.setFakeNowEpochMs(built.purgeAtMs)
+        const retention = f.retentionOver(f.raw)
+        /** The conditions the read answers as not held, in the barrier's order, or null for no answer. */
+        const notHeld = async (unit: PurgeUnitTarget, policy: RetentionPolicy) => {
+          const said = await retention.purgeAdmission(built.queue, unit, policy)
+          return said === null
+            ? null
+            : Object.entries(said.holds)
+                .filter(([, holds]) => !holds)
+                .map(([condition]) => condition)
+        }
+        const twoHours = { completedSeconds: 7_200, cancelledSeconds: 7_200, failedSeconds: 7_200 }
+        expect(
+          {
+            aWindowOld: await notHeld(built.target, GRID_POLICY),
+            underALongerWindow: await notHeld(built.target, twoHours),
+            notThere: await notHeld({ taskId: 'no-such-task' }, GRID_POLICY),
+            // The read wrote nothing: the unit is as it was, and the purge keeps it.
+            purged: await retention.purgeUnit(built.queue, built.target, GRID_POLICY),
+          },
+          'mutation-verdict:behavior:purge-admission-reads-each-condition-as-its-own-flag',
+        ).toEqual({
+          aWindowOld: ['parentCannotRunAgain'],
+          underALongerWindow: ['endedAWindowAgo', 'parentCannotRunAgain'],
+          notThere: null,
+          purged: null,
+        })
+      })
     })
   })
 
@@ -569,6 +620,14 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
               ['q', { taskId: 't', idempotencyKey: bad }, CONTEST_POLICY],
             ],
           },
+          purgeAdmission: {
+            args: ['q', { taskId: 't', idempotencyKey: 'k' }, CONTEST_POLICY],
+            places: (bad) => [
+              [bad, { taskId: 't' }, CONTEST_POLICY],
+              ['q', { taskId: bad }, CONTEST_POLICY],
+              ['q', { taskId: 't', idempotencyKey: bad }, CONTEST_POLICY],
+            ],
+          },
         }
         const accepted: string[] = []
         let places = 0
@@ -594,14 +653,15 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
         }
         expect(accepted).toEqual([])
         // Every string the table names is one of the places asked: a queue in each method,
-        // the task of a cursor, and the task and the key of a unit.
+        // the task of a cursor, and the task and the key of a unit, for the purge of one and
+        // for the read of what the barrier says of one.
         const named = (place: unknown): number =>
           typeof place === 'string'
             ? 1
             : place !== null && typeof place === 'object'
               ? Object.values(place).reduce((count: number, inner) => count + named(inner), 0)
               : 0
-        expect({ places, named: named(RETENTION_STRINGS) }).toEqual({ places: 5, named: 5 })
+        expect({ places, named: named(RETENTION_STRINGS) }).toEqual({ places: 8, named: 8 })
       })
     })
 
@@ -631,6 +691,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             { limit: 1, after: { endedAtMs: 0, taskId: 't' } },
           ],
           purgeUnit: () => ['q', { taskId: 't', idempotencyKey: 'k' }, { ...everyState }],
+          purgeAdmission: () => ['q', { taskId: 't', idempotencyKey: 'k' }, { ...everyState }],
         }
         /** Every member of an argument, and of an object a member holds, by its path. */
         const membersOf = (value: unknown, path: readonly string[]): string[][] =>
@@ -689,15 +750,15 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             if (bound.includes(second)) secondBound.push(where)
           }
         }
-        // Three members are strings the table names: the task and the key of a unit, and
-        // the task of a cursor.
+        // Five members are strings the table names: the task of a cursor, and the task and
+        // the key of a unit, for each of the two methods that name one.
         expect(
           { readAgain, secondBound, named },
           'mutation-verdict:behavior:retention-port-reads-each-member-once',
         ).toEqual({
           readAgain: [],
           secondBound: [],
-          named: 3,
+          named: 5,
         })
       })
     })
@@ -818,16 +879,19 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
         }
         const accepted: string[] = []
         for (const [what, policy] of Object.entries(policies)) {
-          const calls = [
-            () => retention.purgeCandidates('q', policy as RetentionPolicy, { limit: 1 }),
-            () => retention.purgeUnit('q', { taskId: 't' }, policy as RetentionPolicy),
-          ]
-          for (const [index, call] of calls.entries()) {
+          const calls: Readonly<Record<RetentionMethod, () => Promise<unknown>>> = {
+            purgeCandidates: () =>
+              retention.purgeCandidates('q', policy as RetentionPolicy, { limit: 1 }),
+            purgeUnit: () => retention.purgeUnit('q', { taskId: 't' }, policy as RetentionPolicy),
+            purgeAdmission: () =>
+              retention.purgeAdmission('q', { taskId: 't' }, policy as RetentionPolicy),
+          }
+          for (const [method, call] of Object.entries(calls)) {
             const refused = await call().then(
               () => false,
               (error: unknown) => error instanceof PortRefusalError,
             )
-            if (!refused) accepted.push(`${index === 0 ? 'purgeCandidates' : 'purgeUnit'}: ${what}`)
+            if (!refused) accepted.push(`${method}: ${what}`)
           }
         }
         expect({ accepted, sent: recorder.batches.map((batch) => batch.label) }).toEqual({

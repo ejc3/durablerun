@@ -21419,7 +21419,7 @@ MUTATION_SPECS.extend(
         (
             "purge-keeps-the-child-of-a-live-parent",
             "packages/core/src/statements/purge.ts",
-            "              parent('parent.state', 'in', [...LIVE_STATES]),\n",
+            "              parent('parent.state', 'in', LIVE_STATE_LITERALS),\n",
             "              parent('parent.state', '=', literalValue('failed')),\n",
             "a purge takes the child of a parent that is live, and the parent's replay of its spawn creates a second child",
         ),
@@ -21427,7 +21427,7 @@ MUTATION_SPECS.extend(
             "purge-keeps-the-child-of-a-failed-parent",
             "packages/core/src/statements/purge.ts",
             "              parent('parent.state', '=', literalValue('failed')),\n",
-            "              parent('parent.state', 'in', [...LIVE_STATES]),\n",
+            "              parent('parent.state', 'in', LIVE_STATE_LITERALS),\n",
             "a purge takes the child of a failed parent, and a revival of the parent spawns a second child",
         ),
         (
@@ -21510,7 +21510,7 @@ MUTATION_SPECS.extend(
         (
             "purge-keeps-a-unit-with-a-live-run",
             "packages/core/src/statements/purge.ts",
-            "          .where('live.state', 'in', [...LIVE_STATES]),\n",
+            "          .where('live.state', 'in', LIVE_STATE_LITERALS),\n",
             "          .where('live.task_id', '<>', binds.taskId),\n",
             "a purge takes a unit one of whose runs is live, and a worker's write then finds no run",
         ),
@@ -21847,6 +21847,27 @@ VERDICTS.update(
             "packages/conformance/src/retention-soak.ts",
         ),
     }
+)
+
+# The read of what the barrier says of one unit (DESIGN.md §3.12): each condition is a flag
+# of its own, built by the function the purge's compare-and-set builds it by.
+MUTATION_SPECS.extend(
+    (
+        (
+            "purge-admission-reads-each-condition-as-its-own-flag",
+            "packages/core/src/statements/purge.ts",
+            "          .when(holds(ofTheTask, binds))\n",
+            "          .when(PURGE_BARRIER.endedAWindowAgo(ofTheTask, binds))\n",
+            "the read of the barrier answers every condition by the flag of the age, so a unit its parent keeps reads as one nothing keeps",
+        ),
+    )
+)
+VERDICTS["purge-admission-reads-each-condition-as-its-own-flag"] = ExpectedVerdict(
+    "behavior",
+    "packages/conformance/test/libsql.test.ts",
+    "what a read of the barrier says of a unit [libsql] answers each condition by a flag of its own: a child a window old under a live parent is kept by its parent alone, under a longer window by its age too, and a task that is not there has no answer",
+    "mutation-verdict:behavior:purge-admission-reads-each-condition-as-its-own-flag",
+    "packages/conformance/src/retention-purge.ts",
 )
 
 MUTATIONS = [
@@ -25778,7 +25799,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1451:
+        if len(MUTATIONS) != 1452:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

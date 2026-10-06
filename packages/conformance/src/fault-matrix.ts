@@ -112,6 +112,7 @@ export const MATRIX_READ_LABELS = [
   'event-payload',
   'task-admission',
   'purge-candidates',
+  'purge-admission',
 ] as const
 
 /** Fixture plumbing that runs outside any simulated actor. */
@@ -927,6 +928,8 @@ export async function runFaultMatrixCase(
         retention.purgeCandidates(Q, MATRIX_RETENTION_POLICY, { limit: 50 }),
       )
       for (const candidate of listed?.candidates ?? []) {
+        // What the barrier says of the unit is read, and the unit is then purged.
+        await go(() => retention.purgeAdmission(Q, candidate, MATRIX_RETENTION_POLICY))
         await go(() => retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
       }
     })

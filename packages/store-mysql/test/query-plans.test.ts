@@ -1367,7 +1367,7 @@ describe('retention beside a history of ended tasks, on MySQL', () => {
     // Every batch is measured from inside its own transaction.
     const db = await openMysqlTestDb({ idNamespace: 'plan-retention', nowMs: 1_000_000 })
     try {
-      const labels = ['purge-candidates', 'purge-unit']
+      const labels = ['purge-candidates', 'purge-admission', 'purge-unit']
       const store = new MysqlSchedulerStore(db.raw, db.ids)
       const task = await store.spawn(Q, 'job', '{}', { idempotencyKey: 'order-7' })
       const [run] = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
@@ -1400,11 +1400,10 @@ describe('retention beside a history of ended tasks, on MySQL', () => {
       const purges = retention(executor, db.ids)
       const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
       const listed = await purges.purgeCandidates(Q, policy, { limit: 10 })
-      const purged = await purges.purgeUnit(
-        Q,
-        { taskId: task.taskId, idempotencyKey: 'order-7' },
-        policy,
-      )
+      const unit = { taskId: task.taskId, idempotencyKey: 'order-7' }
+      // What the barrier says of the unit is read first, by the conditions the purge holds.
+      const said = await purges.purgeAdmission(Q, unit, policy)
+      const purged = await purges.purgeUnit(Q, unit, policy)
       // Each entry is the rows a label's batch walked beside the HISTORY ended units.
       // Measured on MySQL 8.4: the read of ten candidates walked ten rows, and the purge
       // of one unit 36.
@@ -1412,6 +1411,7 @@ describe('retention beside a history of ended tasks, on MySQL', () => {
         {
           listed: listed.candidates.length,
           more: listed.next !== null,
+          everyConditionHolds: Object.values(said?.holds ?? { read: false }).every(Boolean),
           purged: purged?.rows,
           walkedFew: Object.fromEntries(
             labels.map((label) => [label, Number(walked.get(label)) < 50]),
@@ -1421,8 +1421,9 @@ describe('retention beside a history of ended tasks, on MySQL', () => {
       ).toEqual({
         listed: 10,
         more: true,
+        everyConditionHolds: true,
         purged: { tasks: 1, runs: 1, checkpoints: 1, waits: 0, events: 1 },
-        walkedFew: { 'purge-candidates': true, 'purge-unit': true },
+        walkedFew: { 'purge-candidates': true, 'purge-admission': true, 'purge-unit': true },
       })
     } finally {
       await db.close()

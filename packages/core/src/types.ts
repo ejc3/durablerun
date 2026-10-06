@@ -742,6 +742,34 @@ export interface PurgeCandidates {
   readonly next: PurgeCursor | null
 }
 
+/**
+ * The conditions of the barrier (DESIGN.md §3.12), by name, in the order the purge's
+ * compare-and-set holds them. A purge takes a unit only when every one holds. The first
+ * five are the model's B1 to B5, B1 as two, and the last three hold the unit to what the
+ * batch then deletes.
+ */
+export const PURGE_BARRIER_CONDITIONS = [
+  'endedAWindowAgo',
+  'stampInRange',
+  'noLiveRun',
+  'noRunHoldsTheOutcome',
+  'noWaitOnTheOutcome',
+  'parentCannotRunAgain',
+  'spawnedUnderThisKey',
+  'ownsEveryRun',
+  'withinTheCheckpointCap',
+] as const
+export type PurgeBarrierCondition = (typeof PURGE_BARRIER_CONDITIONS)[number]
+
+/**
+ * What the barrier says of one unit, as of one read: whether each of its conditions holds.
+ * It is a report and decides nothing. A purge reads every condition again, inside the
+ * statement that deletes.
+ */
+export interface PurgeAdmission {
+  readonly holds: Readonly<Record<PurgeBarrierCondition, boolean>>
+}
+
 /** A unit a purge deleted: its task, and how many rows of each table went with it. */
 export interface PurgedUnit {
   readonly taskId: string
