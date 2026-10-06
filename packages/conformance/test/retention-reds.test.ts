@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { MATRIX_WRITE_LABELS } from '../src/fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from '../src/index.js'
 import { ENDED_TASK_SHAPE_CELLS, POISON_INVOCATION } from '../src/poison-matrix.js'
+import { type GridCell, runGridCells } from '../src/retention-grid.js'
 import {
   endedChildReplayCase,
   endingStampCase,
@@ -189,4 +190,78 @@ describe('the cell of each write label over an ended task can fail', () => {
       })
     }
   }
+})
+
+/**
+ * The purge's batch with one statement rewritten below the store, as `bent` rewrites what
+ * follows a batch. Core's build rules refuse a delete that names no key or no stamp, so a
+ * purge that lost either can only be shown where the statements reach the database.
+ */
+function purgingWith(rewrite: (statement: SqlStatement) => SqlStatement): StoreFixtureFactory {
+  return async (seed, options) => {
+    const f = await makeLibsqlFixture(seed, options)
+    return {
+      ...f,
+      retentionOver: (db) =>
+        f.retentionOver({
+          batch: (label, statements, control) =>
+            db.batch(label, label === 'purge-unit' ? statements.map(rewrite) : statements, control),
+        }),
+    }
+  }
+}
+
+const unit = (unitState: GridCell['unit'], age: GridCell['age']): GridCell => ({
+  unit: unitState,
+  parent: 'none',
+  parentQueue: "the child's",
+  holder: 'none',
+  age,
+})
+
+describe('the grid can fail: a purge whose delete lost its key or its stamp', () => {
+  it('a delete of checkpoints that lost its key takes the checkpoints of a unit the purge was not sent for, and the count of what the unit held refuses it', async () => {
+    // The first cell's unit is younger than its window and is kept, with its checkpoint.
+    // The second cell's purge wins, and its delete of checkpoints names no task.
+    const lostItsKey = purgingWith((statement) =>
+      statement.sql.startsWith('delete from "checkpoints"')
+        ? {
+            ...statement,
+            sql: 'DELETE FROM checkpoints WHERE EXISTS (SELECT 1 FROM tasks f WHERE f.fence_stamp = ?)',
+            args: statement.args.slice(-1),
+          }
+        : statement,
+    )
+    await expect(
+      runGridCells(lostItsKey, 'lost key', [unit('completed', -1), unit('completed', 1)]),
+    ).rejects.toThrow(
+      /the batch deleted 2 rows of checkpoints, and the unit its compare-and-set read held 1/,
+    )
+  })
+
+  it('a delete of runs that lost its stamp takes the runs of a unit the barrier keeps, and the dump and the row checks say so', async () => {
+    // The unit is younger than its window, so the compare-and-set matches nothing. A delete
+    // keyed on the task alone runs all the same, and the purge answers that it took nothing.
+    const lostItsStamp = purgingWith((statement) => {
+      if (!statement.sql.startsWith('delete from "runs"')) return statement
+      const { skipUnlessWrote: _gate, ...ungated } = statement
+      return {
+        ...ungated,
+        sql: 'DELETE FROM runs WHERE task_id = ?',
+        args: statement.args.slice(0, 1),
+      }
+    })
+    const { observed, expected } = await runGridCells(lostItsStamp, 'lost stamp', [
+      unit('completed', -1),
+    ])
+    const [cell] = observed
+    expect({
+      purged: cell?.purged,
+      lostARun: cell?.differences.some((difference) => difference.startsWith('runs lost ')),
+      namedByTheRowChecks: cell?.violations.after.some((violation) =>
+        violation.startsWith('task-without-a-run: '),
+      ),
+    }).toEqual({ purged: null, lostARun: true, namedByTheRowChecks: true })
+    expect(observed).not.toEqual(expected)
+  })
 })
