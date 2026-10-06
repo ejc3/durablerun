@@ -73,7 +73,10 @@ type PurgeAnswer = JsonAnswer & {
   readonly wouldPurge?: readonly Unit[]
   readonly kept?: readonly Unit[]
   readonly gone?: readonly Unit[]
+  readonly outcomeNotKnown?: readonly Unit[]
+  readonly examined?: number
   readonly more?: boolean
+  readonly resumeAfter?: string | null
   readonly finished?: boolean
   readonly stoppedAt?: { readonly call: string; readonly taskId?: string }
 }
@@ -1223,4 +1226,228 @@ describe('after a purge', () => {
       }
       expect(exits).toEqual([8, 8, 8])
     }))
+})
+
+describe('one invocation is one pass, within its bounds', () => {
+  /** A parent of one attempt that failed a second after its child completed, both then years old. */
+  async function childOfAFailedParent(db: CliDb) {
+    const parent = await db.store.spawn(QUEUE, 'parent', '{}', { maxAttempts: 1 })
+    const running = await claimActivated(db, 'failing-parent', parent.taskId)
+    const child = await db.store.spawn(QUEUE, 'child', '{}', {
+      childOf: {
+        parentQueue: QUEUE,
+        parentTaskId: parent.taskId,
+        runId: running.runId,
+        claimToken: running.claimToken,
+        replayKey: 'child#0',
+      },
+    })
+    const worked = await claimActivated(db, 'its-child', child.taskId)
+    await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
+    await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
+    await db.store.fail(QUEUE, running.runId, running.claimToken, '{"name":"E"}', null)
+    await aged(db)
+    return { parent: parent.taskId, child: child.taskId }
+  }
+
+  it('takes a unit that a unit it took had kept: the child of a failed parent goes with its parent, and a repeat takes nothing', () =>
+    onDb('purge-pass-failed-parent', async (db) => {
+      const { parent, child } = await childOfAFailedParent(db)
+      const dry = await purge(db, PURGE_EVERY_STATE)
+      const first = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
+      const left = await tasksLeft(db)
+      const again = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
+      const said = ({ answer }: { answer: PurgeAnswer }) => ({
+        taken: idsOf(answer.purged ?? answer.wouldPurge),
+        kept: (answer.kept ?? []).map(({ taskId, reasons }) => [taskId, reasons]),
+        more: answer.more,
+        finished: answer.finished,
+      })
+      expect({ dry: said(dry), first: said(first), left, again: said(again) }).toEqual({
+        // A dry run deletes nothing, so the child is read under a parent that is still there.
+        dry: {
+          taken: [parent],
+          kept: [[child, ['parent-can-run-again']]],
+          more: false,
+          finished: true,
+        },
+        // The child is listed first and kept, its parent goes, and the child is tried again.
+        first: { taken: [parent, child], kept: [], more: false, finished: true },
+        left: [],
+        again: { taken: [], kept: [], more: false, finished: true },
+      })
+    }))
+
+  it('sends one listing, a purge for each candidate it reaches and a read of the barrier for each it keeps: 30 kept children in front of two tasks, at a limit of 1 and of 100', async () => {
+    const reached: unknown[] = []
+    for (const limit of [1, 100]) {
+      await onDb(`purge-pass-kept-${limit}`, async (db) => {
+        await childrenOfARunningParent(db, 30)
+        await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
+        const behind = await completedTasks(db, 2, 'job')
+        await aged(db)
+        const counted = async (flags: readonly string[]) => {
+          const recorded = recordingOpener()
+          const { exit, answer } = await purge(db, flags, recorded.opener)
+          const labels = recorded.sent().map((batch) => batch.label)
+          const count = (label: string) => labels.filter((sent) => sent === label).length
+          return {
+            exit,
+            purged: idsOf(answer.purged),
+            kept: (answer.kept ?? []).length,
+            examined: answer.examined,
+            more: answer.more,
+            resumes: typeof answer.resumeAfter === 'string',
+            listings: count('purge-candidates'),
+            purges: count('purge-unit'),
+            barrierReads: count('purge-admission'),
+            resumeAfter: answer.resumeAfter,
+          }
+        }
+        const { resumeAfter, ...first } = await counted([
+          ...PURGE_WINDOWS,
+          '--limit',
+          String(limit),
+          '--execute',
+        ])
+        // Where the first stopped with more behind it, the next begins: it reaches what
+        // stands behind the kept units without reading one of them again.
+        const { resumeAfter: _next, ...resumed } =
+          typeof resumeAfter === 'string'
+            ? await counted([...PURGE_WINDOWS, '--after', resumeAfter, '--execute'])
+            : { resumeAfter: null }
+        reached.push({ limit, behind: behind.length, first, resumed })
+      })
+    }
+    const [one, two] = [reached[0], reached[1]] as {
+      first: { purged: string[] }
+      resumed: { purged?: string[] }
+    }[]
+    expect(reached).toEqual([
+      {
+        limit: 1,
+        behind: 2,
+        first: {
+          exit: 0,
+          purged: one?.first.purged,
+          kept: 30,
+          examined: 31,
+          more: true,
+          resumes: true,
+          listings: 1,
+          purges: 31,
+          barrierReads: 30,
+        },
+        resumed: {
+          exit: 0,
+          purged: one?.resumed.purged,
+          kept: 0,
+          examined: 1,
+          more: false,
+          resumes: false,
+          listings: 1,
+          purges: 1,
+          barrierReads: 0,
+        },
+      },
+      {
+        limit: 100,
+        behind: 2,
+        first: {
+          exit: 0,
+          purged: two?.first.purged,
+          kept: 30,
+          examined: 32,
+          more: false,
+          resumes: false,
+          listings: 1,
+          purges: 32,
+          barrierReads: 30,
+        },
+        resumed: {},
+      },
+    ])
+    expect([
+      one?.first.purged.length,
+      one?.resumed.purged?.length,
+      two?.first.purged.length,
+    ]).toEqual([1, 1, 2])
+  }, 120_000)
+})
+
+describe('a purge whose answer was lost', () => {
+  it('prints the unit whole, with the digest of its key, as one whose outcome is not known, and a repeat says which it was', async () => {
+    for (const fault of ['crash-before', 'crash-after'] as const) {
+      await onDb(`purge-in-doubt-${fault}`, async (db) => {
+        const seeded = await seedTasks(db)
+        await aged(db)
+        const lost = faultAt({ label: 'purge-unit', occurrence: 1 }, fault)
+        const { exit, answer } = await purge(db, [...PURGE_EVERY_STATE, '--execute'], lost)
+        const there = (await tasksLeft(db)).includes(seeded.completed)
+        const again = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
+        expect({
+          fault,
+          exit,
+          purged: idsOf(answer.purged),
+          notKnown: (answer.outcomeNotKnown ?? []).map((unit) => [
+            unit.taskId,
+            unit.state,
+            unit.idempotencyKeySha256,
+          ]),
+          finished: answer.finished,
+          stoppedAt: answer.stoppedAt,
+          there,
+          // A repeat lists the unit again if it stands, and does not if it went.
+          againPurgedIt: idsOf(again.answer.purged).includes(seeded.completed),
+        }).toEqual({
+          fault,
+          exit: exitCode('unavailable'),
+          purged: [],
+          notKnown: [[seeded.completed, 'completed', sha256(COMPLETED_KEY)]],
+          finished: false,
+          stoppedAt: { call: 'purge-unit', taskId: seeded.completed },
+          there: fault === 'crash-before',
+          againPurgedIt: fault === 'crash-before',
+        })
+      })
+    }
+    await onDb('purge-in-doubt-text', async (db) => {
+      await seedTasks(db)
+      await aged(db)
+      const text = await purgeText(
+        db,
+        [...PURGE_EVERY_STATE, '--execute'],
+        faultAt({ label: 'purge-unit', occurrence: 1 }, 'crash-after'),
+      )
+      expect({
+        exit: text.exit,
+        stderr: text.stderr,
+        printsTheDigest: text.stdout.includes(sha256(COMPLETED_KEY)),
+      }).toEqual({ exit: exitCode('unavailable'), stderr: '', printsTheDigest: true })
+    })
+  })
+})
+
+describe('an outage with no unit in the report', () => {
+  it('prints as any failure does: in text on stderr with nothing on stdout, and with --json as the failure alone', async () => {
+    const atTheFirstListing = () =>
+      faultAt({ label: 'purge-candidates', occurrence: 1 }, 'crash-before')
+    await onDb('purge-empty-outage', async (db) => {
+      await seedTasks(db)
+      await aged(db)
+      const text = await purgeText(db, [...PURGE_EVERY_STATE, '--execute'], atTheFirstListing())
+      const json = await purge(db, [...PURGE_EVERY_STATE, '--execute'], atTheFirstListing())
+      expect({
+        text: [text.exit, text.stdout, text.stderr.includes('store-unavailable')],
+        json: [json.exit, Object.keys(json.answer).sort(), json.answer.error?.kind],
+      }).toEqual({
+        text: [exitCode('unavailable'), '', true],
+        json: [
+          exitCode('unavailable'),
+          ['command', 'dialect', 'error', 'exit'],
+          'store-unavailable',
+        ],
+      })
+    })
+  })
 })
