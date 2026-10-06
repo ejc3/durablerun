@@ -23,7 +23,7 @@ describe('migrate on libSQL', () => {
       expect(JSON.parse(run.stdout)).toMatchObject({
         error: { kind: 'confirmation-required' },
         from: 9,
-        wouldApply: [10, 11],
+        wouldApply: [10, 11, 12],
       })
       expect(run.stderr).toContain('version 10')
       // In text the refusal prints on stderr, though it names the versions it would apply.
@@ -32,7 +32,7 @@ describe('migrate on libSQL', () => {
         exit: text.exit,
         stdout: text.stdout,
         from: text.stderr.includes('from: 9\n'),
-        wouldApply: text.stderr.includes('wouldApply: 10, 11\n'),
+        wouldApply: text.stderr.includes('wouldApply: 10, 11, 12\n'),
       }).toEqual({ exit: 2, stdout: '', from: true, wouldApply: true })
     } finally {
       await db.close()

@@ -3352,11 +3352,16 @@ are load-bearing):
    its statements are the same statements, and a newer build on a database
    still at version 6 behaves as every build did before it. That is true of
    version 7, which changes no statement the engine sends, of version 9,
-   whose index serves statements that are valid without it, and of version 11,
-   whose index only an operator's read uses (section 3.11). It is not true of
+   whose index serves statements that are valid without it, of version 11,
+   whose index only an operator's read uses (section 3.11), and of version 12
+   on libSQL and PostgreSQL, whose two indexes only retention's statements
+   read (section 3.12). It is not true of
    MySQL's version 8: a newer build's keyed deletes name the index that
    version adds, so there the database is migrated first, as the note on
-   version 8 among the MySQL notes says. An older build
+   version 8 among the MySQL notes says. MySQL's version 12 is like it for a
+   purge alone: the keyed deletes of a purge name `tasks_stamp`, which that
+   version adds, so a database is migrated to it before any build purges on
+   it, and every other statement runs without it. An older build
    that starts afterwards fails in `migrate()` with `SchemaMismatchError`, as
    it does after every migration. From this change on, on every dialect, that
    message says a newer build migrated the database, that nothing needs
@@ -6566,7 +6571,7 @@ exits 5 outside it and prints the recorded version and the versions the build re
 libSQL that window starts at version 5, and a verb may write there because its twin passes
 there: the test runs every verb's twin at each version from 5 to the build's. The verbs it
 runs are the write commands of the command table, so a verb that joins the table joins the
-test, and one whose twin fails at a version fails by name. Versions 6 to 11 add indexes,
+test, and one whose twin fails at a version fails by name. Versions 6 to 12 add indexes,
 empty versions and triggers, and no statement a drive verb sends names a column or an index
 a later version adds. PostgreSQL and MySQL read their own version alone, so a drive verb
 exits 5 on an older database of either. No command has a second path for an older schema.
@@ -6825,9 +6830,9 @@ depend on them can be built.
   and every delete is keyed on the task row's stamp, so the row goes last. B3
   reads the runs of a queue by `wake_event` in any state. MySQL's `runs_woken
   (queue, wake_event, state)` covers every state, but libSQL's and PostgreSQL's
-  `runs_woken` is partial to pending runs, so PR5.2c2's schema version 12 adds
-  `runs_wake_holders (queue, wake_event) WHERE wake_event IS NOT NULL` on those
-  two, without which the plan check refuses the read. The batch takes the
+  `runs_woken` is partial to pending runs, so schema version 12 adds
+  `runs_wake_holders`, an index of the runs that hold a payload, on those two
+  (below), without which the plan check refuses the read. The batch takes the
   completion event's lock through its lock coordinate,
   as a terminal batch does, which makes it atomic and mutually exclusive with
   every await, emit, and terminal batch of that event. It deletes the unit's
@@ -6861,6 +6866,67 @@ depend on them can be built.
   claim, which wakes A with B's outcome, and A is cancelled before its claim.
   Each cancelled run then holds the other task's outcome. BUILD.md records the
   remedy as an option with its trigger.
+
+**Schema version 12.** Two of retention's reads had no index to go by, and on MySQL its
+deletes had none to find their keys by. The version adds indexes and nothing else.
+
+- `tasks_terminal` on `tasks (queue, state, fence_at_ms)` hands the read of what a purge may
+  take one state's ended tasks, oldest first. On libSQL and PostgreSQL it is partial: `WHERE
+  state IN ('completed','failed','cancelled') AND fence_at_ms IS NOT NULL`. A task enters it
+  when it ends and leaves it when it is revived or purged, so no write of a live task
+  touches it. On MySQL, which has no partial index, it holds every task, and a task moves
+  in it at every write of its row, because every such write stamps the row.
+- `runs_wake_holders` on `runs (queue, wake_event)`, on libSQL and PostgreSQL, is partial to
+  the runs that hold an event's payload: `WHERE wake_event IS NOT NULL AND event_payload IS
+  NOT NULL`. That is the set B3 asks about. A run enters the index when an event wakes it
+  with a payload and leaves it when its worker completes it or suspends it again. A run
+  that parks on an event holds no payload and never enters it. The second term also does
+  what the second term of `tasks_live` does: no statement the engine sends tests a run's
+  payload for NULL, so none is planned through this index, and the lookup of the runs an
+  event just woke stays on `runs_woken`. MySQL's `runs_woken (queue, wake_event, state)`
+  already holds every state, so MySQL adds nothing for B3.
+- `tasks_stamp` on `tasks (fence_stamp)`, on MySQL alone, is for `tasks` what version 8's
+  `runs_stamp` is for `runs`: a keyed delete finds its keys by their stamp, and a purge's
+  deletes take their keys from the task row the purge stamped. A database is migrated to
+  this version before any build purges on it, because those deletes name the index.
+
+With the version applied, each store's own plan tests pass unchanged, so no statement the
+engine sends is planned through a new index.
+
+What the indexes cost was measured as version 11's cost was, through each store's own port,
+beside 20,000 ended tasks, in eight rounds of 300 calls, four with the version's indexes
+dropped and four with them, interleaved. Each call spawned a task, claimed it, started it
+and completed it. On libSQL and PostgreSQL it then parked a second run on an event, emitted
+the event, and claimed and completed the woken run, which is what moves a run into
+`runs_wake_holders` and out of it. For each kind of call, the lowest and the highest of the
+four rounds' medians, in milliseconds, without the indexes and with them:
+
+- libSQL: spawn 1.83 to 1.99 and 1.81 to 2.02, claim 4.37 to 4.59 and 4.41 to 4.59, a task's ending
+  3.09 to 3.34 and 3.15 to 3.34, an emit that wakes a run 2.67 to 2.90 and 2.69 to 2.87, the woken run's
+  ending 3.09 to 3.36 and 3.18 to 3.37. `tasks_terminal` was built over the 20,000 ended tasks
+  in 18 to 20 ms, and `runs_wake_holders`, which held no run, in 2 ms.
+- PostgreSQL: spawn 2.40 to 3.05 and 2.39 to 3.13, claim 7.03 to 7.52 and 7.23 to 7.51, a task's ending
+  4.72 to 5.27 and 4.91 to 5.18, an emit that wakes a run 4.53 to 4.99 and 4.60 to 5.32, the woken run's
+  ending 4.91 to 5.24 and 4.90 to 5.11. The builds took 11 ms and 4 ms.
+- MySQL: spawn 1.54 to 1.87 and 1.56 to 1.77, claim 4.23 to 4.72 and 4.20 to 4.59, a task's ending
+  3.33 to 4.24 and 3.40 to 3.90. `tasks_terminal` was built in 35 to 43 ms and `tasks_stamp` in
+  25 to 27 ms.
+
+The numbers are from a loaded shared machine, with a load average of 35 to 41 while they
+were taken. For every kind of call on every dialect the two ranges overlap, so the
+difference is inside the spread between rounds of one kind.
+
+On PostgreSQL the version builds an index on each of two tables, so its first statement
+takes the locks of both builds, `LOCK TABLE runs, tasks IN SHARE MODE`, as section 3.4
+requires of a version that works on more than one table. The locks block writes to both
+tables, and no read, until both indexes are built.
+`store-postgres/test/version-lock-order.test.ts` holds that a write that arrives while the
+version waits for an older transaction waits holding no table, and that a read returns
+meanwhile. The stores export no note for the version in `SCHEMA_VERSION_NOTES`.
+
+A build that predates the version runs against the schema unchanged, and the release
+alpha.1 runs its cycle on a libSQL database the CLI migrated to it
+(`scripts/alpha1-compat.sh`).
 
 **Two contract changes, which the maintainer approved on 2026-10-03.** Both
 follow from bounding rows by deleting task rows.

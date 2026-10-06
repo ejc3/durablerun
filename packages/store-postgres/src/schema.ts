@@ -349,6 +349,43 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
        WHERE state IN ('pending','running','sleeping') AND enqueue_at_ms IS NOT NULL`,
     ],
   },
+  {
+    // Retention deletes whole units of ended tasks (DESIGN.md §3.12), and two of its reads
+    // had no index to go by.
+    //
+    // `tasks_terminal` holds the ended tasks of a queue by state and then by the instant
+    // their row was last stamped, which for an ended task is the instant it ended. The read
+    // of what a purge may take lists one state's tasks oldest first and stops at its limit.
+    // A task enters the index when it ends and leaves it when it is revived or purged, so no
+    // write of a live task touches it. Its second term is there for the reason `tasks_live`
+    // has one: no statement the engine sends compares a task's stamp instant, so none is
+    // planned through the index, and a read that means to use it compares that instant with
+    // a range.
+    //
+    // `runs_wake_holders` holds the runs that hold an event's payload. A run that an event
+    // woke keeps the event's name and its payload until its worker completes it or suspends
+    // it again, a run that failed or was cancelled meanwhile keeps both for good, and a
+    // successor carries both from the run it replaces. A purge asks whether any run of the
+    // queue, in any state, holds the outcome of the task it is about to delete, and
+    // `runs_woken` holds only pending runs. A run enters this index when an event wakes it
+    // with a payload and leaves it when its worker moves on. A run that parks on an event
+    // holds no payload and does not enter it. No statement the engine sends tests a run's
+    // payload for NULL, so none is planned through it.
+    //
+    // The version builds an index on each of two tables, so by the rule above its first
+    // statement takes both locks, in the engine's order. They are the locks the two builds
+    // take anyway: each blocks writes to its table and no read, as the builds of versions 6,
+    // 9 and 11 do, and here both are held until both indexes are built. Both are indexes and
+    // nothing else: a build that predates them runs against this schema unchanged.
+    version: 12,
+    statements: [
+      'LOCK TABLE runs, tasks IN SHARE MODE',
+      `CREATE INDEX tasks_terminal ON tasks (queue, state, fence_at_ms)
+       WHERE state IN ('completed','failed','cancelled') AND fence_at_ms IS NOT NULL`,
+      `CREATE INDEX runs_wake_holders ON runs (queue, wake_event)
+       WHERE wake_event IS NOT NULL AND event_payload IS NOT NULL`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0

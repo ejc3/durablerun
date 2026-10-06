@@ -27,6 +27,11 @@ import { openPostgresTestDb } from '../src/testing.js'
  * ends, the version commits, and both calls return. Every wait is bounded and says what it
  * waited for. This runs for every version whose first statement takes table locks, and it
  * needs a server.
+ *
+ * What the older transaction did, and which arrivals then wait, is each version's own
+ * (`OLDER`). A version that builds indexes takes the lock a build takes, which blocks writes
+ * and no read, so there the older transaction has written, the write that arrives waits,
+ * and the read returns while the older transaction is still open.
  */
 class StoppedBeforeTheVersion extends Error {}
 
@@ -54,6 +59,31 @@ const lockingVersions = MIGRATIONS.filter(({ statements }) =>
   /^\s*LOCK TABLE\b/.test(statements[0] ?? ''),
 )
 
+/** The calls that arrive while a version waits: a sweep, whose scan reads, and a spawn, which writes. */
+const ARRIVALS = ['spawn', 'sweep'] as const
+type Arrival = (typeof ARRIVALS)[number]
+
+/**
+ * For each version whose first statement takes table locks: what the transaction that was
+ * open when it started had done, and which arrivals the version then makes wait.
+ *
+ * Version 7 takes every table in a mode that blocks reads too, `meta` last. The older
+ * transaction has read the clock, so it holds `meta`, and the version waits for it holding
+ * every store table. The read and the write that arrive both wait.
+ *
+ * Version 12 builds an index on `runs` and one on `tasks`, and takes the lock each build
+ * takes, `tasks` last. The older transaction has written to `tasks`, so the version waits
+ * for it holding `runs`. The write that arrives waits. The read is not blocked.
+ */
+const OLDER: Readonly<Record<number, { did: string; blocks: readonly Arrival[] }>> = {
+  7: { did: "SELECT value FROM meta WHERE key = 'fake_now_ms'", blocks: ['spawn', 'sweep'] },
+  12: { did: "UPDATE tasks SET state = state WHERE task_id = 'no such task'", blocks: ['spawn'] },
+}
+
+/** The arrivals a version does not block, each of which returns while the older transaction is open. */
+const notBlockedBy = (version: number): Arrival[] =>
+  ARRIVALS.filter((arrival) => !OLDER[version]?.blocks.includes(arrival))
+
 const outcome = (call: Promise<unknown>): Promise<string> =>
   call.then(
     () => 'returned',
@@ -63,10 +93,18 @@ const outcome = (call: Promise<unknown>): Promise<string> =>
 
 describe('a statement that arrives while a version waits for an older transaction', () => {
   it('waits holding no store table, so it cannot deadlock with the version', async () => {
-    // The scenario cannot pass by finding no version to run.
-    expect(lockingVersions.map(({ version }) => version)).toContain(7)
-    const verdicts: { version: number; arrivals: Waiter[]; ended: Record<string, string> }[] = []
+    // The scenario cannot pass by finding no version to run, and a version that takes table
+    // locks has its older transaction written down above before it is run.
+    expect(lockingVersions.map(({ version }) => version)).toEqual(Object.keys(OLDER).map(Number))
+    const verdicts: {
+      version: number
+      arrivals: Waiter[]
+      returnedMeanwhile: Record<string, string>
+      ended: Record<string, string>
+    }[] = []
     for (const { version } of lockingVersions) {
+      const scenario = OLDER[version]
+      if (scenario === undefined) throw new Error(`version ${version} has no older transaction`)
       const db = await openPostgresTestDb({
         idNamespace: `version-lock-order-${version}`,
         migrate: false,
@@ -112,25 +150,42 @@ describe('a statement that arrives while a version waits for an older transactio
         }
 
         await older.query('BEGIN')
-        await older.query("SELECT value FROM meta WHERE key = 'fake_now_ms'")
+        await older.query(scenario.did)
         const migrating = outcome(new PostgresStoreAdmin(open('version')).migrate())
         await waiters(
           (seen) => seen.some(({ who }) => who === 'version'),
           `version ${version} did not wait for the older transaction`,
         )
-        const sweeping = outcome(new PostgresSchedulerStore(open('sweep'), db.ids).sweep('q', 10))
-        const spawning = outcome(
-          new PostgresSchedulerStore(open('spawn'), db.ids).spawn('q', 'job', '{}'),
-        )
+        const calls: Record<Arrival, Promise<string>> = {
+          sweep: outcome(new PostgresSchedulerStore(open('sweep'), db.ids).sweep('q', 10)),
+          spawn: outcome(new PostgresSchedulerStore(open('spawn'), db.ids).spawn('q', 'job', '{}')),
+        }
         const seen = await waiters(
-          (rows) => ['spawn', 'sweep'].every((name) => rows.some(({ who }) => who === name)),
-          'the sweep and the spawn did not both wait',
+          (rows) => scenario.blocks.every((name) => rows.some(({ who }) => who === name)),
+          `${scenario.blocks.join(' and ')} did not wait`,
         )
+        // An arrival the version does not block returns while the older transaction is open.
+        // The wait for it is bounded as every other is, by asking the server again.
+        const returnedMeanwhile: Record<string, string> = {}
+        for (const arrival of notBlockedBy(version)) {
+          let answer: string | undefined
+          void calls[arrival].then((value) => {
+            answer = value
+          })
+          const deadline = performance.now() + WAIT_BOUND_MS
+          while (answer === undefined && performance.now() < deadline) await watcher.query(WAITERS)
+          returnedMeanwhile[arrival] = answer ?? `still waiting after ${WAIT_BOUND_MS} ms`
+        }
         await older.query('COMMIT')
         verdicts.push({
           version,
           arrivals: seen.filter(({ who }) => who !== 'version'),
-          ended: { version: await migrating, sweep: await sweeping, spawn: await spawning },
+          returnedMeanwhile,
+          ended: {
+            version: await migrating,
+            sweep: await calls.sweep,
+            spawn: await calls.spawn,
+          },
         })
       } finally {
         await Promise.all(clients.map((client) => client.end().catch(() => undefined)))
@@ -144,10 +199,10 @@ describe('a statement that arrives while a version waits for an older transactio
     ).toEqual(
       lockingVersions.map(({ version }) => ({
         version,
-        arrivals: [
-          { who: 'spawn', holds: [] },
-          { who: 'sweep', holds: [] },
-        ],
+        arrivals: (OLDER[version]?.blocks ?? []).map((who) => ({ who, holds: [] })),
+        returnedMeanwhile: Object.fromEntries(
+          notBlockedBy(version).map((arrival) => [arrival, 'returned']),
+        ),
         ended: { version: 'returned', sweep: 'returned', spawn: 'returned' },
       })),
     )

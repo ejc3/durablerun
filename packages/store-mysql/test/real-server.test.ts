@@ -278,11 +278,13 @@ describe('MysqlExecutor against a real server', () => {
     const db = await openMysqlTestDb({ idNamespace: 'index-repeat' })
     try {
       const indexes = [
-        ['runs_woken', '(queue, wake_event, state)', 'queue,wake_event,state'],
-        ['runs_stamp', '(fence_stamp(768))', 'fence_stamp'],
-        ['runs_held', '(queue, claimed_by(255), state)', 'queue,claimed_by,state'],
+        ['runs', 'runs_woken', '(queue, wake_event, state)', 'queue,wake_event,state'],
+        ['runs', 'runs_stamp', '(fence_stamp(768))', 'fence_stamp'],
+        ['runs', 'runs_held', '(queue, claimed_by(255), state)', 'queue,claimed_by,state'],
+        ['tasks', 'tasks_terminal', '(queue, state, fence_at_ms)', 'queue,state,fence_at_ms'],
+        ['tasks', 'tasks_stamp', '(fence_stamp(768))', 'fence_stamp'],
       ] as const
-      for (const [name, definition, expected] of indexes) {
+      for (const [table, name, definition, expected] of indexes) {
         const columns = async () => {
           const [index] = await db.raw.batch(
             'fixture:read',
@@ -290,22 +292,22 @@ describe('MysqlExecutor against a real server', () => {
               {
                 sql: `SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) AS columns
                       FROM information_schema.statistics
-                      WHERE table_schema = DATABASE() AND table_name = 'runs' AND index_name = ?`,
-                args: [name],
+                      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+                args: [table, name],
               },
             ],
             'read',
           )
           return index?.rows[0]?.columns
         }
-        const version = createIndexIfMissing('runs', name, definition).map((sql) => ({
+        const version = createIndexIfMissing(table, name, definition).map((sql) => ({
           sql,
           args: [],
         }))
         expect(await columns()).toBe(expected)
         await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         expect(await columns()).toBe(expected)
-        await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON runs`, args: [] }])
+        await db.raw.batch('fixture:drop', [{ sql: `DROP INDEX ${name} ON ${table}`, args: [] }])
         expect(await columns()).toBeNull()
         await db.raw.batch('migrate:index', version, MIGRATION_WRITE)
         await db.raw.batch('migrate:index', version, MIGRATION_WRITE)

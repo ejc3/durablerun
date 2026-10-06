@@ -104,7 +104,7 @@ accepts it.
     a command may make, and no executor"; only the opener reads a URL's scheme.
     `scripts/alpha1-compat.sh`, which `verify:packages` runs and CI's verify job
     requires (DURABLERUN_ALPHA1_REQUIRED=1), runs the cycle at every version
-    from 5 to 11: `migrate --yes` reaches the build's version through the bin,
+    from 5 to 12: `migrate --yes` reaches the build's version through the bin,
     and leaves each version below it when its store fails at the next version's
     batch. Its planted control takes the form version 10 gives NOT NULL on
     libSQL, a trigger that refuses the write, because SQLite refuses to add a
@@ -521,7 +521,7 @@ accepts it.
     statement reaches its rows through, and
     `packages/store-mysql/test/query-plans.test.ts` holds the rows each batch
     walked beside a history and beside a backlog. `scripts/alpha1-compat.sh` runs
-    alpha.1's cycle at each version from 5 to 11. The three reds are registered
+    alpha.1's cycle at each version from 5 to the build's. The three reds are registered
     mutations. `operator-finder-lists-a-move-at-the-instant-it-comes-due` writes
     `<` for `<=` in the one comparison core holds a leg's instant to, and fails
     "lists a move from the instant it comes due, as the engine takes it, and not
@@ -6685,7 +6685,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   gate's arm is keyed on main's digest and exempts their sixty-one markers. It re-aims nine entries of main's registry, whose lines moved
   out of the libSQL store's `retryTask` into the record of the guard's conjuncts.
   - Where the build differs from the plan, and why. (1) The version gate has no list of
-    its own. Every verb's twin passes at every version of the libSQL window, 5 to 11, so
+    its own. Every verb's twin passes at every version of the libSQL window, from 5 to the build's, so
     all five are allowed there and no verb needs a refusal: the window a read is held to
     is the gate, and a verb outside it exits 5 naming both versions. PostgreSQL and MySQL
     read their own version alone. A field in the command table that no verb would set was
