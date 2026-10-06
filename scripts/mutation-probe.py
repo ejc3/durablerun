@@ -21565,24 +21565,10 @@ MUTATION_SPECS.extend(
         ),
         (
             "spawn-sends-once-more-when-its-holder-is-gone",
-            "packages/store-libsql/src/store.ts",
-            "      if (send === 'first') return this.spawnTask(queue, taskName, paramsJson, opts, 'second')\n",
+            "packages/core/src/child-tasks.ts",
+            "  if (answer === null) answer = await send()\n",
             "",
             "a spawn whose key a purge freed between its insert and its read throws, where it must create the task",
-        ),
-        (
-            "spawn-sends-once-more-when-its-holder-is-gone-on-postgres",
-            "packages/store-postgres/src/store.ts",
-            "      if (send === 'first') return this.spawnTask(queue, taskName, paramsJson, opts, 'second')\n",
-            "",
-            "on PostgreSQL a spawn whose key a purge freed between its insert and its read throws, where it must create the task",
-        ),
-        (
-            "spawn-sends-once-more-when-its-holder-is-gone-on-mysql",
-            "packages/store-mysql/src/store.ts",
-            "      if (send === 'first') return this.spawnTask(queue, taskName, paramsJson, opts, 'second')\n",
-            "",
-            "on MySQL a spawn whose key a purge freed between its insert and its read throws, where it must create the task",
         ),
         (
             "mysql-purge-reads-its-keys-by-the-stamp-of-tasks",
@@ -21750,20 +21736,6 @@ VERDICTS.update(
             "behavior",
             "packages/conformance/test/libsql.test.ts",
             "a spawn under a key whose task a purge takes [libsql] creates the task on a second insert when the first lost to a task that is gone by its read",
-            "mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone",
-            "packages/conformance/src/retention-purge.ts",
-        ),
-        "spawn-sends-once-more-when-its-holder-is-gone-on-postgres": ExpectedVerdict(
-            "behavior",
-            "packages/conformance/test/libsql.test.ts",
-            "a spawn under a key whose task a purge takes [postgres] creates the task on a second insert when the first lost to a task that is gone by its read",
-            "mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone",
-            "packages/conformance/src/retention-purge.ts",
-        ),
-        "spawn-sends-once-more-when-its-holder-is-gone-on-mysql": ExpectedVerdict(
-            "behavior",
-            "packages/conformance/test/libsql.test.ts",
-            "a spawn under a key whose task a purge takes [mysql] creates the task on a second insert when the first lost to a task that is gone by its read",
             "mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone",
             "packages/conformance/src/retention-purge.ts",
         ),
@@ -25711,7 +25683,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1447:
+        if len(MUTATIONS) != 1445:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

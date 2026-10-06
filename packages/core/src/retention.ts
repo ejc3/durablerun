@@ -139,7 +139,7 @@ export function retentionWindowsMs(policy: RetentionPolicy): RetentionWindows {
  * of each leg after the first. A task on the edge of its window can be in one page and not
  * the one a moment earlier would have been, and nothing is decided from a page.
  */
-export const PURGE_CANDIDATES_DRIFT =
+const PURGE_CANDIDATES_DRIFT =
   'read-only listing: a candidate is only a candidate, and the purge of each reads the clock again inside its own compare-and-set'
 
 const STAMP = PERSISTED_INTEGER_BOUNDS.tasks.fence_at_ms

@@ -14,6 +14,7 @@ import { SimWorld } from '@durablerun/harness'
 import { missingCompletionEvent } from './child-task-rows.js'
 import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixtureFactory } from './fixture.js'
+import { KEEPING_FAILED, SHORTEST_WINDOW_MS } from './retention-policies.js'
 import { awaitTaskOwned } from './scenario.js'
 
 const Q = 'q'
@@ -68,10 +69,7 @@ export const MATRIX_WRITE_LABELS = [
  * The policy every purge of the generated surfaces names: the shortest windows core takes,
  * and failed tasks kept (DESIGN.md §3.12).
  */
-export const MATRIX_RETENTION_POLICY: RetentionPolicy = {
-  completedSeconds: 3_600,
-  cancelledSeconds: 3_600,
-}
+export const MATRIX_RETENTION_POLICY: RetentionPolicy = KEEPING_FAILED
 
 /** One write label of the matrix. */
 export type MatrixWriteLabel = (typeof MATRIX_WRITE_LABELS)[number]
@@ -922,7 +920,7 @@ export async function runFaultMatrixCase(
       // hour on, every task above that completed or was cancelled is a window old: the
       // candidates are read, and each unit is purged. A fault at the purge leaves each
       // unit whole or gone, which the row checks below hold.
-      now += 3_600_000
+      now += SHORTEST_WINDOW_MS
       await go(() => admin.setFakeNowEpochMs(now))
       const retention = f.retentionOver(simDb)
       const listed = await go(() =>

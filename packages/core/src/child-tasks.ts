@@ -8,7 +8,13 @@
 import { PortRefusalError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { taskResultContradiction } from './task-result.js'
-import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
+import {
+  type SpawnOptions,
+  type SpawnResult,
+  type TaskResult,
+  type TerminalState,
+  isTerminalState,
+} from './types.js'
 import { requireIdentifiersFit } from './validate.js'
 
 // Task code shares this process, and this file decodes what task code will read, so it
@@ -255,6 +261,26 @@ export function refuseReservedIdempotencyKey(operation: string, key: string): vo
       `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
+}
+
+/**
+ * Send a spawn's batch, and once more when its insert lost and no task explains it
+ * (DESIGN.md §3.12). `send` is one send of the batch, under ids of its own, and answers
+ * null for that loss. A purge can take the task that holds a key between the batch's
+ * insert and its read of the holder: the insert loses to a task that is gone by the read,
+ * which then finds nothing. The key is free by then, so the batch is sent once more. A
+ * second loss that no task explains is real, and is thrown. Every dialect sends through
+ * here, so none sends a third time and none gives up after one.
+ */
+export async function spawnSendingOnceMore(
+  send: () => Promise<SpawnResult | null>,
+): Promise<SpawnResult> {
+  let answer = await send()
+  if (answer === null) answer = await send()
+  if (answer === null) {
+    throw new Error('spawn: the task insert lost but no existing task explains it')
+  }
+  return answer
 }
 
 /**

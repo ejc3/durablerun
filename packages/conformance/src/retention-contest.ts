@@ -7,6 +7,7 @@ import {
 } from '@durablerun/core'
 import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { KEEPING_FAILED, SHORTEST_WINDOW_MS } from './retention-policies.js'
 import { checkpointOwned, claimActivated, warmConnections, withFixture } from './scenario.js'
 import { settle } from './self-concurrency.js'
 
@@ -15,8 +16,8 @@ const START_MS = 1_000_000
 const FAILURE = '{"name":"Boom"}'
 
 /** The policy the contest purges under: the shortest windows core takes, and failed tasks kept. */
-export const CONTEST_POLICY: RetentionPolicy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
-const WINDOW_MS = 3_600_000
+export const CONTEST_POLICY: RetentionPolicy = KEEPING_FAILED
+const WINDOW_MS = SHORTEST_WINDOW_MS
 
 /** How many purgers walk the candidates at once. */
 export const CONTEST_PURGERS = 4

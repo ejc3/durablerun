@@ -11,6 +11,7 @@ import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { type ProtocolSnapshot, snapshot } from './poison-matrix.js'
 import { type KeptBy, type UnitTable, dumpDifferences, purgeOracle } from './retention-oracle.js'
+import { NAMING_FAILED, SHORTEST_WINDOW_MS } from './retention-policies.js'
 import {
   awaitTaskOwned,
   checkpointOwned,
@@ -26,18 +27,16 @@ import {
  */
 
 /** The policy of the grid: every ended state named, at the shortest window core takes. */
-export const GRID_POLICY: RetentionPolicy = {
-  completedSeconds: 3_600,
-  cancelledSeconds: 3_600,
-  failedSeconds: 3_600,
-}
-const WINDOW_MS = 3_600_000
+export const GRID_POLICY: RetentionPolicy = NAMING_FAILED
+const WINDOW_MS = SHORTEST_WINDOW_MS
 const START_MS = 1_000_000
 /** The instant every cell's unit ends at, which is the stamp its age is read from. */
 const ENDED_AT_MS = START_MS + 10_000
 const BOOM = '{"name":"Boom"}'
-const REPLAY_KEY = 'child#1'
-const AWAIT_STEP = 'await-child'
+/** The key a cell's parent spawns its child under. */
+export const REPLAY_KEY = 'child#1'
+/** The step a cell's parent or holder awaits the child at. */
+export const AWAIT_STEP = 'await-child'
 
 export const UNIT_STATES = ['completed', 'failed with a saga', 'failed', 'cancelled'] as const
 export type UnitState = (typeof UNIT_STATES)[number]

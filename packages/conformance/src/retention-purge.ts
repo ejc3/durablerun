@@ -17,6 +17,7 @@ import { snapshot } from './poison-matrix.js'
 import { OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH } from './port-strings.js'
 import { CONTEST_POLICY, purgeContest } from './retention-contest.js'
 import {
+  AWAIT_STEP,
   type BuiltCell,
   GRID_CELLS,
   GRID_POLICY,
@@ -24,6 +25,7 @@ import {
   PARENT_QUEUES,
   PARENT_STATES,
   type ParentState,
+  REPLAY_KEY,
   UNIT_STATES,
   type UnitState,
   barrierCells,
@@ -78,7 +80,7 @@ function replayOf(built: BuiltCell, run: { taskId: string; runId: string; claimT
       parentTaskId: run.taskId,
       runId: run.runId,
       claimToken: run.claimToken,
-      replayKey: 'child#1',
+      replayKey: REPLAY_KEY,
     },
   }
 }
@@ -100,6 +102,10 @@ const nothingInItsWay = (unitState: UnitState): GridCell => ({
   holder: 'none',
   age: 1,
 })
+
+/** What an await that threw says: the reason of a refusal, or the failure as it is described. */
+const refusedOr = (error: unknown): string =>
+  error instanceof ChildAwaitRefusedError ? `refused: ${error.reason}` : describeFailure(error)
 
 /**
  * One purge of a unit the engine ended and a case then bent, held to the oracle: what
@@ -230,16 +236,10 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             f.store,
             built.parentQueue,
             parent,
-            'await-child',
+            AWAIT_STEP,
             built.target.taskId,
             null,
-          ).then(
-            (answer) => (answer.emitted ? 'answered with the outcome' : 'parked'),
-            (error: unknown) =>
-              error instanceof ChildAwaitRefusedError
-                ? `refused: ${error.reason}`
-                : describeFailure(error),
-          )
+          ).then((answer) => (answer.emitted ? 'answered with the outcome' : 'parked'), refusedOr)
           expect({
             purged,
             replayed: { taskId: replayed.taskId, created: replayed.created },
@@ -303,7 +303,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           purged: null,
           wake: {
             event: taskDoneEventName(built.target.taskId),
-            step: 'await-child',
+            step: AWAIT_STEP,
             payloadJson: String(event?.payload),
           },
           violations: [],
@@ -455,14 +455,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
         const outcomes: string[] = []
         const stranded: string[] = []
         for (let round = 0; round < RACE_ROUNDS; round++) {
-          const cell: GridCell = {
-            unit: 'completed',
-            parent: 'none',
-            parentQueue: "the child's",
-            holder: 'none',
-            age: 1,
-          }
-          const built = await buildCell(f, cell, `race-${round}`)
+          const built = await buildCell(f, nothingInItsWay('completed'), `race-${round}`)
           await f.admin.setFakeNowEpochMs(built.purgeAtMs)
           // The awaiter is claimed at the instant of the race, so its lease is live.
           const awaiter = await f.store.spawn(built.queue, 'awaiter', '{}')
@@ -472,19 +465,9 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             retention
               .purgeUnit(built.queue, built.target, GRID_POLICY)
               .then((purged) => (purged === null ? 'kept' : 'purged'), describeFailure),
-            awaitTaskOwned(
-              f.store,
-              built.queue,
-              run,
-              'await-child',
-              built.target.taskId,
-              null,
-            ).then(
+            awaitTaskOwned(f.store, built.queue, run, AWAIT_STEP, built.target.taskId, null).then(
               (answer) => (answer.emitted ? 'answered' : 'parked'),
-              (error: unknown) =>
-                error instanceof ChildAwaitRefusedError
-                  ? `refused: ${error.reason}`
-                  : describeFailure(error),
+              refusedOr,
             ),
           ])
           outcomes.push(`${purge}, ${awaited}`)
@@ -511,13 +494,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
   describe(`a unit that is gone [${dialect}]`, () => {
     it('is answered by every port as a task that never existed, its await is refused, and its key is free', async () => {
       await withFixture(makeFixture, 'after-a-purge', async (f) => {
-        const { built, purged } = await purgedCell(f, {
-          unit: 'completed',
-          parent: 'none',
-          parentQueue: "the child's",
-          holder: 'none',
-          age: 1,
-        })
+        const { built, purged } = await purgedCell(f, nothingInItsWay('completed'))
         const { queue, target } = built
         const awaiter = await f.store.spawn(queue, 'awaiter', '{}')
         const run = await startOf(f, queue, awaiter.taskId, 'w-awaiter')
@@ -525,16 +502,10 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           f.store,
           queue,
           run,
-          'await-child',
+          AWAIT_STEP,
           target.taskId,
           null,
-        ).then(
-          () => 'accepted',
-          (error: unknown) =>
-            error instanceof ChildAwaitRefusedError
-              ? `refused: ${error.reason}`
-              : describeFailure(error),
-        )
+        ).then(() => 'accepted', refusedOr)
         const retention = f.retentionOver(f.raw)
         const again = await f.store.spawn(queue, 'child', '{}', {
           idempotencyKey: String(target.idempotencyKey),
@@ -677,17 +648,18 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
      * A store whose spawn batch finds its key held, and whose read of the holder then
      * finds nothing: what a spawn meets when a purge commits between the batch's insert
      * and its read, which a server lets happen. The batch is sent as it is, so the insert
-     * loses to the task that holds the key. `between` then runs, and the read's rows are
-     * handed back empty, as they are when the task is gone by then.
+     * loses to the task that holds the key. `between` then runs, and says whether this
+     * send loses its read: the read's rows are then handed back empty, as they are when
+     * the task is gone by then.
      */
-    const losingTheHolder = (f: StoreFixture, between: (sent: number) => Promise<void>) => {
+    const losingTheHolder = (f: StoreFixture, between: (sent: number) => Promise<boolean>) => {
       let sent = 0
       const store = f.storeOver({
         batch: async (label, statements, control) => {
           const results = await f.raw.batch(label, statements, control)
           if (label !== 'spawn') return results
           sent += 1
-          await between(sent)
+          if (!(await between(sent))) return results
           return results.map((result, index) =>
             index === results.length - 1 ? { ...result, rows: [] } : result,
           )
@@ -695,13 +667,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
       })
       return { store, sent: () => sent }
     }
-    const aWindowOld: GridCell = {
-      unit: 'completed',
-      parent: 'none',
-      parentQueue: "the child's",
-      holder: 'none',
-      age: 1,
-    }
+    const aWindowOld = nothingInItsWay('completed')
 
     it('creates the task on a second insert when the first lost to a task that is gone by its read', async () => {
       await withFixture(makeFixture, 'spawn-after-a-purge', async (f) => {
@@ -712,17 +678,10 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
         const purged: unknown[] = []
         // The purge takes the holder after the first send alone, and the second send's
         // read is left as the store sent it.
-        let first = true
-        const store = f.storeOver({
-          batch: async (label, statements, control) => {
-            const results = await f.raw.batch(label, statements, control)
-            if (label !== 'spawn' || !first) return results
-            first = false
-            purged.push(await retention.purgeUnit(built.queue, built.target, GRID_POLICY))
-            return results.map((result, index) =>
-              index === results.length - 1 ? { ...result, rows: [] } : result,
-            )
-          },
+        const { store } = losingTheHolder(f, async (sent) => {
+          if (sent > 1) return false
+          purged.push(await retention.purgeUnit(built.queue, built.target, GRID_POLICY))
+          return true
         })
         const spawned = await store.spawn(built.queue, 'child', '{}', { idempotencyKey: key }).then(
           (answer) => ({
@@ -757,7 +716,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
         const key = String(built.target.idempotencyKey)
         // The holder stays, and both reads are handed back empty: a loss no task explains,
         // which one more send does not cure.
-        const { store, sent } = losingTheHolder(f, async () => undefined)
+        const { store, sent } = losingTheHolder(f, async () => true)
         const spawned = await store.spawn(built.queue, 'child', '{}', { idempotencyKey: key }).then(
           () => 'answered',
           (error: unknown) => (error instanceof Error ? error.message : String(error)),

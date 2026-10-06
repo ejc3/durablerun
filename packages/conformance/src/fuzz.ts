@@ -18,6 +18,7 @@ import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { snapshot } from './poison-matrix.js'
 import { HELD_PLACES, OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH } from './port-strings.js'
 import { UNIT_TABLES, dumpDifferences, purgeOracle } from './retention-oracle.js'
+import { NAMING_FAILED, SHORTEST_WINDOW_MS } from './retention-policies.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -75,12 +76,8 @@ export interface FuzzStats {
 }
 
 /** The policy the walk purges under: every ended state named, at the shortest window core takes. */
-const FUZZ_RETENTION: RetentionPolicy = {
-  completedSeconds: 3_600,
-  cancelledSeconds: 3_600,
-  failedSeconds: 3_600,
-}
-const FUZZ_WINDOW_MS = 3_600_000
+const FUZZ_RETENTION: RetentionPolicy = NAMING_FAILED
+const FUZZ_WINDOW_MS = SHORTEST_WINDOW_MS
 /** The steps of a walk that purge: the top of the clock's share of the roll. */
 const PURGE_FROM = 0.985
 
@@ -96,6 +93,9 @@ const PURGE_FROM = 0.985
 async function purgeByTheOracle(f: StoreFixture, nowMs: number, where: string): Promise<string[]> {
   const retention = f.retentionOver(f.raw)
   const gone: string[] = []
+  // One dump is carried through the walk. Between one purge and the next nothing writes
+  // but the purge itself, so the dump taken after a purge is the dump before the next.
+  let dump = await snapshot(f.raw)
   for (let before = -1; before !== gone.length; ) {
     before = gone.length
     let after: PurgeCursor | null = null
@@ -105,7 +105,6 @@ async function purgeByTheOracle(f: StoreFixture, nowMs: number, where: string): 
         ...(after === null ? {} : { after }),
       })
       for (const candidate of page.candidates) {
-        const dump = await snapshot(f.raw)
         const oracle = purgeOracle(dump, nowMs, Q, candidate, FUZZ_RETENTION)
         const notACandidate = oracle.keptBy.filter((kept) =>
           ['no-such-task', 'state', 'stamp', 'age'].includes(kept),
@@ -116,7 +115,8 @@ async function purgeByTheOracle(f: StoreFixture, nowMs: number, where: string): 
           )
         }
         const answer = await retention.purgeUnit(Q, candidate, FUZZ_RETENTION)
-        const differences = dumpDifferences(oracle.after, await snapshot(f.raw))
+        dump = await snapshot(f.raw)
+        const differences = dumpDifferences(oracle.after, dump)
         const letGo = oracle.keptBy.length === 0
         const counted =
           answer === null || UNIT_TABLES.every((table) => answer.rows[table] === oracle.rows[table])
@@ -134,7 +134,6 @@ async function purgeByTheOracle(f: StoreFixture, nowMs: number, where: string): 
       after = page.next
     } while (after !== null)
   }
-  const dump = await snapshot(f.raw)
   const left = dump.tasks
     .filter((task) => task.queue === Q)
     .map((task) => ({

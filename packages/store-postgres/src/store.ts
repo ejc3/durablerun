@@ -106,6 +106,7 @@ import {
   spawnIdempotencyKey,
   spawnReceiptRead,
   spawnRunInsert,
+  spawnSendingOnceMore,
   spawnTaskCas,
   sqlFragment,
   stampedRunState,
@@ -659,23 +660,20 @@ export class PostgresSchedulerStore extends HeldPort implements SchedulerStore {
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
-    return this.spawnTask(queue, taskName, paramsJson, opts, 'first')
+    return spawnSendingOnceMore(() => this.spawnOnce(queue, taskName, paramsJson, opts))
   }
 
   /**
-   * One send of the spawn batch. A purge can take the task that holds a key between this
-   * batch's insert and its read of the holder (DESIGN.md §3.12): the insert loses to a
-   * task that is gone by the read, which then finds nothing. The key is free by then, so
-   * the batch is sent once more, under ids of its own. A second loss that no task
-   * explains is real, and is thrown.
+   * One send of the spawn batch, under ids of its own. Null when the insert lost and the
+   * read of the key's holder then found no task: a purge took the holder between the two
+   * (DESIGN.md §3.12), and core sends the batch once more (`spawnSendingOnceMore`).
    */
-  private async spawnTask(
+  private async spawnOnce(
     queue: string,
     taskName: string,
     paramsJson: string,
     opts: SpawnOptions,
-    send: 'first' | 'second',
-  ): Promise<SpawnResult> {
+  ): Promise<SpawnResult | null> {
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
     const taskId = this.ids.uuidv7()
@@ -815,8 +813,7 @@ export class PostgresSchedulerStore extends HeldPort implements SchedulerStore {
       // A child is created only under its parent's live claim, so a child spawn that
       // created nothing and found nothing is that claim, refused.
       if (childOf !== undefined) throw await this.refusal('spawn', childOf.runId)
-      if (send === 'first') return this.spawnTask(queue, taskName, paramsJson, opts, 'second')
-      throw new Error('spawn: the task insert lost but no existing task explains it')
+      return null
     }
     // A pre-existing task may legitimately have no run — swept away, or never
     // given one. There is no honest run id to report then, and the previous

@@ -378,12 +378,12 @@ jobs:
               )
               return repaired[:at] + entries + repaired[at:]
           if digest == 'c0ab173f979858262d512a6d91b097dec10d0ec08f5a5cbb03f0b8acc379d90a':
-              # The retention purge registers thirty-five mutations: eight for the tree rule
+              # The retention purge registers thirty-three mutations: eight for the tree rule
               # that lets only the purge of a unit delete a row of it, one for the row check
               # that names a completion event whose task is gone, nine caught by a block of
               # the barrier grid, nine by a case of a condition no engine path reaches, three
-              # by core's own cases of the purge's batch, three for the spawn that sends once
-              # more, one in each store, and two for MySQL's index rules. Their cases carry
+              # by core's own cases of the purge's batch, one for the spawn that sends once
+              # more, and two for MySQL's index rules. Their cases carry
               # thirty-one verdict markers. Each is newer than the base registry, so each is
               # exempted there. The four lines of the tree rule hold conditions, and the base's
               # coverage check asks a mutation of each, so they are listed for it.

@@ -12,7 +12,7 @@ import {
   rawSql,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
-import { LIVE_STATES, TERMINAL_STATES, type TerminalState } from '../types.js'
+import { LIVE_STATES, type PurgeCursor, TERMINAL_STATES, type TerminalState } from '../types.js'
 import { markUnitPurge } from '../unit-purge.js'
 import { whereTaskInQueue } from './claimed-run.js'
 
@@ -61,7 +61,7 @@ export const purgeCandidatesRead = defineStatement(
     /** The state's window, or null for a state the policy keeps, which lists nothing. */
     windowMs: number | null
     /** Where the page before this one ended. Before every stamp, for the first page. */
-    after: { readonly endedAtMs: number; readonly taskId: string }
+    after: PurgeCursor
   }) =>
     treeBuilder
       .selectFrom('tasks as t')
@@ -103,7 +103,7 @@ type Barrier = (task: TaskRow, binds: PurgeUnitBinds) => Expression<SqlBool>
  * (specs/Retention.tla). The last three are the statement's own: they hold the unit to
  * what the batch then deletes.
  */
-export const PURGE_BARRIER = {
+const PURGE_BARRIER = {
   // B1: the task ended in a state the policy names, at least that state's window ago.
   endedAWindowAgo: (task, binds) =>
     task.or(
