@@ -346,7 +346,7 @@ export async function buildCell(f: StoreFixture, cell: GridCell, id: string): Pr
 
 /**
  * Bring a unit to the cap's worth of checkpoints, plus `size`. The rows are written as
- * rows, a few hundred to a statement, under the run that owns the unit's own checkpoint:
+ * rows, two thousand to a statement, under the run that owns the unit's own checkpoint:
  * writing each through the port would take longer than the purge it is there to measure.
  */
 async function fillCheckpoints(
@@ -359,7 +359,7 @@ async function fillCheckpoints(
   const owned = held.find((row) => row.checkpoint_name === 'step')
   if (owned === undefined) throw new Error(`grid: ${taskId} holds no checkpoint of its own`)
   const wanted = MAX_PURGE_UNIT_CHECKPOINTS + size - held.length
-  const PER_STATEMENT = 400
+  const PER_STATEMENT = 2_000
   for (let written = 0; written < wanted; written += PER_STATEMENT) {
     const count = Math.min(PER_STATEMENT, wanted - written)
     await f.raw.batch(

@@ -280,6 +280,8 @@ export const MIN_RETENTION_SECONDS = 3_600
 /**
  * The most checkpoints a task's unit may hold and still be purged (DESIGN.md §3.12). A
  * purge deletes a unit whole, in one batch, and a batch holds the database's writer for as
- * long as it runs. A unit past the cap is kept.
+ * long as it runs. A unit past the cap is kept. The cap is the largest unit libSQL was
+ * measured to purge without holding its writer for a second: units of 200,000 checkpoints
+ * went in 263 to 284 ms, and one of five units of 400,000 took 1,016 ms.
  */
-export const MAX_PURGE_UNIT_CHECKPOINTS = 5_000
+export const MAX_PURGE_UNIT_CHECKPOINTS = 200_000
