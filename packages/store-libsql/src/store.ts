@@ -661,11 +661,28 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
     return headersJson
   }
 
-  async spawn(
+  spawn(
     queue: string,
     taskName: string,
     paramsJson: string,
     opts: SpawnOptions = {},
+  ): Promise<SpawnResult> {
+    return this.spawnTask(queue, taskName, paramsJson, opts, 'first')
+  }
+
+  /**
+   * One send of the spawn batch. A purge can take the task that holds a key between this
+   * batch's insert and its read of the holder (DESIGN.md §3.12): the insert loses to a
+   * task that is gone by the read, which then finds nothing. The key is free by then, so
+   * the batch is sent once more, under ids of its own. A second loss that no task
+   * explains is real, and is thrown.
+   */
+  private async spawnTask(
+    queue: string,
+    taskName: string,
+    paramsJson: string,
+    opts: SpawnOptions,
+    send: 'first' | 'second',
   ): Promise<SpawnResult> {
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
@@ -803,6 +820,7 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
       // A child is created only under its parent's live claim, so a child spawn that
       // created nothing and found nothing is that claim, refused.
       if (childOf !== undefined) throw await this.refusal('spawn', childOf.runId)
+      if (send === 'first') return this.spawnTask(queue, taskName, paramsJson, opts, 'second')
       throw new Error('spawn: the task insert lost but no existing task explains it')
     }
     // A pre-existing task may legitimately have no run — swept away, or never
