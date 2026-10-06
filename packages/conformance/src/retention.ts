@@ -35,6 +35,7 @@ import {
   snapshot,
   storedInstant,
 } from './poison-matrix.js'
+import { purgeConformance } from './retention-purge.js'
 import {
   checkpointOwned,
   claimActivated,
@@ -643,4 +644,5 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
       })
     })
   })
+  purgeConformance(dialect, makeFixture)
 }
