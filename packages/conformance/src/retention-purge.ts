@@ -103,7 +103,8 @@ const nothingInItsWay = (unitState: UnitState): GridCell => ({
 
 /**
  * One purge of a unit the engine ended and a case then bent, held to the oracle: what
- * keeps the unit by the model's reading of the rows, what the purge answered, and how
+ * keeps the unit by the model's reading of the rows, whether the purge took it, or what it
+ * threw, and how
  * every table afterwards differs from what the oracle says it must hold. `bend` writes
  * the rows the case is about, and may name the unit another way than its builder did.
  */
@@ -113,17 +114,26 @@ async function bentPurge(
   cell: GridCell,
   policy: RetentionPolicy,
   bend: (f: StoreFixture, built: BuiltCell) => Promise<PurgeUnitTarget | undefined>,
-): Promise<{ keptBy: readonly KeptBy[]; purged: boolean; differences: readonly string[] }> {
+): Promise<{
+  keptBy: readonly KeptBy[]
+  purged: boolean | string
+  differences: readonly string[]
+}> {
   return withFixture(makeFixture, `bent ${name}`, async (f) => {
     const built = await buildCell(f, cell, 'c')
     await f.admin.setFakeNowEpochMs(built.purgeAtMs)
     const target = (await bend(f, built)) ?? built.target
     const before = await snapshot(f.raw)
     const oracle = purgeOracle(before, built.purgeAtMs, built.queue, target, policy)
-    const answer = await f.retentionOver(f.raw).purgeUnit(built.queue, target, policy)
+    // A purge that throws has refused its own batch after the fact, by the count of what
+    // the unit held. What it threw is the answer the case compares.
+    const purged = await f
+      .retentionOver(f.raw)
+      .purgeUnit(built.queue, target, policy)
+      .then((answer) => answer !== null, describeFailure)
     return {
       keptBy: oracle.keptBy,
-      purged: answer !== null,
+      purged,
       differences: dumpDifferences(oracle.after, await snapshot(f.raw)),
     }
   })
