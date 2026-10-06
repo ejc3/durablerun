@@ -18,6 +18,7 @@ import {
   type SqlResult,
   type SqlRow,
   type SqlStatement,
+  TERMINAL_STATES,
   type TerminalState,
   encodeTaskOutcome,
   isLiveState,
@@ -4087,6 +4088,13 @@ const ENDING_LABEL: Readonly<Record<TerminalState, MatrixWriteLabel>> = {
   cancelled: 'cancel-task',
 }
 
+/**
+ * What a cell's task had ended as: each terminal state, and a task that failed by the
+ * rollback that halted its saga. That one is failed too, and `retry-task` refuses it.
+ */
+export const ENDED_PRE_STATES = [...TERMINAL_STATES, 'failed with a saga'] as const
+export type EndedPreState = (typeof ENDED_PRE_STATES)[number]
+
 /** The instant the engine ends a terminal pre-state cell's task at. */
 export const TERMINAL_PRE_STATE_ENDED_AT_MS = NOW
 
@@ -4148,11 +4156,17 @@ async function endedWithNothingRecorded(f: StoreFixture): Promise<string> {
 export function observeTerminalPreState(
   makeFixture: StoreFixtureFactory,
   label: MatrixWriteLabel,
-  state: TerminalState,
+  state: EndedPreState,
 ): Promise<TerminalPreStateObservation> {
   return withFixture(makeFixture, `terminal-pre-state-${label}-${state}`, async (f) => {
     await seedBase(f)
-    await invoke(ENDING_LABEL[state], portsOver(f), POISON_INVOCATION)
+    if (state === 'failed with a saga') {
+      // The base task is put in the rolling-back phase, and its rollback fails for good.
+      await f.raw.batch('poison:rolling-back', rollingBack(TASK, RUN), 'write')
+      await invoke('fail-rollback', portsOver(f), POISON_INVOCATION)
+    } else {
+      await invoke(ENDING_LABEL[state], portsOver(f), POISON_INVOCATION)
+    }
     await seedHealthyTrigger(f.raw, label)
     // The healthy call that records a task's outcome records this one's.
     const healthyTarget = { ...HEALTHY_INVOCATION, endedChildId: await endedWithNothingRecorded(f) }

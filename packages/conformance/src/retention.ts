@@ -21,8 +21,10 @@ import {
 } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import {
+  ENDED_PRE_STATES,
   ENDED_TASK_SHAPE_CELLS,
   type EndedChildReplayObservation,
+  type EndedPreState,
   type EndedTaskStamp,
   type EndedTaskStamps,
   HEALTHY_INVOCATION,
@@ -369,16 +371,19 @@ function revives(label: MatrixWriteLabel, state: string): boolean {
 export async function terminalPreStateCase(
   makeFixture: StoreFixtureFactory,
   label: MatrixWriteLabel,
-  state: TerminalState,
+  state: EndedPreState,
 ): Promise<{ observed: TerminalPreStateObservation; expected: TerminalPreStateObservation }> {
   const observed = await observeTerminalPreState(makeFixture, label, state)
-  const after = (before: EndedTaskStamp): EndedTaskStamp =>
-    revives(label, before.state)
+  // A revival moves the stamp of the failed task it revives. A task that failed with a
+  // saga is failed too, and `retry-task` refuses it, so the stamp of the cell's task stays.
+  const sagaBegan = state === 'failed with a saga'
+  const after = (taskId: string, before: EndedTaskStamp): EndedTaskStamp =>
+    revives(label, before.state) && !(sagaBegan && taskId === POISON_INVOCATION.taskId)
       ? { state: 'pending', stampedAtMs: TERMINAL_PRE_STATE_INVOKED_AT_MS }
       : before
   const tasks: Record<string, EndedTaskStamps> = {}
   for (const [taskId, seen] of Object.entries(observed.tasks)) {
-    tasks[taskId] = { before: seen.before, after: after(seen.before) }
+    tasks[taskId] = { before: seen.before, after: after(taskId, seen.before) }
   }
   // The purge is the one label that removes a task that had ended. Its healthy call names
   // a unit that completed at the cell's first instant, and is sent a window later, so that
@@ -392,15 +397,26 @@ export async function terminalPreStateCase(
   }
   // The task the cell is about was ended by the engine, at the instant the cell set. It is
   // expected whether or not it was read, so a cell whose task had not ended fails.
-  const ended = { state, stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS }
-  tasks[POISON_INVOCATION.taskId] = { before: ended, after: after(ended) }
+  const ended = {
+    state: sagaBegan ? 'failed' : state,
+    stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS,
+  }
+  tasks[POISON_INVOCATION.taskId] = {
+    before: ended,
+    after: after(POISON_INVOCATION.taskId, ended),
+  }
   return {
     observed,
     expected: { reachedTheEndedTask: true, fired: true, healthy: 'fulfilled', tasks },
   }
 }
 
-function terminalPreStateTitle(label: MatrixWriteLabel, state: TerminalState): string {
+function terminalPreStateTitle(label: MatrixWriteLabel, state: EndedPreState): string {
+  if (state === 'failed with a saga' && label !== 'purge-unit') {
+    return label === 'retry-task'
+      ? 'retry-task refuses a task that failed with a saga, and leaves its stamp where its ending put it'
+      : `${label} leaves the stamp of a task that failed with a saga where its ending put it`
+  }
   if (label === 'purge-unit') {
     return `purge-unit leaves a ${state} task younger than its window as its ending left it, and takes the unit that is a window old`
   }
@@ -466,7 +482,7 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
 
     describe('a write label over a task that had ended', () => {
       for (const label of MATRIX_WRITE_LABELS) {
-        for (const state of TERMINAL_STATES) {
+        for (const state of ENDED_PRE_STATES) {
           it(terminalPreStateTitle(label, state), async () => {
             const { observed, expected } = await terminalPreStateCase(makeFixture, label, state)
             expect(observed).toEqual(expected)

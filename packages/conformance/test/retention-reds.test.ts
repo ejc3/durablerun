@@ -2,7 +2,11 @@ import { type SqlExecutor, type SqlStatement, TERMINAL_STATES } from '@durableru
 import { describe, expect, it } from 'vitest'
 import { MATRIX_WRITE_LABELS } from '../src/fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from '../src/index.js'
-import { ENDED_TASK_SHAPE_CELLS, POISON_INVOCATION } from '../src/poison-matrix.js'
+import {
+  ENDED_PRE_STATES,
+  ENDED_TASK_SHAPE_CELLS,
+  POISON_INVOCATION,
+} from '../src/poison-matrix.js'
 import { type GridCell, runGridCells } from '../src/retention-grid.js'
 import {
   endedChildReplayCase,
@@ -124,7 +128,7 @@ describe('the stamp case of each path through a terminal batch can fail', () => 
 describe('the cell of each write label over an ended task can fail', () => {
   const TASK = POISON_INVOCATION.taskId
   for (const label of MATRIX_WRITE_LABELS) {
-    for (const state of TERMINAL_STATES) {
+    for (const state of ENDED_PRE_STATES) {
       it(`${label} from ${state}: a batch that moves the ended task's stamp is not what the cell expects`, async () => {
         const { observed, expected } = await terminalPreStateCase(
           bent(label, {
