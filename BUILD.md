@@ -7018,6 +7018,32 @@ these three things; nothing else in the system does I/O, time, or randomness.
     gone against the wrong reading, a MySQL case asserted what is always true, the corpus
     held one of the two shapes MySQL writes a purge in, and the port's refusal of a bad
     cursor had no case.
+  - The one review of this pull request found no reachable way for the port to lose,
+    duplicate or misattribute durable state, and four things, all LOW, and
+    `postmortems/pr5.2c2-purge-port-review.md` holds the round. Three count. Fixed here,
+    the two product ones red first: core's entry exported the builders of a purge, which
+    took the barrier's inputs from their caller, and exports the factory of the port alone
+    now, with the parent read from the key by the builder and the windows a type one
+    function makes; the port read a member of an object argument a second time after its
+    check, and takes one reading of every argument now; and the limit of a listing, with
+    the refusal of options that are no object, had no case and has one, with a registered
+    mutation. The fourth, a second count of a unit's checkpoints, counts 0 and is the
+    option below. No review follows the fold: each change was checked by running it, and
+    each new case was seen failing, by its red commit or under its registered mutation.
+  - Option for the unit's read, not built, with its trigger: count a unit's checkpoints
+    once. A purge counts them in the compare-and-set's cap check, where the count stops
+    one row past the cap, and again, unbounded, in the read of the unit the deletes are
+    held to. At 200,000 checkpoints on libSQL the two counts took 20.4 to 21.2 ms and
+    16.0 to 16.8 ms of a 285.8 ms purge. The cap was measured with both counts in place,
+    so its number stands. Trigger: a measured writer hold near the cap that matters to a
+    deployment, or the next change to the unit's read or to the cap.
+  - Option for the scheduler port, not built, with its trigger: one reading of each object
+    argument, as the retention port takes. The scheduler port's check of strings reads a
+    member of an options object, and a store's method reads it again: a member that
+    answers its second reader another value is bound unchecked. The SDK hands the port
+    values it has already read once, so no task's code reaches the second reading through
+    it. Trigger: the next change to a port method that binds a member of an object
+    argument.
   - Option for PostgreSQL's `tasks_terminal`, not built, with its trigger: `task_id` as a
     fourth column, which hands the candidates out in the order they are read in and
     removes the incremental sort of one instant's tasks (DESIGN.md §3.12). It changes

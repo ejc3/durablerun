@@ -6872,7 +6872,25 @@ section on 2026-10-03.
   that gates it is the compare-and-set of a purge. So no other batch can delete
   a row of a unit, today or after a later change. A generated delete may bind a
   queue only under that same stamp, and every other generated delete that binds
-  one is refused as before.
+  one is refused as before. The rule says which statement may gate a delete.
+  What that statement requires is its builder's, so the builder is not handed
+  out. Of retention, core's entry exports the factory of the port
+  (`createRetention`), the dialect it is made from (`RetentionDialect`) and the
+  type it hands out (`HeldRetention`): what a store's factory and a caller of
+  the port need. The statements of a purge, the function that adds them to a
+  batch, the maker of a policy's windows and the mark stay inside core, because
+  they take the barrier's inputs, and whoever can hand them inputs has no
+  barrier in front of them. Inside core two of those inputs are nobody's to
+  choose either. The builder of the compare-and-set reads the unit's parent
+  from the unit's key itself, and builds nothing for a key in the engine's
+  namespace that names no parent. A policy's windows are a nominal type that
+  `retentionWindowsMs` alone makes, after it has held each window to the floor,
+  so a window under the floor takes a cast to write. The stamp proof is the
+  dialect's fragment. A case in core holds that, of everything retention's
+  three modules export, the entry exports the factory alone. A case on libSQL
+  holds the state that showed the gap: a child that completed a moment ago
+  under a parent that is still running, which nothing the entry exports can
+  delete.
 - **The port.** `Retention` has two methods and is apart from `SchedulerStore`.
   Core holds the one implementation (`createRetention`), and each store package
   exports a factory that reaches it with that store's batches and fragments.
@@ -6887,12 +6905,23 @@ section on 2026-10-03.
   policy)` sends the batch for one unit. It answers the task's id with the rows
   that went from each table, or null, having written nothing, when the barrier
   keeps the unit. The caller passes the key the task was spawned under, which a
-  candidate carries, and the compare-and-set holds the row to it: B5's parent is
-  parsed from that key before the batch is built, so a key that is not the
-  row's would name another parent, and the unit is kept. Both methods check
-  their strings at the port as every store method does, and core refuses a
-  policy whose window is under 3,600 seconds, is no whole number, or is missing,
-  before anything is sent.
+  candidate carries, and the compare-and-set holds the row to it: the builder of
+  the compare-and-set parses B5's parent from that key, so a key that is not
+  the row's would name another parent, and the unit is kept. The port takes one
+  reading of every argument before anything else. An object is read member by
+  member, each of its own members once, into a frozen copy, and an object a
+  member holds is read the same way. The check of strings and the method both
+  read that copy, so what the check read is what a batch binds, for the unit,
+  the cursor, the options and the policy, and for a member any of them gains.
+  A member an argument only inherits is not read, and is as one left out. Both
+  methods then check their strings as every store method does. Each refusal is
+  thrown before anything is sent, and is one of three kinds. A string no store
+  keeps, and an argument that must be an object and is not, the options of a
+  listing left out included, is an `InvalidDurableStringError`. A policy whose
+  window is under 3,600 seconds, is no whole number, or is missing, and a
+  cursor whose instant is no epoch-ms in range, is a `PortRefusalError`. A
+  limit that is no whole number from 1 to 1,000 is a `RangeError`, as it is for
+  an operator's read.
 - **The cap.** A unit with more than `MAX_PURGE_UNIT_CHECKPOINTS` checkpoints,
   200,000, is kept: a purge deletes a unit whole in one batch, and a batch holds
   the database's writer for as long as it runs. The cap is the largest unit
