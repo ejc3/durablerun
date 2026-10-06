@@ -780,8 +780,8 @@ accepts it.
     gone`, `what keeps a unit that no engine path leaves`, `what the retention
     port refuses` and `a spawn under a key whose task a purge takes` hold the
     rest. `purge-unit` is enrolled in the fault matrix, the poison matrix and
-    the stale-token column, and the fuzz walk purges under fake time with every
-    purge held to the oracle. Seen failing by name on libSQL: with the parent
+    the stale-token column, and every walk of the fuzz shards purges under fake
+    time with every purge held to the oracle. Seen failing by name on libSQL: with the parent
     conjunct deleted, 16 blocks of the grid and the 4 consequence cases of a
     parent; with the carry conjunct deleted, 16 blocks of the grid and the case
     of the woken run, whose history then holds `wake-payload-mismatch`. On
@@ -7003,6 +7003,26 @@ these three things; nothing else in the system does I/O, time, or randomness.
     this entry was written: the rule's last condition was aimed at the stamp of another
     statement, and a bent purge now reports what it threw, so that the case of a run in
     another queue fails under its own marker.
+  - Found by the branch's own checks after the port was built, each fixed in a commit of
+    its own. (1) The purge had been added to the fuzz walk for every caller. Three surfaces
+    walk the engine for the states a walk leaves, with floors measured before the purge
+    existed, and a purge takes the failed and the ended tasks they read: the case of the
+    operator's admission read failed its floor of revivals on the three dialects, 4 where
+    main reaches 8. The walk now purges only for a caller that asks, which the fuzz shards
+    do, and every other caller's walk is what it was, draw for draw. (2) The spawn's second
+    send minted ids of its own, so a minted id that something else already held was cured
+    in silence where the spawn had always been refused, and two regression cases of main
+    failed. The second send takes the ids of the first. (3) A read of the branch for what
+    could be simpler found four gaps in its tests: the contest judged a row whose task is
+    gone against the wrong reading, a MySQL case asserted what is always true, the corpus
+    held one of the two shapes MySQL writes a purge in, and the port's refusal of a bad
+    cursor had no case.
+  - Option for PostgreSQL's `tasks_terminal`, not built, with its trigger: `task_id` as a
+    fourth column, which hands the candidates out in the order they are read in and
+    removes the incremental sort of one instant's tasks (DESIGN.md §3.12). It changes
+    schema version 12 on PostgreSQL and its measured costs. Trigger: a queue in which more
+    tasks end at one instant than a page of candidates should read, as a sweep whose limit
+    is raised past a few thousand would leave.
   - The options whose trigger was this pull request. Built: the saga-failed pre-state of
     the cells (the entry of PR5.2c1). Not built, each with what is left of its trigger
     where it stands: `inspect --key` in one batch (the entry of PR5.3b1), whose trigger

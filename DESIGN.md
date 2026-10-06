@@ -6957,7 +6957,16 @@ deletes had none to find their keys by. The version adds indexes and nothing els
   state IN ('completed','failed','cancelled') AND fence_at_ms IS NOT NULL`. A task enters it
   when it ends and leaves it when it is revived or purged, so no write of a live task
   touches it. On MySQL, which has no partial index, it holds every task, and a task moves
-  in it at every write of its row, because every such write stamps the row.
+  in it at every write of its row, because every such write stamps the row. The read orders
+  its rows by the stamp and then by the task's id, so that a page ends at a place the next
+  can start after. libSQL's index of a table that has no rowid and InnoDB's secondary index
+  both end in the primary key, and hand the rows out in that order. PostgreSQL's index ends
+  at the stamp, so PostgreSQL sorts each group of tasks that ended at one instant, an
+  incremental sort that stops at the LIMIT: a page reads its limit and the rest of one
+  instant's tasks. A batch ends one task, and a sweep at most its limit of them, so such a
+  group is small. The PostgreSQL plan test refuses a sort of every ended task of a state,
+  which no LIMIT would bound. BUILD.md records the fourth column as an option with its
+  trigger.
 - `runs_wake_holders` on `runs (queue, wake_event)`, on libSQL and PostgreSQL, is partial to
   the runs that hold an event's payload: `WHERE wake_event IS NOT NULL AND event_payload IS
   NOT NULL`. That is the set B3 asks about. A run enters the index when an event wakes it
@@ -7043,7 +7052,11 @@ follow from bounding rows by deleting task rows.
    purge takes that task before the spawn reads it. So when the insert loses
    and no task explains it, the store sends the spawn's batch once more,
    because the key is then free. A second loss that no task explains is real,
-   and is thrown. The cases of `a spawn under a key whose task a purge takes`
+   and is thrown. The second send takes the task id and the run id the first
+   minted, which its lost insert left unused. So a loss that is no purge's
+   doing, a minted id that something else already holds, loses again and is
+   refused, as it was before anything deleted a task. One function of core
+   sends both, for every store. The cases of `a spawn under a key whose task a purge takes`
    hold both on every dialect, and the contest spawns under the keys of units
    being purged with no spawn throwing.
 2. **A child handle is valid until its unit is purged, and an await after that
