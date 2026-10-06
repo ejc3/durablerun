@@ -20,6 +20,7 @@ import {
 } from '../src/index.js'
 import { firstInCauseChain, isNumber } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
+import { holdingBatchesAtTheRow } from './fixture-lock-wait.js'
 
 /** MySQL errors that mean a column's type refused the value, under the strict mode every session sets. */
 const STRUCTURAL_VALUE_ERRNOS = new Set([
@@ -139,6 +140,7 @@ export async function makeMysqlFixture(
       raw,
       holdWriteLock: (taskId: string, during: () => Promise<void>) =>
         opened.holdTaskRowLock(taskId, during),
+      holdBatchesAtTheRow: holdingBatchesAtTheRow(opened.holdTaskRowLock),
       shortenFirst: [],
       // MySQL waits at the locked row until innodb_lock_wait_timeout, set in whole seconds.
       shortenInside: [{ sql: 'SET SESSION innodb_lock_wait_timeout = 1', args: [] }],

@@ -131,6 +131,10 @@ export async function recordHistory(
   await operator.tableRows('q')
   await operator.eventWaiters('q', 'event')
   await operator.agedTasks('q', { olderThanSeconds: 0, limit: 20 })
+  // What a drive verb reads before it names a refusal: an event's stored payload, and
+  // what the retry guard, a claim and a sweep each say of one task.
+  await operator.eventPayload('q', 'event')
+  await operator.taskAdmission('q', parent.taskId)
   const childRun = await startedOf(child.taskId)
   await store.complete('q', childRun.runId, childRun.claimToken, '{}')
   const wokenParent = await startedOf(parent.taskId)
@@ -177,6 +181,9 @@ export async function recordHistory(
   await store.failRollback('q', lastPass.runId, lastPass.claimToken, '{}', null, sagaTried)
   await store.retryTask('q', failed.taskId)
   await store.cancelTask('q', failed.taskId)
+  // The same label asked to spare a saga, which is its second variant.
+  const spared = await store.spawn('q', 'is-spared', '{}')
+  await store.cancelTask('q', spared.taskId, { unlessSagaBegan: true })
   // Last, because it moves the clock: a launch that is lost, a worker that dies and whose
   // lease an advisory signal shortens first, and a task never started by its deadline.
   await claimed('launch-is-lost')

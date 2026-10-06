@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import {
   type ClaimedRun,
   type FailedRollback,
@@ -23,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from './engine-history.js'
 import { TERMINAL_BATCH_LABELS } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { snapshot } from './poison-matrix.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -31,6 +33,7 @@ import {
   claimActivated,
   claimOne,
   refusalName,
+  warmConnections,
   withFixture,
 } from './scenario.js'
 
@@ -633,6 +636,113 @@ export function sagaConformance(dialect: string, makeFixture: StoreFixtureFactor
         states: ['cancelled', 'cancelled'],
       })
     })
+
+    // Cancel, under "refused", which a caller asks for: the model checks it in
+    // SagasCancelRefused.cfg, where no task is cancelled while it is rolling back.
+    it('a cancellation that spares a saga cancels a task whose saga has not begun, and leaves one that is rolling back as it is', async () => {
+      // A registered step started, and the task has not failed: its saga has not begun.
+      const forward = await f.store.spawn(Q, 'saga', '{}')
+      await startStep(f, await claimActivated(f.store, Q, 'w-forward'), 'a', 1)
+      expect(await f.store.cancelTask(Q, forward.taskId, { unlessSagaBegan: true })).toBe(true)
+      const { taskId, pass } = await rollingBack(f)
+      const before = await snapshot(f.raw)
+      expect(
+        {
+          cancelled: await f.store.cancelTask(Q, taskId, { unlessSagaBegan: true }),
+          wroteNothing: isDeepStrictEqual(await snapshot(f.raw), before),
+          task: (await taskRow(f, taskId))?.state,
+        },
+        'mutation-verdict:behavior:cancel-spares-a-saga-that-began',
+      ).toEqual({ cancelled: false, wroteNothing: true, task: 'running' })
+      // The pass still holds its claim: it runs the rollback and ends the task.
+      await checkpointOwned(f.store, Q, pass, rollbackOf('a'), 'null', 60)
+      expect(await f.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)).toEqual({
+        rollingBack: false,
+      })
+      expect(await f.store.getTaskResult(Q, taskId)).toEqual({
+        state: 'failed',
+        failureReasonJson: CAUSE,
+        rollback: { outcome: 'complete' },
+      })
+      // The option left out, empty, or false asks for nothing: the cancellation halts.
+      for (const options of [undefined, {}, { unlessSagaBegan: false }]) {
+        const halted = await rollingBack(f)
+        expect([options, await f.store.cancelTask(Q, halted.taskId, options)]).toEqual([
+          options,
+          true,
+        ])
+      }
+    })
+
+    // The same cancel when the saga begins BESIDE it, which is what the option is for.
+    // The failure that begins the saga is held open at the task's row, and the sparing
+    // cancel is issued while it is open. What keeps the cancel from halting that saga
+    // differs by dialect (DESIGN.md §3.10). libSQL runs each batch whole, one after the
+    // other. On PostgreSQL and MySQL the cancel and the failure each take the task's
+    // completion-event lock before their first statement, so the cancel's statement does
+    // not begin until the failure has committed, and it reads the phase marker. Were the
+    // cancel to stop taking that lock, its statement would begin before the marker is
+    // there, and this case fails.
+    it('a cancellation that spares a saga answers false when the saga begins beside it, and the rollback pass stands', async () => {
+      const surface = await f.lockWait()
+      try {
+        const at: StoreFixture = { ...f, store: surface.store, raw: surface.raw }
+        // A connection each for the failure and the cancel, opened before either is sent.
+        await warmConnections(surface.raw, 'sparing-cancel', 3)
+        const { taskId } = await surface.store.spawn(Q, 'saga', '{}', { maxAttempts: 1 })
+        const run = await claimActivated(surface.store, Q, 'w-forward')
+        await startStep(at, run, 'a', 1)
+        const answered = <T>(call: Promise<T>) =>
+          call.then(
+            (value) => ({ answered: value }),
+            (error: unknown) => ({ rejected: error instanceof Error ? error.name : String(error) }),
+          )
+        let failing: ReturnType<typeof answered<{ rollingBack: boolean }>> | undefined
+        let cancelling: ReturnType<typeof answered<boolean>> | undefined
+        await surface.holdBatchesAtTheRow(taskId, async (arrived) => {
+          // The worker's terminal failure, which begins the saga and places the pass.
+          failing = answered(surface.store.fail(Q, run.runId, run.claimToken, CAUSE, null))
+          await arrived()
+          cancelling = answered(surface.store.cancelTask(Q, taskId, { unlessSagaBegan: true }))
+          await arrived()
+        })
+        expect({
+          failed: await failing,
+          cancelled: await cancelling,
+          task: (await taskRow(at, taskId))?.state,
+          phaseMarker: (await checkpointNames(at, taskId)).includes(SAGA_PHASE_CHECKPOINT),
+          runs: (
+            await rowsOf(
+              surface.raw,
+              'SELECT attempt, state FROM runs WHERE task_id = ? ORDER BY attempt',
+              [taskId],
+            )
+          ).map((row) => [Number(row.attempt), String(row.state)]),
+        }).toEqual({
+          failed: { answered: { rollingBack: true } },
+          cancelled: { answered: false },
+          task: 'pending',
+          phaseMarker: true,
+          runs: [
+            [1, 'failed'],
+            [2, 'pending'],
+          ],
+        })
+        // The pass was not cancelled: it is claimed, runs the rollback and ends the task.
+        const pass = await claimActivated(surface.store, Q, 'w-pass')
+        await checkpointOwned(surface.store, Q, pass, rollbackOf('a'), 'null', 60)
+        expect(await surface.store.fail(Q, pass.runId, pass.claimToken, CAUSE, null)).toEqual({
+          rollingBack: false,
+        })
+        expect(await surface.store.getTaskResult(Q, taskId)).toEqual({
+          state: 'failed',
+          failureReasonJson: CAUSE,
+          rollback: { outcome: 'complete' },
+        })
+      } finally {
+        await surface.close()
+      }
+    }, 60_000)
 
     // FailedOutcomeHonest, for the error beside the outcome. `errorJson` is the failure of
     // the rollback that ended the task. An attempt that failed with budget left ended

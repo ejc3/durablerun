@@ -347,6 +347,11 @@
 \*     event that are still waiting; no engine actor sends it
 \*   'aged-tasks' [read] -- an operator's read of a queue's live tasks in the order
 \*     they were enqueued, oldest first; no engine actor sends it
+\*   'event-payload' [read] -- an operator's read of one event's stored payload, for
+\*     its digest; no engine actor sends it
+\*   'task-admission' [read] -- an operator's read of what the retry guard, a claim
+\*     and a sweep each say of one task now, by the predicates 'retry-task', 'claim'
+\*     and 'sweep:scan' hold; no engine actor sends it
 \*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
 \*   'migrate:version' [setup] -- infrastructure, not protocol
 \*   'admin:set-fake-now' [setup] -- infrastructure, not protocol

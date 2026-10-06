@@ -1,6 +1,7 @@
 import { InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import type { OperatorReads, SchedulerStore } from './ports.js'
+import type { CancelOptions } from './types.js'
 import { requireDurableString, requireIdentifiersFit } from './validate.js'
 
 const {
@@ -236,7 +237,7 @@ export const PORT_STRINGS = frozenThroughout({
   getTaskResult: ['queue', 'taskId'],
   nextWakeAtEpochMs: ['queue'],
   driverHeartbeat: ['queue', 'driverId', null],
-  cancelTask: ['queue', 'taskId'],
+  cancelTask: ['queue', 'taskId', null],
   retryTask: ['queue', 'taskId'],
 } as const satisfies PortStrings)
 
@@ -306,6 +307,44 @@ function requireNamed(named: NamedStrings | undefined, value: unknown, where: st
  */
 export function requirePortStrings(method: PortMethod, args: readonly unknown[]): void {
   requireArguments(PORT_STRINGS[method], method, args)
+  if (method === 'cancelTask') requireSwitches('cancelTask[2]', CANCEL_SWITCHES, args[2])
+}
+
+/**
+ * The options of `cancelTask`, each of which a store reads as a switch. The type names
+ * every member of `CancelOptions`, so an option that type gains stops the build until it
+ * is named here.
+ */
+const CANCEL_SWITCHES: Readonly<Record<keyof CancelOptions, 'boolean'>> = freeze({
+  unlessSagaBegan: 'boolean',
+})
+
+/**
+ * Hold an options object of switches. It may be left out, and so may each switch. One that
+ * is passed is an object, and a switch that is passed is a boolean. A store asks whether a
+ * switch is `true`, so any other value there would read as the switch left off: a caller
+ * that passed `1` or `'true'` for `unlessSagaBegan` asked for a saga to be spared, and the
+ * cancel would have halted it. The table of strings above names no string here, which is
+ * why these options have a check of their own.
+ */
+function requireSwitches(
+  where: string,
+  switches: Readonly<Record<string, 'boolean'>>,
+  value: unknown,
+): void {
+  if (value === undefined) return
+  if (typeof value !== 'object' || value === null || isArray(value)) {
+    throw new InvalidDurableStringError(`${where} must be an object`)
+  }
+  const names = objectKeys(switches)
+  for (let index = 0; index < names.length; index++) {
+    const name = names[index]
+    if (name === undefined) continue
+    const member: unknown = reflectGet(value, name)
+    if (member !== undefined && typeof member !== 'boolean') {
+      throw new InvalidDurableStringError(`${where}.${name} must be a boolean`)
+    }
+  }
 }
 
 /** Hold a call's arguments to the names one row of a table gives them, in order. */
@@ -342,6 +381,8 @@ export const OPERATOR_READ_STRINGS = frozenThroughout({
   queueStatus: ['queue'],
   tableRows: ['queue'],
   eventWaiters: ['queue', 'eventName'],
+  eventPayload: ['queue', 'eventName'],
+  taskAdmission: ['queue', 'taskId'],
 } as const satisfies PortStringsOf<OperatorReads>)
 
 /** Every method the operator read table names, which is every method of that port. */

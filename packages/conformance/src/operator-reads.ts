@@ -1288,6 +1288,8 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
           queueStatus: ['q'],
           tableRows: ['q'],
           eventWaiters: ['q', 'a-name'],
+          eventPayload: ['q', 'a-name'],
+          taskAdmission: ['q', 'a-name'],
         }
         const accepted: string[] = []
         let asked = 0
@@ -1311,8 +1313,8 @@ export function operatorReadsConformance(dialect: string, makeFixture: StoreFixt
           }
         }
         expect(accepted).toEqual([])
-        // Twelve places: two in each of four methods, and the queue of the other four.
-        expect({ places, asked }).toEqual({ places: 12, asked: 12 * refusedNames.length })
+        // Sixteen places: two in each of six methods, and the queue of the other four.
+        expect({ places, asked }).toEqual({ places: 16, asked: 16 * refusedNames.length })
         expect(recorder.batches).toEqual([])
       }))
   })

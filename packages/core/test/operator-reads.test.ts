@@ -6,10 +6,12 @@ import {
   OPERATOR_LIST_CAP,
   OPERATOR_READ_METHODS,
   OPERATOR_READ_STRINGS,
-  type OperatorReadsDialect,
   OPERATOR_TABLE_ROWS_CAP,
+  type OperatorReadsDialect,
   PORT_STRING_RULES,
   QUEUE_TABLES,
+  RETRY_CONJUNCTS,
+  type RetryConjuncts,
   type SqlExecutor,
   type SqlRow,
   createOperatorReads,
@@ -56,6 +58,8 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
       tableRows: () => batch('table-rows'),
       eventWaiters: () => batch('event-waiters'),
       agedTasks: () => batch('aged-tasks'),
+      eventPayload: () => batch('event-payload'),
+      taskAdmission: () => batch('task-admission'),
     },
     fakeClock: async () => {
       sent.push('fake-clock')
@@ -66,6 +70,10 @@ function readsAnswering(answers: Readonly<Record<string, SqlRow[][]>>, fakeClock
     rollbackError: sqlFragment('NULL'),
     taskOwnsRun: sqlFragment('t.task_id = r.task_id'),
     liveRunOfTask: sqlFragment('r.task_id = t.task_id'),
+    storedPayloadType: sqlFragment("'text'"),
+    retryConjuncts: Object.fromEntries(
+      RETRY_CONJUNCTS.map((name) => [name, sqlFragment('1 = 1')]),
+    ) as RetryConjuncts,
     owed: {
       pendingRuns: dueByQueue('r'),
       sleepingRuns: dueByQueue('r'),
@@ -155,6 +163,8 @@ const CALLS = {
   queueStatus: ['q'],
   tableRows: ['q'],
   eventWaiters: ['q', 'e'],
+  eventPayload: ['q', 'e'],
+  taskAdmission: ['q', 't'],
 } as const
 
 describe("the strings an operator's read carries", () => {
@@ -1584,5 +1594,143 @@ describe("how an operator's read of a queue's oldest live tasks is read", () => 
       refused,
       'mutation-verdict:behavior:operator-reads-refuse-an-age-or-a-limit-it-cannot-take',
     ).toEqual(refused.map(() => ['refused', []]))
+  })
+})
+
+describe('how the reads a drive verb asks decode a row', () => {
+  /** The guard's row with every conjunct true but those named. */
+  const guard = (...refused: string[]): SqlRow => ({
+    failed: 1,
+    ...Object.fromEntries(RETRY_CONJUNCTS.map((name) => [name, 1])),
+    ...Object.fromEntries(refused.map((name) => [name, 0])),
+  })
+  const task: SqlRow = { state: 'failed', cancel_at_ms: null, sweepCancels: 0 }
+  const admitted = (row: Partial<SqlRow> & { run_id: string }): SqlRow => ({
+    state: 'pending',
+    claim_gen: 0,
+    available_at_ms: 1000,
+    claim_expires_at_ms: null,
+    claimTakesPending: 0,
+    claimTakesSleeping: 0,
+    sweepReclaims: 0,
+    ...row,
+  })
+  const admission = (guardRow: SqlRow, taskRow: SqlRow, runs: SqlRow[] = []) => ({
+    'task-admission': [[guardRow], [taskRow], runs, [{ now_ms: 5000 }]],
+  })
+
+  it("answers an event's payload only when the stored value is text, and names the kind of any other", async () => {
+    const stored = (row: SqlRow | undefined) =>
+      readsAnswering({ 'event-payload': [row === undefined ? [] : [row]] }).reads.eventPayload(
+        'q',
+        'e',
+      )
+    expect(
+      {
+        text: await stored({ payload: '{"a":1}', payload_type: 'text' }),
+        noRow: await stored(undefined),
+        // SQLite stores what it is handed: a value that is no text has another type there.
+        blob: await stored({ payload: new Uint8Array([1, 2]), payload_type: 'blob' }),
+        // A dialect that calls the type text and hands back a number is not believed.
+        number: await stored({ payload: 7, payload_type: 'text' }),
+        nullValue: await stored({ payload: null, payload_type: 'null' }),
+      },
+      'mutation-verdict:behavior:operator-reads-answer-a-payload-only-as-text',
+    ).toEqual({
+      text: { exists: true, payloadJson: '{"a":1}' },
+      noRow: { exists: false },
+      blob: { exists: true, payloadJson: null, stored: 'blob' },
+      number: { exists: true, payloadJson: null, stored: 'number' },
+      nullValue: { exists: true, payloadJson: null, stored: 'null' },
+    })
+  })
+
+  it('reads every conjunct of the retry guard as its own flag, and refuses a flag that is no integer', async () => {
+    const { reads, sent } = readsAnswering(
+      admission(guard('hasNoLiveRun', 'sagaNotBegun'), { ...task, sweepCancels: 1 }),
+    )
+    const read = await reads.taskAdmission('q', 't')
+    expect(
+      read,
+      'mutation-verdict:behavior:operator-reads-read-each-conjunct-as-its-own-flag',
+    ).toEqual({
+      nowMs: 5000,
+      state: 'failed',
+      cancelAtMs: null,
+      retry: {
+        failed: true,
+        ...Object.fromEntries(RETRY_CONJUNCTS.map((name) => [name, true])),
+        hasNoLiveRun: false,
+        sagaNotBegun: false,
+      },
+      sweepCancels: true,
+      runs: [],
+      corrupt: [],
+    })
+    // One batch. Its last statement reads database time, and whether the clock is a test's is
+    // not read.
+    expect(sent).toEqual(['task-admission'])
+    // A task that is not there has no row in either read of it.
+    const absent = readsAnswering({ 'task-admission': [[], [], [], [{ now_ms: 5000 }]] }).reads
+    expect(await absent.taskAdmission('q', 't')).toBeNull()
+    // A dialect that answers a flag as text is refused: a string read as true would say a
+    // conjunct holds that does not.
+    for (const bad of ['1', 2, null, 0.5]) {
+      const refusing = readsAnswering(admission({ ...guard(), sagaNotBegun: bad }, task)).reads
+      await expect(refusing.taskAdmission('q', 't')).rejects.toThrow(
+        'task-admission sagaNotBegun must be the integer 0 or 1',
+      )
+    }
+  })
+
+  it('reads a conjunct that was not asked as not asked, and refuses that answer of a conjunct asked of every row', async () => {
+    // The attempts are out of range, so the conjunct that subtracts them was not asked.
+    const notAsked = { ...guard('attemptsInRange'), chargeIsTheAttemptsOrOneMore: 2 }
+    const read = await readsAnswering(admission(notAsked, task)).reads.taskAdmission('q', 't')
+    expect(
+      [
+        read?.retry.attemptsInRange,
+        read?.retry.chargeIsTheAttemptsOrOneMore,
+        read?.retry.chargeWithinBudget,
+      ],
+      'mutation-verdict:behavior:operator-reads-read-a-conjunct-that-was-not-asked',
+    ).toEqual([false, 'not-asked', true])
+    // A conjunct asked of every row answers 1 or 0 and nothing else.
+    const refusing = readsAnswering(admission({ ...guard(), hasARun: 2 }, task)).reads
+    await expect(refusing.taskAdmission('q', 't')).rejects.toThrow(
+      'task-admission hasARun must be the integer 0 or 1',
+    )
+  })
+
+  it('says a claim takes a run when the predicate of either state holds, and lists the runs by id', async () => {
+    const { reads } = readsAnswering(
+      admission(guard(), task, [
+        admitted({ run_id: 'r-b', state: 'sleeping', claimTakesSleeping: 1 }),
+        admitted({ run_id: 'r-c', state: 'running', claim_gen: 3, sweepReclaims: 1 }),
+        admitted({ run_id: 'r-a', claimTakesPending: 1 }),
+        admitted({ run_id: 'r-d', claim_expires_at_ms: -4 }),
+      ]),
+    )
+    const read = await reads.taskAdmission('q', 't')
+    expect(
+      read?.runs.map((one) => [one.runId, one.claimTakes, one.sweepReclaims]),
+      'mutation-verdict:behavior:operator-reads-a-claim-takes-a-run-of-either-state',
+    ).toEqual([
+      ['r-a', true, false],
+      ['r-b', true, false],
+      ['r-c', false, true],
+      ['r-d', false, false],
+    ])
+    // An instant outside its bounds is read as null and listed, with the run that holds it.
+    expect(read?.runs[3]?.claimExpiresAtMs).toBeNull()
+    expect(read?.corrupt).toEqual([
+      {
+        field: 'runs.claim_expires_at_ms',
+        runId: 'r-d',
+        reason: 'out-of-range',
+        stored: 'number',
+        value: '-4',
+      },
+    ])
   })
 })

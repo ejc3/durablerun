@@ -19,6 +19,7 @@ import {
 } from '../src/index.js'
 import { firstInCauseChain, isString } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
+import { holdingBatchesAtTheRow } from './fixture-lock-wait.js'
 
 const STRUCTURAL_NUMERIC_SQLSTATES = new Set([
   '22003', // numeric_value_out_of_range
@@ -111,6 +112,7 @@ export async function makePostgresFixture(
       raw,
       holdWriteLock: (taskId: string, during: () => Promise<void>) =>
         opened.holdTaskRowLock(taskId, during),
+      holdBatchesAtTheRow: holdingBatchesAtTheRow(opened.holdTaskRowLock),
       shortenFirst: [],
       // PostgreSQL waits at the locked row, inside the batch, until its lock_timeout.
       shortenInside: [{ sql: "SET LOCAL lock_timeout = '100ms'", args: [] }],

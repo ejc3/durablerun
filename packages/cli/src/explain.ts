@@ -1,6 +1,7 @@
 import {
   type EventWaiters,
   type RunFacts,
+  type TaskAdmission,
   type TaskFacts,
   type WaitFacts,
   isLiveState,
@@ -106,10 +107,22 @@ export const CAUSES = Object.freeze({
     next: 'inspect',
     meaning: "the task's state is not its live run's state",
   },
+  'deadline-no-sweep-cancels': {
+    verdict: 'inconsistent',
+    next: 'inspect',
+    meaning:
+      "the task's cancellation deadline passed, and the sweep's scan does not answer the task, so no sweep cancels it",
+  },
   'cancellation-deadline-passed': {
     verdict: 'late',
     next: 'sweep',
     meaning: "the task's cancellation deadline passed, and no sweep has cancelled it",
+  },
+  'lapsed-lease-no-sweep-reclaims': {
+    verdict: 'inconsistent',
+    next: 'inspect',
+    meaning:
+      "the run's lease expired, and the sweep's scan does not answer the run, so no sweep takes it back",
   },
   'lease-lapsed-unswept': {
     verdict: 'late',
@@ -132,6 +145,12 @@ export const CAUSES = Object.freeze({
     next: null,
     meaning:
       'the run is pending and not due yet: a start delay holds it, or the backoff after a lost launch or after a lease that ran out',
+  },
+  'due-run-no-claim-admits': {
+    verdict: 'inconsistent',
+    next: 'inspect',
+    meaning:
+      'the run is due, and no claim admits it: it or its task holds a row a claim cannot run safely, so no tick takes it',
   },
   'woken-unclaimed': {
     verdict: 'late',
@@ -267,6 +286,21 @@ export interface Evidence {
   readonly child?: ChildEvidence
   /** The waits still waiting on the event the task awaits, the task's own among them. */
   readonly waiters?: EventWaiters
+  /**
+   * What the engine's own guards say of the task's one live run and of the task, or that
+   * the rows moved between the read of the facts and the read of the guards.
+   */
+  readonly admission?: Admission | 'moved'
+}
+
+/** Whether the engine's next claim or sweep takes the move a task is owed, by the engine's own predicates. */
+export interface Admission {
+  /** A claim takes the task's live run. */
+  readonly claimTakes: boolean
+  /** The sweep takes the task's live run back. */
+  readonly sweepReclaims: boolean
+  /** The sweep cancels the task. */
+  readonly sweepCancels: boolean
 }
 
 /** Evidence `diagnose` needs before it can answer. */
@@ -274,6 +308,52 @@ export type Needed =
   | { readonly needs: 'checkpoints' }
   | { readonly needs: 'child'; readonly taskId: string }
   | { readonly needs: 'waiters'; readonly eventName: string }
+  | { readonly needs: 'admission' }
+
+/**
+ * What the read of the engine's guards says of a task, for the facts read a moment before
+ * it. The two are two snapshots, so the answer is taken only when the rows it was read
+ * beside are the rows of the facts: the task's state and deadline, and the live run's
+ * state, generation and instants. Anything else, a task that is gone and an integer that
+ * read as corrupt among it, is `moved`: the engine took the row between the two reads, and
+ * asking again answers it.
+ *
+ * The guards read the clock as well as the row. A deadline, a wake or the end of a lease
+ * that lies after the facts' database time and at or before the guards' passed between the
+ * two reads: the facts hold it as ahead and the guards as behind, and no row moved. That
+ * is `clock-passed`, and the caller reads the facts again.
+ */
+export function admissionOf(
+  facts: TaskFacts,
+  read: TaskAdmission | null,
+): Admission | 'moved' | 'clock-passed' {
+  const live = facts.runs.filter((run) => isLiveState(run.state))
+  const [run] = live
+  const now = read?.runs.find((one) => one.runId === run?.runId)
+  if (read === null || run === undefined || live.length !== 1 || now === undefined) return 'moved'
+  const same =
+    read.corrupt.length === 0 &&
+    read.state === facts.task.state &&
+    read.cancelAtMs === facts.task.cancelAtMs &&
+    now.state === run.state &&
+    now.claimGen === run.claimGen &&
+    now.availableAtMs === run.availableAtMs &&
+    now.claimExpiresAtMs === run.claimExpiresAtMs
+  if (!same) return 'moved'
+  const passed = (at: number | null): boolean =>
+    at !== null &&
+    facts.nowMs !== null &&
+    read.nowMs !== null &&
+    facts.nowMs < at &&
+    at <= read.nowMs
+  const passedBetween = [read.cancelAtMs, now.availableAtMs, now.claimExpiresAtMs].some(passed)
+  if (passedBetween) return 'clock-passed'
+  return {
+    claimTakes: now.claimTakes,
+    sweepReclaims: now.sweepReclaims,
+    sweepCancels: read.sweepCancels,
+  }
+}
 
 interface View {
   readonly facts: TaskFacts
@@ -385,6 +465,36 @@ const statesDifferArm: RunArm = ({ facts }, run) =>
         facts: { taskState: facts.task.state, runId: run.runId, runState: run.state },
       }
 
+/**
+ * A move the engine does not take. A cause that names a move the driver owes asks first
+ * whether the engine's own predicate admits the row, and the three arms below answer when
+ * it does not: no tick and no sweep comes to such a row, so the command a late cause
+ * suggests would change nothing. They decline when the row moved between the two reads,
+ * and the late cause below each then answers as it would have.
+ */
+const notTakenBy =
+  (
+    cause: Cause,
+    owed: (view: View, run: RunFacts) => number | null,
+    taken: (admission: Admission) => boolean,
+    facts: (view: View, run: RunFacts) => Readonly<Record<string, unknown>>,
+  ): RunArm =>
+  (view, run) => {
+    const at = owed(view, run)
+    if (!isPast(view, at)) return null
+    const { admission } = view.evidence
+    if (admission === undefined) return { needs: 'admission' }
+    if (admission === 'moved' || taken(admission)) return null
+    return { cause, facts: { ...facts(view, run), owedAtMs: at } }
+  }
+
+const deadlineNoSweepCancelsArm = notTakenBy(
+  'deadline-no-sweep-cancels',
+  (view) => view.facts.task.cancelAtMs,
+  (admission) => admission.sweepCancels,
+  (_view, run) => ({ runId: run.runId, runState: run.state }),
+)
+
 const cancellationDeadlinePassedArm: RunArm = (view, run) =>
   isPast(view, view.facts.task.cancelAtMs)
     ? {
@@ -409,6 +519,13 @@ const lease = (run: RunFacts) => ({
   leaseExpiresAtMs: run.claimExpiresAtMs,
   heartbeatAtMs: run.heartbeatAtMs,
 })
+
+const lapsedLeaseNoSweepReclaimsArm = notTakenBy(
+  'lapsed-lease-no-sweep-reclaims',
+  (_view, run) => (run.state === 'running' ? run.claimExpiresAtMs : null),
+  (admission) => admission.sweepReclaims,
+  (_view, run) => lease(run),
+)
 
 const leaseLapsedArm: RunArm = (view, run) =>
   run.state === 'running' && isPast(view, run.claimExpiresAtMs)
@@ -447,6 +564,13 @@ const pendingDelayedArm: RunArm = (view, run) =>
         facts: { runId: run.runId, attempt: run.attempt, relaunchCount: run.relaunchCount },
       }
     : null
+
+const dueRunNoClaimAdmitsArm = notTakenBy(
+  'due-run-no-claim-admits',
+  (_view, run) => (run.state === 'pending' || run.state === 'sleeping' ? run.availableAtMs : null),
+  (admission) => admission.claimTakes,
+  (_view, run) => ({ runId: run.runId, runState: run.state, attempt: run.attempt }),
+)
 
 /**
  * Whether the event whose wake fields a run carries exists. An emit that woke the run left
@@ -683,11 +807,14 @@ export const ARMS: { readonly [C in Exclude<Cause, 'unexplained'>]: Arm } = {
   'failed-with-no-retry': failedWithNoRetryArm,
   'live-task-without-one-live-run': notOneLiveRunArm,
   'task-and-run-states-differ': ofTheLiveRun(statesDifferArm),
+  'deadline-no-sweep-cancels': ofTheLiveRun(deadlineNoSweepCancelsArm),
   'cancellation-deadline-passed': ofTheLiveRun(cancellationDeadlinePassedArm),
+  'lapsed-lease-no-sweep-reclaims': ofTheLiveRun(lapsedLeaseNoSweepReclaimsArm),
   'lease-lapsed-unswept': ofTheLiveRun(leaseLapsedArm),
   'running-past-the-hung-bound': ofTheLiveRun(hungArm),
   'running-under-a-live-lease': ofTheLiveRun(liveLeaseArm),
   'pending-delayed': ofTheLiveRun(pendingDelayedArm),
+  'due-run-no-claim-admits': ofTheLiveRun(dueRunNoClaimAdmitsArm),
   'woken-unclaimed': ofTheLiveRun(wokenUnclaimedArm),
   'pending-due-unclaimed': ofTheLiveRun(dueUnclaimedArm),
   'backing-off': ofTheLiveRun(backingOffArm),
@@ -792,28 +919,40 @@ const noValueFor = (what: string, spec: CommandSpec): Withheld => ({
 })
 
 /**
+ * What `explain` was given, which is all a suggestion is ever filled from: the queue, the
+ * target of the store it opened, and the origin of the hosted deployment when the
+ * environment names one. The task is the one the command is for.
+ */
+export interface Given {
+  readonly queue: string
+  /** What `--target` must name for the store `explain` read: its own target. */
+  readonly target?: string | undefined
+  /** The origin of DURABLERUN_BASE_URL, for a command that takes `--url`. */
+  readonly url?: string | undefined
+}
+
+/**
  * The next command for a diagnosis, as arguments the command table parses. It is built
  * from the table: the verb the cause names, each of that command's arguments, and each
- * flag it requires, filled from the queue and the task the command is for. A required flag
- * and its value are one argument, `--queue=<value>`, so a value that begins with a dash is
- * still read as the flag's value. No flag that is not required is ever added, so no
- * suggestion confirms a write.
+ * flag it requires, filled from what `explain` was given and the task the command is for.
+ * A required flag and its value are one argument, `--queue=<value>`, so a value that
+ * begins with a dash is still read as the flag's value. No flag that is not required is
+ * ever added, so no suggestion confirms a write.
  *
  * The answer is null when no command is owed or known: a `waiting` verdict owes none, and
- * a verb the table does not hold gives none, so a cause whose command a later build adds
- * prints nothing until the verb joins the table. When the command requires an argument or
- * a flag that `explain` has no value for, the answer says which and builds nothing: a
+ * a verb the table does not hold gives none. When the command requires an argument or a
+ * flag that `explain` has no value for, the answer says which and builds nothing: a
  * command line with a hole in it is worse than none, and the diagnosis stands without it.
  */
 export function suggestion(
   { cause, verdict, taskId }: Pick<Diagnosis, 'cause' | 'verdict' | 'taskId'>,
-  queue: string,
+  given: Given,
   commands: Readonly<Record<string, CommandSpec>> = COMMANDS,
 ): readonly string[] | Withheld | null {
   const verb = CAUSES[cause].next
   const spec = verb === null ? undefined : commands[verb]
   if (spec === undefined || verdict === 'waiting') return null
-  const known: Readonly<Record<string, string>> = { taskId, queue }
+  const known: Readonly<Record<string, string | undefined>> = { taskId, ...given }
   const argv: string[] = [spec.verb]
   for (const name of spec.positionals) {
     const value = known[name]
@@ -867,7 +1006,7 @@ function nextView(next: ReturnType<typeof suggestion>): Record<string, unknown> 
  */
 export function answerView(
   diagnosis: Diagnosis,
-  queue: string,
+  given: Given,
   commands: Readonly<Record<string, CommandSpec>> = COMMANDS,
 ): Record<string, unknown> {
   const last = deepest(diagnosis)
@@ -876,7 +1015,7 @@ export function answerView(
     ...(last === diagnosis
       ? {}
       : { deepest: { taskId: last.taskId, cause: last.cause, verdict: last.verdict } }),
-    ...nextView(suggestion(last, queue, commands)),
+    ...nextView(suggestion(last, given, commands)),
   }
 }
 

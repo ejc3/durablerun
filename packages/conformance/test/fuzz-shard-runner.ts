@@ -149,6 +149,7 @@ function runFuzzBatch(shard: number, of: number, batch: number): void {
         checkpoints: 0,
         sweepTransitions: 0,
         cancels: 0,
+        sparingCancels: 0,
         nextWakes: 0,
         emits: 0,
         awaits: 0,

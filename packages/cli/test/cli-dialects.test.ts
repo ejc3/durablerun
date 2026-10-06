@@ -1,6 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import {
   CURRENT_SCHEMA_VERSION,
   SCHEMA_VERSION_NOTES as LIBSQL_NOTES,
@@ -8,14 +6,17 @@ import {
 import { SCHEMA_VERSION_NOTES as MYSQL_NOTES } from '@durablerun/store-mysql'
 import { SCHEMA_VERSION_NOTES as POSTGRES_NOTES } from '@durablerun/store-postgres'
 import { describe, expect, it } from 'vitest'
+import { RETRY_COUNTER_EXTREMES } from '../../conformance/src/operator-admission.js'
 import { COMMANDS, declaresLabel } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import type { SchemaVersionNotes } from '../src/open-store.js'
 import { EXPLAIN_SEEDS, onSeed, parkedOnAnEvent } from './explain-seeds.js'
 import { OWED_AT_MS, owedQueue } from './queue-seeds.js'
 import {
+  BIN,
   NOW_MS,
   QUEUE,
+  ROOT,
   SELECTED,
   STORE_COMMANDS,
   commandLine,
@@ -28,6 +29,7 @@ import {
   seedSagas,
   seedTasks,
   withoutDialect,
+  writeFlags,
 } from './support.js'
 
 const NOTES: Readonly<Record<(typeof SELECTED)[number], SchemaVersionNotes>> = {
@@ -35,9 +37,6 @@ const NOTES: Readonly<Record<(typeof SELECTED)[number], SchemaVersionNotes>> = {
   postgres: POSTGRES_NOTES,
   mysql: MYSQL_NOTES,
 }
-
-const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
 /** One seeded database's tasks by the name of their seed, and what every compared command line printed. */
 interface Answers {
@@ -327,6 +326,35 @@ describe('the CLI on every selected dialect', () => {
         }
       })
 
+      it('retry names the counter of a failed task that is at the least or the greatest value its column holds', async () => {
+        const db = await openCliDb(dialect, 'retry-at-a-bound')
+        try {
+          const named: unknown[] = []
+          for (const extreme of RETRY_COUNTER_EXTREMES) {
+            const taskId = await extreme.build(db)
+            const run = await runCli(
+              ['retry', taskId, '--yes', ...writeFlags(db), '--json'],
+              db.env,
+            )
+            const answer = JSON.parse(run.stdout) as {
+              error?: { cause?: string }
+              conjunctsNotHeld?: string[]
+            }
+            named.push([extreme.what, run.exit, answer.error?.cause, answer.conjunctsNotHeld])
+          }
+          expect(named).toEqual(
+            RETRY_COUNTER_EXTREMES.map((extreme) => [
+              extreme.what,
+              exitCode('refused'),
+              'counter-out-of-range',
+              extreme.leavesFalse,
+            ]),
+          )
+        } finally {
+          await db.close()
+        }
+      }, 120_000)
+
       it('every store command exits 5 on a database a newer build migrated, and changes no table', async () => {
         const db = await openCliDb(dialect, 'newer')
         try {
@@ -437,6 +465,7 @@ describe('the CLI on every selected dialect', () => {
           // A task that is due from this instant, for `stuck` to find.
           await db.store.spawn(QUEUE, 'report', '{}')
           await plantNullPayload(older)
+          const named = writeFlags(db)
           const unreachable: Record<string, string> = {
             libsql: 'libsql://127.0.0.1:1',
             postgres: 'postgresql://postgres:postgres@127.0.0.1:1/durablerun',
@@ -462,6 +491,15 @@ describe('the CLI on every selected dialect', () => {
               ['doctor', '--queue', QUEUE],
             ],
             ['permanent', older.env, ['migrate', '--yes', '--target', older.target]],
+            // The drive verbs, last, because they write: each names its store again.
+            ['done', db.env, ['enqueue', 'report', '--key', 'a-bin-key', ...named]],
+            ['usage', db.env, ['emit', 'a-bin-event', ...named]],
+            ['done', db.env, ['emit', 'a-bin-event', '--yes', ...named]],
+            ['done', db.env, ['cancel', seeded.pending, '--yes', ...named]],
+            ['done', db.env, ['retry', seeded.failed, '--yes', ...named]],
+            ['refused', db.env, ['retry', seeded.completed, '--yes', ...named]],
+            ['done', db.env, ['sweep', ...named]],
+            ['usage', db.env, ['sweep', '--queue', QUEUE, '--target', 'not-its-store']],
           ]
           const seen: string[] = []
           for (const [exit, env, argv] of cases) {

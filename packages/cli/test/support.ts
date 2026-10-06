@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   type Clock,
   type IdSource,
@@ -61,12 +62,17 @@ export interface CliRun {
   readonly stderr: string
 }
 
-/** Run `main` with its streams captured. */
+/**
+ * Run `main` with its streams captured. The ids a store mints are from a seeded source,
+ * the same for every run unless the caller hands one in, and the clock refuses every read
+ * unless the caller hands one in, which only `tick` needs.
+ */
 export async function runCli(
   argv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
   opener: StoreOpener = openStore,
   ids: IdSource = testIdSource('cli'),
+  clock: Clock = REFUSING_CLOCK,
 ): Promise<CliRun> {
   let stdout = ''
   let stderr = ''
@@ -78,7 +84,7 @@ export async function runCli(
       stderr += text
     },
   }
-  const exit = await main(argv, env, io, ids, REFUSING_CLOCK, opener)
+  const exit = await main(argv, env, io, ids, clock, opener)
   return { exit, stdout, stderr }
 }
 
@@ -103,6 +109,8 @@ export interface CliDb {
   readonly admin: StoreAdmin
   /** The current store over `raw`, with ids from the test's own source. */
   readonly store: SchedulerStore
+  /** The current store over `raw` with the ids handed in, for a port call a test makes beside the CLI's. */
+  storeWith(ids: IdSource): SchedulerStore
   /** Every table and schema object, as one comparable text. */
   dump(): Promise<string>
   /** Record a schema version as a newer build that migrated would, after seeding. */
@@ -181,6 +189,7 @@ export async function openCliDb(
       raw,
       admin: make(raw),
       store: new LibsqlSchedulerStore(raw, ids),
+      storeWith: (other) => new LibsqlSchedulerStore(raw, other),
       dump: () => dumpOf(dialect, raw),
       recordNewer: () => recordNewer(dialect, raw),
       close: async () => {
@@ -204,6 +213,7 @@ export async function openCliDb(
         raw: db.raw,
         admin: db.admin,
         store: new PostgresSchedulerStore(db.raw, ids),
+        storeWith: (other) => new PostgresSchedulerStore(db.raw, other),
         dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
         close: db.close,
@@ -226,6 +236,7 @@ export async function openCliDb(
       raw: db.raw,
       admin: db.admin,
       store: new MysqlSchedulerStore(db.raw, ids),
+      storeWith: (other) => new MysqlSchedulerStore(db.raw, other),
       dump: () => dumpOf(dialect, db.raw),
       recordNewer: () => recordNewer('mysql', db.raw),
       close: db.close,
@@ -315,7 +326,7 @@ function rowText(row: SqlRow): string {
 }
 
 /** Every table's rows, sorted, and the schema's objects the catalog reads above name, as one text. */
-async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<string> {
+export async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<string> {
   const [tables, ...catalogs] = await raw.batch(
     'fixture:dump-catalog',
     [
@@ -339,6 +350,47 @@ async function dumpOf(dialect: EnrolledDialect, raw: SqlExecutor): Promise<strin
     lines.push(`${table} ${JSON.stringify(rows)}`)
   })
   return lines.join('\n')
+}
+
+/** An id source that keeps every id and token it hands out. */
+export function recordingIds(inner: IdSource): {
+  readonly ids: IdSource
+  readonly minted: string[]
+} {
+  const minted: string[] = []
+  const kept = (value: string): string => {
+    minted.push(value)
+    return value
+  }
+  return {
+    ids: { uuidv7: () => kept(inner.uuidv7()), token: () => kept(inner.token()) },
+    minted,
+  }
+}
+
+/**
+ * A dump with every id and token of `minted` read as one placeholder, and each table's
+ * rows sorted again. Two runs of one write mint different ids, so their dumps are compared
+ * this way: what must be equal is every row but for the ids the runs minted.
+ */
+export function withoutMinted(dump: string, minted: readonly string[]): string {
+  // Longest first, so an id that begins another is not replaced inside it.
+  const ids = [...new Set(minted)].sort((left, right) => right.length - left.length)
+  const plain = (text: string): string => {
+    let out = text
+    for (const id of ids) out = out.replaceAll(id, '<minted>')
+    return out
+  }
+  return dump
+    .split('\n')
+    .map((line) => {
+      const at = line.indexOf(' ')
+      const table = line.slice(0, at)
+      if (table === 'objects') return line
+      const rows = (JSON.parse(line.slice(at + 1)) as string[]).map(plain).sort()
+      return `${table} ${JSON.stringify(rows)}`
+    })
+    .join('\n')
 }
 
 /** A store opener that records every batch every executor it makes is sent. */
@@ -458,13 +510,61 @@ export async function seedTasks(db: CliDb, queue = QUEUE): Promise<SeededTasks> 
 }
 
 /** Claim the one run of the queue that is due, which must be the task's, and activate it. */
-export async function claimActivated(db: CliDb, worker: string, taskId: string, queue = QUEUE) {
-  const [run] = await db.store.claim(queue, worker, { leaseSeconds: 60, limit: 1 })
+export async function claimActivated(
+  db: CliDb,
+  worker: string,
+  taskId: string,
+  queue = QUEUE,
+  leaseSeconds = 60,
+) {
+  const [run] = await db.store.claim(queue, worker, { leaseSeconds, limit: 1 })
   if (run?.taskId !== taskId) throw new Error(`${worker} did not claim task ${taskId}`)
   if ((await db.store.activate(queue, run.runId, run.claimToken, run.claimGen)) === null) {
     throw new Error(`${worker} could not activate the run of task ${taskId}`)
   }
   return run
+}
+
+/**
+ * A task whose saga began and that is rolling back: a registered step started, and the
+ * task's failure placed a rollback pass. It answers the task and the forward run that
+ * failed. Call it when the queue holds no other run that is due.
+ */
+export async function rollingBack(db: CliDb) {
+  const { taskId, forward, fail } = await sagaStepStarted(db)
+  await fail()
+  return { taskId, forward }
+}
+
+/**
+ * A running task whose registered saga step has started, and whose saga has not begun: its
+ * one attempt has not failed yet. `fail` fails it as its worker would, which places the
+ * rollback pass, so a test decides the instant the saga begins. Call it when the queue holds
+ * no other run that is due.
+ */
+export async function sagaStepStarted(db: CliDb) {
+  const task = await db.store.spawn(QUEUE, 'saga', '{}', { maxAttempts: 1 })
+  const forward = await claimActivated(db, 'w-forward', task.taskId)
+  await db.store.setCheckpoint(
+    QUEUE,
+    task.taskId,
+    forward.runId,
+    forward.claimToken,
+    `${SAGA_STARTED_PREFIX}charge`,
+    '1',
+    60,
+  )
+  const fail = async (): Promise<void> => {
+    const entered = await db.store.fail(
+      QUEUE,
+      forward.runId,
+      forward.claimToken,
+      '{"name":"E"}',
+      null,
+    )
+    if (!entered.rollingBack) throw new Error('the failure placed no rollback pass')
+  }
+  return { taskId: task.taskId, forward, fail }
 }
 
 export interface SeededSagas {
@@ -517,9 +617,18 @@ export async function seedRefused(db: CliDb): Promise<string> {
   return task.taskId
 }
 
+/** What a test names for each argument a command takes but a task's id. */
+const ARGUMENT_VALUES: Readonly<Record<string, string>> = {
+  taskName: 'report',
+  eventName: 'an-event',
+}
+
+/** The idempotency key a test hands a command that requires one. */
+export const TABLE_KEY = 'a-key-of-the-table-walk'
+
 /**
  * The command line a command runs with against a test database: every argument and every
- * required flag filled in, `--yes` for a command that writes, and `--json`. A command that
+ * required flag filled in, `--yes` for a command that takes it, and `--json`. A command that
  * takes an argument or a required flag this does not know fails here, so a new command gets
  * a line of its own.
  */
@@ -531,16 +640,19 @@ export function commandLine(
 ): string[] {
   const line: string[] = [spec.verb]
   for (const name of spec.positionals) {
-    if (name !== 'taskId') throw new Error(`no test value for the argument ${name} of ${spec.verb}`)
-    line.push(taskId)
+    const value = name === 'taskId' ? taskId : ARGUMENT_VALUES[name]
+    if (value === undefined)
+      throw new Error(`no test value for the argument ${name} of ${spec.verb}`)
+    line.push(value)
   }
   for (const [name, flag] of Object.entries(spec.flags)) {
     if (flag.required !== true) continue
     if (name === 'queue') line.push('--queue', QUEUE)
     else if (name === 'target') line.push('--target', db.target)
+    else if (name === 'key') line.push('--key', TABLE_KEY)
     else throw new Error(`no test value for the flag --${name} of ${spec.verb}`)
   }
-  if (spec.writes) line.push('--yes')
+  if (Object.hasOwn(spec.flags, 'yes')) line.push('--yes')
   return [...line, '--json', ...extra]
 }
 
@@ -591,3 +703,30 @@ export function comparedLines(
   }
   return lines
 }
+
+/** The repository's root and the CLI's bin, for a case that runs the bin as a child process. */
+export const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
+export const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
+
+/** A JSON answer of the CLI, read loosely: a test names the fields it asks about. */
+export type JsonAnswer = Readonly<Record<string, unknown>> & {
+  readonly error?: { readonly kind?: string; readonly cause?: string; readonly message?: string }
+}
+
+/** One libSQL database of a test, closed whatever the body does. */
+export async function onDb<T>(name: string, body: (db: CliDb) => Promise<T>): Promise<T> {
+  const db = await openCliDb('libsql', name)
+  try {
+    return await body(db)
+  } finally {
+    await db.close()
+  }
+}
+
+/** The flags every write to a queue takes: the queue, and the store named again. */
+export const writeFlags = (db: Pick<CliDb, 'target'>): string[] => [
+  '--queue',
+  QUEUE,
+  '--target',
+  db.target,
+]

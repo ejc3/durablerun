@@ -2,6 +2,7 @@ import {
   ChildAwaitRefusedError,
   type ClaimedRun,
   type FailOutcome,
+  SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -43,6 +44,8 @@ export interface FuzzStats {
   checkpoints: number
   sweepTransitions: number
   cancels: number
+  /** Cancels that asked the store to spare a saga (`unlessSagaBegan`) and cancelled the task. */
+  sparingCancels: number
   nextWakes: number
   emits: number
   awaits: number
@@ -105,6 +108,7 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
     checkpoints: 0,
     sweepTransitions: 0,
     cancels: 0,
+    sparingCancels: 0,
     nextWakes: 0,
     emits: 0,
     awaits: 0,
@@ -441,7 +445,36 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
       if (run) await f.store.expireLeaseNow(Q, run.runId, run.claimToken)
     } else if (roll < 0.81 && knownTasks.length > 0) {
       const taskId = knownTasks[rng.int(knownTasks.length)]
-      if (taskId && (await f.store.cancelTask(Q, taskId))) stats.cancels++
+      if (!taskId) continue
+      // Half of the cancels ask the store to spare a saga, so the walk sends both shapes
+      // of `cancel-task`. Which half is read from the roll that chose the op: no draw is
+      // added, and every other op of a seed keeps the draws it had.
+      const sparing = roll >= 0.795
+      const cancelled = await f.store.cancelTask(
+        Q,
+        taskId,
+        sparing ? { unlessSagaBegan: true } : undefined,
+      )
+      if (cancelled) stats.cancels++
+      if (cancelled && sparing) {
+        // The conjunct held, so the task's saga had not begun. A task the store cancelled
+        // that holds the phase marker is a saga this cancel halted, which is the one thing
+        // its caller asked it not to do. No row invariant can say so: a cancelled task
+        // with a marker is what a cancel that halts leaves, and that is allowed.
+        //
+        // Measured on libSQL when this was written, over 620 walks of 100 steps: 427
+        // sparing cancels cancelled a task, and nine more met a live task that was rolling
+        // back, in nine walks, and the store left each as it was. So one walk in about
+        // seventy meets the state this check is for, and no floor could hold that count in
+        // a shard. With the libSQL store planted to ignore the option, four of the 125
+        // walks of two shards of `verify:fuzz` failed here.
+        if ((await checkpointState(f.raw, taskId, SAGA_PHASE_CHECKPOINT)) !== undefined) {
+          throw new Error(
+            `fuzz seed ${seed} step ${step}: a cancel that spares a saga cancelled task ${taskId}, which holds the phase marker`,
+          )
+        }
+        stats.sparingCancels++
+      }
     } else if (roll < 0.84 && held.length > 0) {
       const run = held.splice(rng.int(held.length), 1)[0]
       if (run) {

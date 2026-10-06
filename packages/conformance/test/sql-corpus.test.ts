@@ -61,6 +61,8 @@ describe('generated SQL corpus', () => {
         expect((await operator.queueStatus('q')).gauges.runningRuns.count).toBe(1)
         expect((await operator.tableRows('q')).tables.tasks.count).toBe(1)
         expect((await operator.eventWaiters('q', 'no-such-event')).waiters.rows).toEqual([])
+        expect(await operator.eventPayload('q', 'no-such-event')).toEqual({ exists: false })
+        expect((await operator.taskAdmission('q', run.taskId))?.runs).toHaveLength(1)
         const aged = await operator.agedTasks('q', { olderThanSeconds: 0, limit: 10 })
         expect(aged.tasks.rows).toHaveLength(1)
         // A run this store never heard of: the terminal batch reads its task, finds none,
@@ -143,6 +145,9 @@ describe('generated SQL corpus', () => {
         // A compare-and-set that matches nothing still compiles, so each step says it won.
         expect(await store.retryTask('q', retried.taskId)).not.toBeNull()
         expect(await store.cancelTask('q', retried.taskId)).toBe(true)
+        // The same label asked to spare a saga, its second variant.
+        const spared = await store.spawn('q', 'job', '{}')
+        expect(await store.cancelTask('q', spared.taskId, { unlessSagaBegan: true })).toBe(true)
         // A saga: a registered step starts, the task fails for good, and that batch
         // enters the rolling-back phase. The rollback fails twice, once with budget left.
         const saga = await store.spawn('q', 'saga', '{}')

@@ -38,6 +38,10 @@ const oneOf = (
   reveal: boolean,
 ): string | UserValue => (known(stored) ? stored : userValue(stored, reveal))
 
+/** A task's or a run's stored state, as any command prints one: the engine's own as it is, any other hidden unless revealed. */
+export const stateView = (stored: string, reveal: boolean): string | UserValue =>
+  oneOf(isState, stored, reveal)
+
 /** A task's own row. Its id and queue print beside the command, and the key is a user's value. */
 const taskView = (
   task: TaskRowFacts,

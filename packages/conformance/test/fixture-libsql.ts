@@ -149,11 +149,36 @@ export async function makeLibsqlFixture(
         rmSync(dir, { recursive: true, force: true })
         throw error
       }
+      // The surface's store sends through a gate, which stands open but while
+      // `holdBatchesAtTheRow` runs. A batch that meets it shut waits there, and the ones
+      // that waited are sent in the order they came once it opens.
+      let gate: Promise<void> = Promise.resolve()
+      const gated: SqlExecutor = {
+        batch: async (label, statements, control) => {
+          await gate
+          return opened.raw.batch(label, statements, control)
+        },
+      }
       return {
-        store: new LibsqlSchedulerStore(opened.raw, opened.ids),
+        store: new LibsqlSchedulerStore(gated, opened.ids),
         raw: opened.raw,
         holdWriteLock: (_taskId: string, during: () => Promise<void>) =>
           holdLibsqlWriteLock(url, during),
+        holdBatchesAtTheRow: async (
+          _taskId: string,
+          during: (arrived: () => Promise<void>) => Promise<void>,
+        ) => {
+          let open = (): void => {}
+          gate = new Promise<void>((resolve) => {
+            open = resolve
+          })
+          try {
+            // A turn of the event loop: the batch just started has reached the gate by then.
+            await during(() => new Promise<void>((resolve) => setImmediate(resolve)))
+          } finally {
+            open()
+          }
+        },
         // libSQL waits for its lock at the batch's BEGIN, before any statement of the batch.
         shortenFirst: [{ sql: 'PRAGMA busy_timeout=10', args: [] }],
         shortenInside: [],

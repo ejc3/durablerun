@@ -14,7 +14,7 @@
   "fail": ["retrying", "final"],
   "fail-rollback": ["retrying", "final"],
   "retry-task": ["revived"],
-  "cancel-task": ["cancelled"],
+  "cancel-task": ["cancelled", "cancelled-unless-saga-began"],
   "sweep:cancel": ["cancelled"],
   "sweep:lost-launch": ["swept"],
   "sweep:claim-timeout": ["swept"],
@@ -34,5 +34,7 @@
   "queue-status": ["read"],
   "table-rows": ["read"],
   "event-waiters": ["read"],
+  "event-payload": ["read"],
+  "task-admission": ["read"],
   "aged-tasks": ["read"]
 }

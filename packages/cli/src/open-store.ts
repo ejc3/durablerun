@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs'
 import type {
   AgedTasksOptions,
+  CancelOptions,
   HeldOperatorReads,
   IdSource,
   OperatorReads,
   SchedulerStore,
+  SpawnOptions,
   SqlExecutor,
   StoreAdmin,
   StuckRunsOptions,
@@ -25,19 +27,36 @@ export interface SchemaWindow {
 /** The admin calls a command may make. The fake clock's setter cannot be written. */
 export type CliAdmin = Pick<StoreAdmin, 'schemaVersion' | 'nowEpochMs' | 'migrate'>
 
-/** The scheduler calls a command may make. A claim cannot be written. */
-export type CliScheduler = Pick<SchedulerStore, 'getTaskResult' | 'getCheckpoints'>
+/**
+ * The scheduler calls a command may make: two reads, the five calls the drive verbs are,
+ * and the read of a queue's next wake that `sweep` prints. A claim cannot be written, nor
+ * any call a worker makes under one.
+ */
+export type CliScheduler = Pick<
+  SchedulerStore,
+  | 'getTaskResult'
+  | 'getCheckpoints'
+  | 'spawn'
+  | 'emitEvent'
+  | 'cancelTask'
+  | 'retryTask'
+  | 'sweep'
+  | 'nextWakeAtEpochMs'
+>
 
-/** The operator reads a command may make. */
+/** The operator reads a command may make, which is every one the port has. */
 export type CliOperator = Pick<
   OperatorReads,
   | 'taskFacts'
   | 'taskIdByKey'
+  | 'eventState'
   | 'stuckRuns'
   | 'agedTasks'
   | 'queueStatus'
   | 'tableRows'
   | 'eventWaiters'
+  | 'eventPayload'
+  | 'taskAdmission'
 >
 
 /** What an operator should know before a migration crosses a version, as a store says it. */
@@ -306,16 +325,28 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       getTaskResult: (queue: string, taskId: string) => scheduler.getTaskResult(queue, taskId),
       getCheckpoints: (queue: string, taskId: string, attempt: number) =>
         scheduler.getCheckpoints(queue, taskId, attempt),
+      spawn: (queue: string, taskName: string, paramsJson: string, spawnOptions?: SpawnOptions) =>
+        scheduler.spawn(queue, taskName, paramsJson, spawnOptions),
+      emitEvent: (queue: string, eventName: string, payloadJson: string) =>
+        scheduler.emitEvent(queue, eventName, payloadJson),
+      cancelTask: (queue: string, taskId: string, cancelOptions?: CancelOptions) =>
+        scheduler.cancelTask(queue, taskId, cancelOptions),
+      retryTask: (queue: string, taskId: string) => scheduler.retryTask(queue, taskId),
+      sweep: (queue: string, limit: number) => scheduler.sweep(queue, limit),
+      nextWakeAtEpochMs: (queue: string) => scheduler.nextWakeAtEpochMs(queue),
     }),
     operator: Object.freeze({
       taskFacts: (queue: string, taskId: string) => operator.taskFacts(queue, taskId),
       taskIdByKey: (queue: string, idempotencyKey: string) =>
         operator.taskIdByKey(queue, idempotencyKey),
+      eventState: (queue: string, eventName: string) => operator.eventState(queue, eventName),
       stuckRuns: (queue: string, options: StuckRunsOptions) => operator.stuckRuns(queue, options),
       agedTasks: (queue: string, options: AgedTasksOptions) => operator.agedTasks(queue, options),
       queueStatus: (queue: string) => operator.queueStatus(queue),
       tableRows: (queue: string) => operator.tableRows(queue),
       eventWaiters: (queue: string, eventName: string) => operator.eventWaiters(queue, eventName),
+      eventPayload: (queue: string, eventName: string) => operator.eventPayload(queue, eventName),
+      taskAdmission: (queue: string, taskId: string) => operator.taskAdmission(queue, taskId),
     }),
     close: () => opened.close(),
   }

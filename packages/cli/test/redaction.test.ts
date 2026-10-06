@@ -1,6 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { format, inspect } from 'node:util'
 import {
   REASON_CANCELLED,
@@ -13,15 +11,18 @@ import { VERBS, type Verb } from '../src/commands.js'
 import { type Io, lastCatch } from '../src/main.js'
 import { failureReason, resultView } from '../src/render.js'
 import {
+  BIN,
   COMPLETED_KEY,
   type CliDb,
   QUEUE,
+  ROOT,
   SENTINEL,
   type SeededTasks,
   openCliDb,
   recordingOpener,
   runCli,
   seedTasks,
+  writeFlags,
 } from './support.js'
 
 /**
@@ -107,6 +108,82 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
   },
   stats: { lines: () => [['stats', '--queue', QUEUE]], shows: false },
   sizes: { lines: () => [['sizes', '--queue', QUEUE]], shows: false },
+  // The key and the parameters are values a user wrote: each prints as its length and
+  // sha256, and a refusal that would quote one does not.
+  enqueue: {
+    lines: (db) => {
+      const key = ['--key', `enqueue-${SENTINEL}`]
+      const params = ['--params', JSON.stringify({ secret: SENTINEL })]
+      return [
+        ['enqueue', 'report', ...key, ...params, ...writeFlags(db)],
+        // The same again, which finds the task under its key.
+        ['enqueue', 'report', ...key, ...params, ...writeFlags(db)],
+        // A key of the engine's own namespace, which the port refuses in words that quote it.
+        ['enqueue', 'report', '--key', `$${SENTINEL}`, ...writeFlags(db)],
+        // Parameters that are no JSON, another store named, and no task name.
+        ['enqueue', 'report', ...key, '--params', `{"not json ${SENTINEL}`, ...writeFlags(db)],
+        ['enqueue', 'report', ...key, ...params, '--queue', QUEUE, '--target', 'elsewhere'],
+        ['enqueue', ...key, ...params, ...writeFlags(db)],
+      ]
+    },
+    shows: true,
+  },
+  // The payload a caller passes is a value a user wrote. The payload an event already
+  // holds is too, and of that only a digest ever prints.
+  emit: {
+    lines: (db) => {
+      const payload = ['--payload', JSON.stringify({ payload: SENTINEL })]
+      return [
+        // The seeded event, whose stored payload holds the sentinel: asked, and then sent.
+        ['emit', 'page-ready', ...payload, ...writeFlags(db)],
+        ['emit', 'page-ready', ...payload, '--yes', ...writeFlags(db)],
+        ['emit', 'a-new-event', ...payload, ...writeFlags(db)],
+        ['emit', 'a-new-event', ...payload, '--yes', ...writeFlags(db)],
+        ['emit', '$reserved', ...payload, '--yes', ...writeFlags(db)],
+        ['emit', 'a-new-event', '--payload', `{"not json ${SENTINEL}`, '--yes', ...writeFlags(db)],
+      ]
+    },
+    shows: true,
+  },
+  // A cancellation and a revival print ids, a task name, states and counters. The failed
+  // task's reason holds the sentinel, and neither prints it.
+  cancel: {
+    lines: (db, seeded) => [
+      ['cancel', seeded.pending, ...writeFlags(db)],
+      ['cancel', seeded.pending, '--yes', ...writeFlags(db)],
+      ['cancel', seeded.pending, '--yes', ...writeFlags(db)],
+      ['cancel', seeded.completed, '--yes', ...writeFlags(db)],
+      ['cancel', 'no-such-task', '--yes', ...writeFlags(db)],
+    ],
+    shows: false,
+  },
+  retry: {
+    lines: (db, seeded) => [
+      ['retry', seeded.failed, ...writeFlags(db)],
+      ['retry', seeded.failed, '--yes', ...writeFlags(db)],
+      ['retry', seeded.failed, '--yes', ...writeFlags(db)],
+      ['retry', seeded.completed, '--yes', ...writeFlags(db)],
+      ['retry', 'no-such-task', '--yes', ...writeFlags(db)],
+    ],
+    shows: false,
+  },
+  sweep: {
+    lines: (db) => [
+      ['sweep', ...writeFlags(db)],
+      ['sweep', ...writeFlags(db), '--limit', SENTINEL],
+    ],
+    shows: false,
+  },
+  // `tick` opens no store. Each line is refused before anything is sent, and no refusal
+  // quotes what it was given.
+  tick: {
+    lines: () => [
+      ['tick'],
+      ['tick', '--url', `https://${SENTINEL}.example`],
+      ['tick', '--url', 'https://deployment.example', '--timeout', SENTINEL],
+    ],
+    shows: false,
+  },
 }
 
 /**
@@ -230,6 +307,22 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
   stuck: () => [['stuck', '--queue', QUEUE, '--fail-if-any', '--older-than', '1h']],
   stats: () => [['stats', '--queue', QUEUE]],
   sizes: () => [['sizes', '--queue', QUEUE]],
+  enqueue: (target) => [
+    ['enqueue', 'report', '--key', 'a-key', '--queue', QUEUE, '--target', target],
+    ['enqueue', 'report', '--key', 'a-key', '--queue', QUEUE, '--target', 'elsewhere'],
+  ],
+  emit: (target) => [
+    ['emit', 'an-event', '--queue', QUEUE, '--target', target],
+    ['emit', 'an-event', '--queue', QUEUE, '--target', target, '--yes'],
+  ],
+  cancel: (target) => [['cancel', 'a-task', '--queue', QUEUE, '--target', target, '--yes']],
+  retry: (target) => [['retry', 'a-task', '--queue', QUEUE, '--target', target, '--yes']],
+  sweep: (target) => [
+    ['sweep', '--queue', QUEUE, '--target', target],
+    ['sweep', '--queue', QUEUE, '--target', 'elsewhere'],
+  ],
+  // `tick` reads nothing of the store URL, and names no deployment here, so it sends nothing.
+  tick: () => [['tick', '--url', 'https://deployment.example']],
 }
 
 /** What --target names for a URL, or a stand-in for a URL that names nothing. */
@@ -241,9 +334,6 @@ function targetOf(url: string): string {
     return 'x'
   }
 }
-
-const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
-const BIN = join(ROOT, 'packages', 'cli', 'bin', 'durablerun.ts')
 
 /** The bin as a child process, with only PATH and the store URL in its environment. */
 function runBin(url: string, argv: readonly string[]) {

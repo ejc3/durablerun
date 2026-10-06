@@ -1,5 +1,6 @@
 import {
   MAX_EPOCH_MS,
+  REASON_CANCELLED,
   SAGA_STARTED_PREFIX,
   type SqlExecutor,
   type SqlStatement,
@@ -83,6 +84,30 @@ async function rollingBack(f: StoreFixture, queue: string) {
   await checkpointOwned(f.store, queue, forward, `${SAGA_STARTED_PREFIX}a`, '1', 60)
   await f.store.fail(queue, forward.runId, forward.claimToken, BOOM, null)
   return { taskId: task.taskId, pass: await claimActivated(f.store, queue, `w-pass-${queue}`) }
+}
+
+/**
+ * A task that a cancellation asked to spare a saga ends, because its saga has not begun:
+ * one no worker has claimed, or one whose registered step started and that has not failed.
+ */
+async function cancelledSparingASaga(
+  f: StoreFixture,
+  queue: string,
+  stepStarted: boolean,
+): Promise<ReadyChild> {
+  const task = await f.store.spawn(queue, 'saga', '{}')
+  if (stepStarted) {
+    const run = await claimActivated(f.store, queue, `w-${queue}`)
+    await checkpointOwned(f.store, queue, run, `${SAGA_STARTED_PREFIX}a`, '1', 60)
+  }
+  return {
+    childTaskId: task.taskId,
+    outcome: { state: 'cancelled', failureReasonJson: REASON_CANCELLED },
+    advanceMs: 0,
+    end: async (store) => {
+      expect(await store.cancelTask(queue, task.taskId, { unlessSagaBegan: true })).toBe(true)
+    },
+  }
 }
 
 const failed = (childTaskId: string, end: ReadyChild['end']): ReadyChild => ({
@@ -186,6 +211,18 @@ export const ENDINGS: Readonly<Record<string, readonly EndingPath[]>> = {
         if (run.taskId !== ready.childTaskId) throw new Error('the claim did not take the task')
         return ready
       },
+    },
+  ],
+  'cancel-task/cancelled-unless-saga-began': [
+    {
+      path: 'a task no worker has claimed, by a cancellation asked to spare a saga',
+      endedBy: 'cancel',
+      prepare: (f, queue) => cancelledSparingASaga(f, queue, false),
+    },
+    {
+      path: 'a task whose registered step started and whose saga has not begun, by the same',
+      endedBy: 'cancel',
+      prepare: (f, queue) => cancelledSparingASaga(f, queue, true),
     },
   ],
   'sweep:cancel/cancelled': [

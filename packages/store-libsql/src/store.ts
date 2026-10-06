@@ -1,6 +1,7 @@
 import {
   type Buggify,
   CHECKPOINT_INTEGER_BOUNDS,
+  type CancelOptions,
   type Checkpoint,
   type CheckpointWrite,
   type ClaimedRun,
@@ -14,6 +15,7 @@ import {
   HeldPort,
   INFRA_BACKOFF_SECONDS,
   type IdSource,
+  LIVE_STATES,
   LOST_LEASE,
   type LeaseState,
   MAX_DURATION_MS,
@@ -27,6 +29,7 @@ import {
   RELAUNCH_BACKOFF_BASE_SECONDS,
   RELAUNCH_BACKOFF_MAX_SECONDS,
   RUN_INTEGER_BOUNDS,
+  type RetryConjuncts,
   RunTaskMemo,
   SAGA_PHASE_CHECKPOINT,
   SWEEP_PIPELINE_WIDTH,
@@ -67,9 +70,9 @@ import {
   emitEventCas,
   emittedEventRead,
   endingTask,
-  failedRollbackRecord,
   failCas,
   failClaimTimeoutCas,
+  failedRollbackRecord,
   heartbeatCas,
   heartbeatRemainingRead,
   mapLimit,
@@ -87,12 +90,13 @@ import {
   registerWaitCas,
   reopenLostLaunchCas,
   requireDerivedInteger,
-  requireFailedRollback,
-  requireSagaStepFits,
   requireEpochMs,
+  requireFailedRollback,
   requirePositiveClaimGeneration,
   requirePositiveInt,
   requireRunOrdinal,
+  requireSagaStepFits,
+  retryAdmission,
   revivalRunInsert,
   reviveCas,
   revivedRunRead,
@@ -114,7 +118,6 @@ import {
   userRetrySuccessorInsert,
   wakeHasOwn,
   wakeRunsUpdate,
-  LIVE_STATES,
 } from '@durablerun/core'
 import {
   LIVE,
@@ -138,12 +141,12 @@ import {
   sagaBeganOf,
   singletonAggregate,
   soleLiveRun,
+  storedAtAll,
   storedCurrentRunAccounting,
   storedHighestOwnedOrdinal,
   storedIncrementableClaimGeneration,
   storedIncrementableInteger,
   storedInteger,
-  storedAtAll,
   storedIntegerWithin,
   storedIntegerWithinOffIndex,
   storedPositiveClaimGeneration,
@@ -272,7 +275,7 @@ const INFRA_RETRIES_FROM = (successorParam: string, fence: string): string =>
 const BY_RUN = `f.run_id = ?`
 
 /** How this dialect names the type of an event's stored payload. Both reads of an event require 'text'. */
-const STORED_PAYLOAD_TYPE = `typeof(payload)`
+export const STORED_PAYLOAD_TYPE = `typeof(payload)`
 
 /*
  * The equality makes the two attempt values one semantic ordinal. Validate
@@ -353,6 +356,58 @@ function waitsGone(b: FencedBatch, runId: string, after: string): void {
 function finishSuspension(b: FencedBatch, queue: string, runId: string): void {
   taskMirrorsRun(b, queue, runId, 'suspend')
   waitsGone(b, runId, 'suspend')
+}
+
+/** The top ordinal among the runs a task owns. */
+const topOrdinal = (task: string): string =>
+  `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
+
+/** The task owns no live run. */
+const noLiveRunOf = (task: string): string =>
+  `NOT EXISTS (SELECT 1 FROM runs r
+                   WHERE ${runOwnedByTask('r', task)} AND r.state IN ${LIVE})`
+
+/**
+ * What a revival charges the task: its top ordinal net of infrastructure retries. Charging
+ * the top run keeps attempts + infra_retries equal to the top ordinal when the task failed
+ * at the infrastructure or relaunch cap, where no counter recorded that run. The charge
+ * never exceeds the budget (TLA FailedChargeWithinBudget), so the budget grows by exactly
+ * one.
+ */
+const RETRY_CHARGED = `(${topOrdinal('tasks')} - infra_retries)`
+
+/**
+ * The retry guard's conjuncts, each over the row `tasks` (Absurd's retry_task, the TLA
+ * RetryTask action): a failed task that owns every run and has none live. `retryTask`
+ * holds every one of them (`retryAdmission`), and the operator's read of what the engine's
+ * guards say of a task selects each as a flag, so the two cannot disagree about why a
+ * revival is refused.
+ *
+ * Only a well-formed failure revives. A failed row with no reason, or with a completed
+ * payload, is a corrupt outcome, and clearing the reason would pass that corruption on to
+ * a pending task. The same holds for the counters: each must be an exact integer in range,
+ * every owned run's ordinal too, the budget must take one more, and the charge must be the
+ * recorded attempts or one more and within the budget.
+ */
+export const RETRY_ADMITS: RetryConjuncts = {
+  ownsEveryRun: sqlFragment(taskOwnsEveryRun('tasks')),
+  hasAFailureReason: sqlFragment('failure_reason IS NOT NULL'),
+  hasNoCompletedPayload: sqlFragment('completed_payload IS NULL'),
+  hasARun: sqlFragment(`EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})`),
+  hasNoLiveRun: sqlFragment(noLiveRunOf('tasks')),
+  attemptsInRange: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')),
+  infraRetriesInRange: sqlFragment(storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')),
+  everyRunOrdinalInRange: sqlFragment(
+    `NOT EXISTS (SELECT 1 FROM runs r
+                         WHERE ${runOwnedByTask('r', 'tasks')}
+                           AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})`,
+  ),
+  budgetTakesOneMore: sqlFragment(
+    storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks'),
+  ),
+  chargeIsTheAttemptsOrOneMore: sqlFragment(`${RETRY_CHARGED} - attempts IN (0, 1)`),
+  sagaNotBegun: sqlFragment(`NOT ${sagaBegan('tasks')}`),
+  chargeWithinBudget: sqlFragment(`${RETRY_CHARGED} <= max_attempts`),
 }
 
 /**
@@ -1110,7 +1165,10 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
             now: NOW_MS,
             tree: TREE_DIALECT,
           })
-          return this.cancelTransition(batch, queue, item.taskId, true).then((won) =>
+          return this.cancelTransition(batch, queue, item.taskId, {
+            deadlineOnly: true,
+            unlessSagaBegan: false,
+          }).then((won) =>
             won ? { kind: 'cancelled', taskId: item.taskId, runId: item.runId } : null,
           )
         }
@@ -1446,47 +1504,17 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
     taskId: string,
   ): Promise<{ runId: string; attempt: number } | null> {
     const runId = this.ids.uuidv7()
-    const top = (task: string) =>
-      `(SELECT MAX(r.attempt) FROM runs r WHERE ${runOwnedByTask('r', task)})`
-    const noLiveRun = (task: string) =>
-      `NOT EXISTS (SELECT 1 FROM runs r
-                   WHERE ${runOwnedByTask('r', task)} AND r.state IN ${LIVE})`
-    // Absurd's retry_task, the TLA RetryTask action. One task CAS revives a
-    // failed task that owns every run and has none live. Charging the top run
-    // keeps attempts + infra_retries equal to the top ordinal when the task failed
-    // at the infrastructure or relaunch cap, where no counter recorded that run.
-    // The charge never exceeds the budget (TLA FailedChargeWithinBudget), so the
-    // budget grows by exactly one.
-    const charged = `(${top('tasks')} - infra_retries)`
     const b = new FencedBatch('retry-task', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT })
-    // Only a well-formed failure revives. A failed row with no reason, or with a
-    // completed payload, is a corrupt outcome, and clearing the reason would pass
-    // that corruption on to a pending task. The same holds for the counters: each
-    // must be an exact integer in range, every owned run's ordinal too, the budget
-    // must take one more, and the charge must be the recorded attempts or one more
-    // and within the budget.
+    // One task CAS revives a failed task that the guard's conjuncts admit, charged for
+    // its top run (`RETRY_ADMITS`, `RETRY_CHARGED`).
     b.casTree(
       'revive',
       reviveCas({
         queue,
         taskId,
         runId,
-        charged: sqlFragment(charged),
-        admission: sqlFragment(
-          `${taskOwnsEveryRun('tasks')}
-         AND failure_reason IS NOT NULL AND completed_payload IS NULL
-         AND EXISTS (SELECT 1 FROM runs r WHERE ${runOwnedByTask('r', 'tasks')})
-         AND ${noLiveRun('tasks')}
-         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.attempts, 'tasks')}
-         AND ${storedIntegerWithin(TASK_INTEGER_BOUNDS.infra_retries, 'tasks')}
-         AND NOT EXISTS (SELECT 1 FROM runs r
-                         WHERE ${runOwnedByTask('r', 'tasks')}
-                           AND NOT ${storedIntegerWithin(RUN_INTEGER_BOUNDS.attempt, 'r')})
-         AND ${storedIncrementableInteger(TASK_INTEGER_BOUNDS.max_attempts, 'tasks')}
-         AND ${charged} - attempts IN (0, 1)
-         AND NOT ${sagaBegan('tasks')}
-         AND ${charged} <= max_attempts`,
-        ),
+        charged: sqlFragment(RETRY_CHARGED),
+        admission: retryAdmission(RETRY_ADMITS),
       }),
     )
     // The revival run, keyed on the revive stamp, carries the top run's parked
@@ -1498,8 +1526,8 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
         runId,
         taskId,
         taskOwnsRun: sqlFragment(runOwnedByTask('p', 'f')),
-        isTopRun: sqlFragment(`p.attempt = ${top('f')}`),
-        noLiveRun: sqlFragment(noLiveRun('f')),
+        isTopRun: sqlFragment(`p.attempt = ${topOrdinal('f')}`),
+        noLiveRun: sqlFragment(noLiveRunOf('f')),
       }),
       'one',
     )
@@ -1511,18 +1539,25 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
     return { runId, attempt: Number(row.attempt) }
   }
 
-  async cancelTask(queue: string, taskId: string): Promise<boolean> {
+  async cancelTask(queue: string, taskId: string, options?: CancelOptions): Promise<boolean> {
     const batch = new FencedBatch('cancel-task', this.ids.token(), {
       now: NOW_MS,
       tree: TREE_DIALECT,
     })
-    return this.cancelTransition(batch, queue, taskId, false)
+    return this.cancelTransition(batch, queue, taskId, {
+      deadlineOnly: false,
+      unlessSagaBegan: options?.unlessSagaBegan === true,
+    })
   }
 
   /**
    * Shared cancel transition. Two labels — 'cancel-task' (explicit API) and
    * 'sweep:cancel' (deadline enforcement) — because a label is the crash
-   * injection/tracing address and one label must not cover two SQL shapes.
+   * injection/tracing address and one label must not cover two transitions.
+   *
+   * A caller of the explicit label may ask that a saga be spared (`unlessSagaBegan`). The
+   * compare-and-set then carries one more conjunct, that the saga has not begun, and every
+   * follow-on is the same. The corpus holds it as the label's second variant.
    *
    * The stamp used to be packed into failure_reason as JSON, because tasks
    * had no column of their own; the follow-ons then read it back out with
@@ -1533,7 +1568,7 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
     b: FencedBatch,
     queue: string,
     taskId: string,
-    deadlineOnly: boolean,
+    { deadlineOnly, unlessSagaBegan }: { deadlineOnly: boolean; unlessSagaBegan: boolean },
   ): Promise<boolean> {
     const deadlineGuard = deadlineOnly ? `${cancelDue('tasks', NOW)} AND ` : ''
     b.casTree(
@@ -1542,6 +1577,7 @@ export class LibsqlSchedulerStore extends HeldPort implements SchedulerStore {
         queue,
         taskId,
         admission: sqlFragment(`${deadlineGuard}${taskOwnsEveryRun('tasks')}`),
+        sagaNotBegun: unlessSagaBegan ? RETRY_ADMITS.sagaNotBegun : null,
       }),
     )
     b.derived('runs', {

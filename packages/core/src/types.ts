@@ -1,3 +1,4 @@
+import type { RetryGuardConjunct } from './statements/retry-task.js'
 import type { QueueTable } from './store-tables.js'
 /**
  * Engine data model, ported from Absurd's t_/r_/c_/e_/w_ tables
@@ -56,6 +57,17 @@ export interface CancellationPolicy {
   maxDelaySeconds?: number
   /** Cancel if still alive N seconds after first start. */
   maxDurationSeconds?: number
+}
+
+/** What a caller may ask of `cancelTask`. */
+export interface CancelOptions {
+  /**
+   * Cancel the task only while its saga has not begun. The store's compare-and-set carries
+   * that conjunct, so the check and the cancellation are one statement: a task that is
+   * rolling back is left as it is, and the call answers false. Left out or false, a
+   * cancellation halts a saga where it stands (DESIGN.md section 3.10).
+   */
+  unlessSagaBegan?: boolean
 }
 
 export interface SpawnOptions {
@@ -357,6 +369,62 @@ export interface TaskFacts {
 export type EventState =
   | (Extract<EmittedEvent, { exists: false }> & { readonly corrupt: readonly [] })
   | (Extract<EmittedEvent, { exists: true }> & { readonly corrupt: readonly CorruptInteger[] })
+
+/**
+ * An event's stored payload, read for its digest. `payloadJson` is the text as stored. It
+ * is null for a stored value that is no text, which no engine path writes, and `stored`
+ * then names the kind of value the row holds.
+ */
+export type StoredEventPayload =
+  | { readonly exists: false }
+  | { readonly exists: true; readonly payloadJson: string }
+  | { readonly exists: true; readonly payloadJson: null; readonly stored: string }
+
+/** One run of a task, as the engine's own guards read it at one instant. */
+export interface RunAdmission {
+  readonly runId: string
+  readonly state: string
+  readonly claimGen: number | null
+  readonly availableAtMs: number | null
+  readonly claimExpiresAtMs: number | null
+  /** A claim at that instant takes the run: it is due, and the claim's own admission holds of it and of its task. */
+  readonly claimTakes: boolean
+  /** A sweep at that instant takes the run back: its lease has expired, and the sweep's scan answers it. */
+  readonly sweepReclaims: boolean
+}
+
+/**
+ * What the engine's own guards say of one task at one instant, each as a boolean read
+ * from the predicate the engine's statement holds: every conjunct of the retry guard,
+ * whether the sweep cancels the task, and of each run whether a claim takes it and whether
+ * the sweep takes it back. The state, the deadline, and each run's state, generation and
+ * instants are what those answers were read beside, so a reader that holds an earlier
+ * snapshot of the task can tell whether the rows moved between the two.
+ */
+export interface TaskAdmission {
+  /**
+   * Database time as the last statement of the read's batch read it. Each flag is of the
+   * instant of its own statement, and none of those is later than this one. A reader that
+   * holds facts of an earlier instant compares the two with the instants the flags depend
+   * on. Null when it is outside the bounds of an instant, and it is then listed in
+   * `corrupt`.
+   */
+  readonly nowMs: number | null
+  readonly state: string
+  readonly cancelAtMs: number | null
+  /**
+   * Each conjunct of the retry guard: true when it holds of the task, and false when it
+   * does not. A conjunct that computes with counters is asked only where those counters
+   * are in range. Where one is not, it is `not-asked`, and the counter's own conjunct is
+   * the false one. A revival is refused when any conjunct is false.
+   */
+  readonly retry: Readonly<Record<RetryGuardConjunct, boolean | 'not-asked'>>
+  /** A sweep at that instant cancels the task: it is live and past its deadline, and the sweep's scan answers it. */
+  readonly sweepCancels: boolean
+  /** Every run that names the task, by its id. */
+  readonly runs: readonly RunAdmission[]
+  readonly corrupt: readonly CorruptInteger[]
+}
 
 /** A list an operator read stopped at a limit: the rows it lists, and whether more exist. */
 export interface Capped<Row> {

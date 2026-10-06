@@ -1139,7 +1139,13 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
     // own transaction.
     const db = await openMysqlTestDb({ idNamespace: 'plan-operator-reads', nowMs: 1_000_000 })
     try {
-      const labels = ['task-facts', 'task-id-by-key', 'event-state']
+      const labels = [
+        'task-facts',
+        'task-id-by-key',
+        'event-state',
+        'event-payload',
+        'task-admission',
+      ]
       const { executor: measuring, walked } = countingRowsWalked(db, labels)
       const store = new MysqlSchedulerStore(db.raw, db.ids)
       const task = await store.spawn(Q, 'job', '{}', { idempotencyKey: 'order-7' })
@@ -1182,6 +1188,11 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
       ])
       expect(await reads.taskIdByKey(Q, 'old-key-7')).toBe('old-task-7')
       expect((await reads.eventState(Q, 'old-event-7')).exists).toBe(true)
+      expect(await reads.eventPayload(Q, 'old-event-7')).toEqual({
+        exists: true,
+        payloadJson: '{}',
+      })
+      expect((await reads.taskAdmission(Q, 'old-task-7'))?.runs).toHaveLength(1)
       // Each entry is the rows a label's batches walked beside the HISTORY rows of each table.
       // Measured on MySQL 8.4: the two reads of a task walked six rows between them, and
       // the read by key and the read of an event walked none.

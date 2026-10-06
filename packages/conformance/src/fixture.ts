@@ -264,6 +264,23 @@ export interface LockWaitSurface {
   readonly raw: SqlExecutor
   /** Holds the write lock on the task's row until `during` settles. */
   holdWriteLock(taskId: string, during: () => Promise<void>): Promise<void>
+  /**
+   * Runs `during` while no write batch that reaches the task's row can finish, and lets the
+   * batches `during` started finish once it settles. `arrived` resolves once a batch that
+   * was started just before it has gone as far as it can while the row is held.
+   *
+   * On a server the row's write lock is held from a second connection. A batch waits at
+   * the row with every lock it took before it, and a batch started after it waits at the
+   * first of those locks it needs, so the server orders the two. A server does not say
+   * which of a database's sessions have blocked, so `arrived` waits in real time there.
+   * libSQL has one writer and runs a batch whole, so no batch waits part of the way
+   * through: the surface holds each batch back before it is sent, and sends them in the
+   * order they were started.
+   */
+  holdBatchesAtTheRow(
+    taskId: string,
+    during: (arrived: () => Promise<void>) => Promise<void>,
+  ): Promise<void>
   /** Sent as a batch of its own before the write, for a dialect that waits for its lock at BEGIN. */
   readonly shortenFirst: readonly SqlStatement[]
   /** Sent first inside the write batch, for a dialect that waits at the locked row. */

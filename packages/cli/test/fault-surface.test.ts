@@ -1,4 +1,5 @@
 import type { MatrixFault } from '@durablerun/conformance'
+import { testIdSource } from '@durablerun/core/testing'
 import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import {
@@ -12,7 +13,9 @@ import {
   faultExit,
 } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
-import { asleep, chainOfAwaits } from './explain-seeds.js'
+import { openStore } from '../src/open-store.js'
+import { asleep, chainOfAwaits, parkedOnAnEvent } from './explain-seeds.js'
+import { owedToASweep } from './queue-seeds.js'
 import {
   COMPLETED_KEY,
   type CliDb,
@@ -25,9 +28,12 @@ import {
   faulting,
   openCliDb,
   openerWrapping,
+  recordingIds,
   recordingOpener,
   runCli,
   seedTasks,
+  withoutMinted,
+  writeFlags,
 } from './support.js'
 
 /**
@@ -41,8 +47,11 @@ import {
  * state. After each case, running the same command again reaches the state one successful
  * run leaves, and for a read prints what that run printed. A read also leaves every table as
  * it found it, and migrate leaves a recorded version between the one it started from and
- * the build's. Every database holds the redaction sentinel of line 33 where it holds tasks,
- * and no run of any case prints it.
+ * the build's. A drive verb mints ids, and the repeat is another process, whose ids are not
+ * the first run's: the repeat's ids go on from where the first run's stopped, and the two
+ * states are compared with the ids each run minted read as one placeholder. Every database
+ * holds the redaction sentinel of line 33 where it holds tasks, and no run of any case
+ * prints it.
  */
 
 /** The matrix's kinds, which the CLI injects under the same names. A new kind fails to compile. */
@@ -52,7 +61,10 @@ const AS_THE_CLI_MEETS: Readonly<Record<MatrixFault, CliFault>> = {
   duplicate: 'duplicate',
 }
 
-type StoreVerb = Exclude<Verb, 'help'>
+type StoreVerb = Exclude<Verb, 'help' | 'tick'>
+
+/** The commands that open a store, which are the ones a fault at the executor meets. */
+const STORE_VERBS = VERBS.filter((verb): verb is StoreVerb => COMMANDS[verb].opensStore)
 
 interface Scenario {
   /** The starting state, as the test names it. */
@@ -85,6 +97,23 @@ const migrateFrom = (
 const readAt = (line: (seeded: SeededTasks | undefined) => string[]): readonly Scenario[] => [
   { name: 'the current version', schema: 'current', seeded: ALL, line: (_db, s) => line(s) },
 ]
+
+/** The flags every write to a queue takes: the queue, the store named again, and JSON. */
+const named = (db: CliDb): string[] => [...writeFlags(db), '--json']
+
+/** A drive verb's one starting state: the current version, with tasks written on every dialect. */
+const writeAt = (name: string, line: (db: CliDb, seeded: SeededTasks) => string[]): Scenario => ({
+  name,
+  schema: 'current',
+  seeded: ALL,
+  line: (db, seeded) => {
+    if (seeded === undefined) throw new Error('a write scenario starts from a seeded database')
+    return line(db, seeded)
+  },
+})
+
+/** The idempotency key the `enqueue` scenario spawns under, which holds the sentinel. */
+const ENQUEUE_KEY = `enqueue-${SENTINEL}`
 
 /** The completed task a read names. */
 const completed = (seeded: SeededTasks | undefined): string => {
@@ -136,7 +165,83 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
   stuck: readAt(() => ['stuck', '--queue', QUEUE, '--json', '--older-than', '1h']),
   stats: readAt(() => ['stats', '--queue', QUEUE, '--json']),
   sizes: readAt(() => ['sizes', '--queue', QUEUE, '--json']),
+  // Under a key and with parameters that hold the sentinel of line 33.
+  enqueue: [
+    writeAt('the current version, under a key no task has', (db) => [
+      'enqueue',
+      'report',
+      '--key',
+      ENQUEUE_KEY,
+      '--params',
+      JSON.stringify({ secret: SENTINEL }),
+      ...named(db),
+    ]),
+    // Under a key a task holds, so the command reads the task it found.
+    {
+      ...writeAt('the current version, under a key a task holds', (db) => [
+        'enqueue',
+        'report',
+        '--key',
+        HELD_KEY,
+        ...named(db),
+      ]),
+      prepare: async (db) =>
+        (await db.store.spawn(QUEUE, 'report', 'null', { idempotencyKey: HELD_KEY })).taskId,
+    },
+  ],
+  // An emit sends each batch it declares: the event's state and its waiters before the
+  // write, and its stored payload after. A run is parked on the event, so the write wakes it.
+  emit: [
+    {
+      ...writeAt('the current version, of an event a run awaits', (db) => [
+        'emit',
+        'go-ahead',
+        '--payload',
+        JSON.stringify({ secret: SENTINEL }),
+        '--yes',
+        ...named(db),
+      ]),
+      prepare: (db) => parkedOnAnEvent(db, null, {}, 'go-ahead'),
+    },
+  ],
+  cancel: [
+    writeAt('the current version, of a task that is pending', (db, seeded) => [
+      'cancel',
+      seeded.pending,
+      '--yes',
+      ...named(db),
+    ]),
+  ],
+  // A revival sends the read of the task and the write. What the guard says of the task is
+  // read only when the port answers null, which a task that is live makes it do.
+  retry: [
+    writeAt('the current version, of a task that failed', (db, seeded) => [
+      'retry',
+      seeded.failed,
+      '--yes',
+      ...named(db),
+    ]),
+    writeAt('the current version, of a task that is live', (db, seeded) => [
+      'retry',
+      seeded.pending,
+      '--yes',
+      ...named(db),
+    ]),
+  ],
+  // A sweep with one of each transition to make, so it sends each batch it declares.
+  sweep: [
+    {
+      ...writeAt(
+        'the current version, of a queue with a deadline passed, a launch lost and a lease lapsed',
+        (db) => ['sweep', ...named(db)],
+      ),
+      prepare: async (db) => (await owedToASweep(db)).lost.taskId,
+    },
+  ],
 }
+
+/** The idempotency key of the task the second `enqueue` scenario finds. */
+const HELD_KEY = 'a-key-a-task-holds'
 
 /** The idempotency key of the sleeping task the first `explain` scenario writes. */
 const ASLEEP_KEY = 'asleep-under-a-key'
@@ -206,6 +311,10 @@ async function faultSurface(
   const spec = COMMANDS[verb]
   const clean = await prepared(dialect, verb, scenario)
   const recording = recordingOpener()
+  // The ids the run without a fault mints, and below, the ids each faulted run and its
+  // repeat mint. Every first run starts the same seeded source, so a fault's run mints what
+  // the clean run minted up to the fault.
+  const cleanIds = recordingIds(testIdSource('cli'))
   let untouched: string
   let settled: string
   let answer: string
@@ -213,7 +322,7 @@ async function faultSurface(
   try {
     untouched = await clean.db.dump()
     from = await clean.db.admin.schemaVersion()
-    const run = await runCli(clean.line, clean.db.env, recording.opener)
+    const run = await runCli(clean.line, clean.db.env, recording.opener, cleanIds.ids)
     expect(run.exit, run.stdout).toBe(0)
     expectNoSentinel(run, `${dialect} ${verb} from ${scenario.name}: the clean run`)
     settled = await clean.db.dump()
@@ -228,31 +337,38 @@ async function faultSurface(
     for (const fault of only === undefined ? CLI_FAULTS : [only.fault]) {
       const where = `${dialect} ${verb} from ${scenario.name}: ${fault} at ${site.label} #${site.occurrence}`
       const { db, line } = await prepared(dialect, verb, scenario)
+      const minting = recordingIds(testIdSource('cli'))
       try {
         expect(await db.dump(), `${where}: the starting state`).toBe(untouched)
         const hit = await runCli(
           line,
           db.env,
           openerWrapping((real) => faulting(real, site, fault)),
+          minting.ids,
         )
         expect({ where, exit: hit.exit }, only?.marker ?? where).toEqual({
           where,
           exit: exitCode(faultExit(spec, site.label, fault)),
         })
         expectNoSentinel(hit, where)
-        if (spec.writes) {
+        if (spec.repeat === 'resumes') {
           const recorded = await db.admin.schemaVersion()
           expect(
             recorded >= from && recorded <= CURRENT_SCHEMA_VERSION,
             `${where}: recorded version ${recorded}`,
           ).toBe(true)
-        } else {
+        } else if (!spec.writes) {
           expect(await db.dump(), `${where}: a read changed a table`).toBe(untouched)
         }
-        const again = await runCli(line, db.env)
+        // The repeat is another process: its ids go on from where the first run's stopped.
+        const again = await runCli(line, db.env, openStore, minting.ids)
         expect(again.exit, `${where}: the repeat`).toBe(0)
         expectNoSentinel(again, `${where}: the repeat`)
-        expect(await db.dump(), `${where}: the repeat's state`).toBe(settled)
+        const state = (dump: string): string =>
+          withoutMinted(dump, [...cleanIds.minted, ...minting.minted])
+        expect(state(await db.dump()), only?.marker ?? `${where}: the repeat's state`).toBe(
+          state(settled),
+        )
         if (spec.repeat === 'read') expect(again.stdout, `${where}: the repeat`).toBe(answer)
         cases++
       } finally {
@@ -265,9 +381,7 @@ async function faultSurface(
 
 describe('the CLI fault surface', () => {
   it('has scenarios for every store command in the table, and every matrix kind', () => {
-    expect(Object.keys(SCENARIOS).sort()).toEqual(
-      VERBS.filter((verb) => COMMANDS[verb].opensStore).sort(),
-    )
+    expect(Object.keys(SCENARIOS).sort()).toEqual([...STORE_VERBS].sort())
     for (const scenarios of Object.values(SCENARIOS)) expect(scenarios.length).toBeGreaterThan(0)
     expect(Object.values(AS_THE_CLI_MEETS).sort()).toEqual([...CLI_FAULTS].sort())
   })
@@ -282,11 +396,24 @@ describe('the CLI fault surface', () => {
     expect(cases).toBeGreaterThan(0)
   })
 
+  // Exit test line 34's red for the drive verbs. The answer to the spawn is lost after the
+  // batch commits, and the command is run again by a process whose ids are its own. Under
+  // the key it finds the task the first run made. Spawned under no key it would make a
+  // second task, and the state after the repeat would hold two where a clean run leaves one.
+  it('an enqueue whose answer was lost, run again, finds the task under its key and spawns no second one', async () => {
+    const [scenario] = SCENARIOS.enqueue
+    if (scenario === undefined) throw new Error('enqueue has no scenario')
+    const cases = await faultSurface('libsql', 'enqueue', scenario, {
+      fault: 'crash-after',
+      marker: 'mutation-verdict:behavior:cli-enqueue-spawns-under-its-key',
+    })
+    expect(cases).toBeGreaterThan(0)
+  })
+
   for (const dialect of SELECTED) {
     describe(`[${dialect}]`, () => {
       it('every batch label and faultsAt entry the command table declares is sent from some starting state', async () => {
-        for (const verb of VERBS) {
-          if (verb === 'help') continue
+        for (const verb of STORE_VERBS) {
           const spec = COMMANDS[verb]
           const sent = new Set<string>()
           for (const scenario of SCENARIOS[verb]) {
@@ -305,8 +432,7 @@ describe('the CLI fault surface', () => {
         }
       }, 120_000)
 
-      for (const verb of VERBS) {
-        if (verb === 'help') continue
+      for (const verb of STORE_VERBS) {
         for (const scenario of SCENARIOS[verb]) {
           it(`${verb} from ${scenario.name} under every fault kind at every batch it sends`, async () => {
             const cases = await faultSurface(dialect, verb, scenario)
