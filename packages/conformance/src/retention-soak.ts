@@ -456,6 +456,9 @@ async function hours(
     const now = instantOf(hour)
     await f.admin.setFakeNowEpochMs(now)
     if (hour > 0 && hour % 24 === 0) {
+      // A week is thousands of batches inside one fixture. Where none of them lets the
+      // event loop turn, the fixture gives it a turn here, once a simulated day.
+      await f.turn?.()
       for (const found of await engineHistoryViolations(f.raw)) {
         week.violations.push(`day ${hour / 24}: ${found}`)
       }
