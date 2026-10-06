@@ -1156,7 +1156,7 @@ describe('after a purge', () => {
           if (took === null) throw new Error(`the purge between the reads took nothing of ${key}`)
         })
       const said = (taskId: string | undefined) =>
-        `the idempotency key named task ${taskId} in queue ${QUEUE}, and the task is gone as of the next read: a purge retained it out between the two reads`
+        `the idempotency key named task ${taskId} in queue ${QUEUE}, and the task is gone as of the next read: it may have been retained out`
       const answers: unknown[] = []
       for (const verb of ['inspect', 'explain']) {
         const key = `${verb}-json`

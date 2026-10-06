@@ -566,17 +566,20 @@ interface NamedTask {
 
 /**
  * The answer for a named task that the read of it does not find. A command that takes a
- * key reads twice, the task's id by its key and then the task. Only a purge deletes a
- * task, so a task its key found and the next read does not was retained out between the
- * two, and the answer says that, with the id the key found. A key that names no task is
- * answered by the first read and never reaches this. A task named by its id that is not
- * there is answered as it always was: no read says whether it ever existed.
+ * key reads twice, the task's id by its key and then the task. A task its key found and
+ * the next read does not is gone as of that read, and the answer says so, with the id the
+ * key found. Why it is gone no read says: the engine deletes a task only by a purge, so it
+ * may have been retained out, and a database edited or restored between the two reads
+ * shows the same. The answer claims no more than `retry`'s does of a task that is not
+ * there. A key that names no task is answered by the first read and never reaches this.
+ * A task named by its id that is not there is answered as it always was: no read says
+ * whether it ever existed.
  */
 function taskNotThere({ queue, taskId, byKey }: NamedTask): Answer {
   if (byKey) {
     return notFound(
       { queue, taskId },
-      `the idempotency key named task ${taskId} in queue ${queue}, and the task is gone as of the next read: a purge retained it out between the two reads`,
+      `the idempotency key named task ${taskId} in queue ${queue}, and the task is gone as of the next read: it may have been retained out`,
     )
   }
   return noSuchTask(queue, taskId)
