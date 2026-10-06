@@ -159,23 +159,33 @@ async function purgeByTheOracle(f: StoreFixture, nowMs: number, where: string): 
  * seed replays exactly. (Interleaving fuzz via SimWorld schedules is layered
  * on separately; this walk hammers state-machine coverage, not concurrency.)
  *
- * The walk also purges: a window passes, and every ended unit retention lists is purged,
- * each purge held to the model's oracle (`purgeByTheOracle`).
+ * A walk whose caller asks also purges: a window passes, and every ended unit retention
+ * lists is purged, each purge held to the model's oracle (`purgeByTheOracle`). The fuzz
+ * shards ask. A caller that walks the engine for the states a walk leaves does not ask,
+ * and its walk is what it was before the purge existed: the step that would purge moves
+ * the clock, as it did, and takes the same one draw. A purge takes the failed and the
+ * ended tasks such a caller reads, and its floors were measured with them there.
  */
 export async function runFuzzScenario(
   makeFixture: StoreFixtureFactory,
   seed: number | string,
   steps: number,
   afterWalk?: (fixture: StoreFixture) => Promise<void>,
+  walk: { readonly purges?: boolean } = {},
 ): Promise<FuzzStats> {
   return withFixture(makeFixture, `fuzz-${seed}`, async (f) => {
-    const stats = await runWalk(f, seed, steps)
+    const stats = await runWalk(f, seed, steps, walk.purges === true)
     await afterWalk?.(f)
     return stats
   })
 }
 
-async function runWalk(f: StoreFixture, seed: number | string, steps: number): Promise<FuzzStats> {
+async function runWalk(
+  f: StoreFixture,
+  seed: number | string,
+  steps: number,
+  purges: boolean,
+): Promise<FuzzStats> {
   const rng = new Rng(`fuzz-${seed}`)
   let now = 1_000_000
   await f.admin.setFakeNowEpochMs(now)
@@ -680,7 +690,7 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
           held.push(run)
         }
       }
-    } else if (roll >= PURGE_FROM) {
+    } else if (purges && roll >= PURGE_FROM) {
       // Retention, from the top of the clock's share. A window passes, with the seconds
       // the clock's own step would have drawn, so the op takes the one draw that step
       // takes. Then every unit the candidates list is purged, each beside the oracle.
