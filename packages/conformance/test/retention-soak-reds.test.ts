@@ -3,6 +3,7 @@ import type { StoreFixtureFactory } from '../src/index.js'
 import { NAMING_FAILED } from '../src/retention-policies.js'
 import {
   ENDED_UNIT_TABLES,
+  SOAK_LAST_HOUR,
   SOAK_TIMEOUT_MS,
   type SoakControl,
   overTheBound,
@@ -65,13 +66,39 @@ const leavingAWaitBehind = bent('complete', {
   args: [],
 })
 
-describe('each hold of the simulated week can fail', () => {
-  let made: Promise<SoakControl> | undefined
-  const control = () => {
-    made = made ?? soakControl(makeLibsqlFixture)
-    return made
+/** How often a timer armed to fire again and again fired while the control week ran. */
+let turns = 0
+let made: Promise<SoakControl> | undefined
+/** The clean week with no purge, run once, under that timer. */
+const control = () => {
+  if (made === undefined) {
+    const timer = setInterval(() => {
+      turns += 1
+    }, 0)
+    made = soakControl(makeLibsqlFixture).finally(() => clearInterval(timer))
   }
+  return made
+}
 
+// A week on libSQL is thousands of batches inside one fixture, and a libSQL batch on a
+// local file gives the event loop no turn. Measured before the week yielded: a week ran
+// for 8 to 13 seconds and a pending timer fired once in it, when its fixture was built. A
+// test worker whose loop does not turn for a minute fails its run with every test passing
+// (fixture-libsql.ts says how), and a week on a loaded machine is not far from a minute.
+// So the week gives the loop a turn at each simulated day, through the fixture, and the
+// timer is the subject here: it fires at least once in each of the days the passes run for.
+describe('the simulated week on libSQL', () => {
+  it(
+    'lets a pending timer fire in each of its simulated days',
+    async () => {
+      await control()
+      expect(turns).toBeGreaterThanOrEqual(SOAK_LAST_HOUR / 24)
+    },
+    SOAK_TIMEOUT_MS,
+  )
+})
+
+describe('each hold of the simulated week can fail', () => {
   it(
     'a purge that deletes nothing is over the bound in every table at every day boundary, and fails the vacuity check',
     async () => {
