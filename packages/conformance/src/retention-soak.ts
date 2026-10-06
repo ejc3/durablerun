@@ -2,12 +2,12 @@ import {
   type ClaimedRun,
   type HeldRetention,
   type HeldSchedulerStore,
-  type PurgeCursor,
   type PurgedUnit,
   type RetentionPolicy,
   type SqlRow,
   isLiveState,
   isTerminalState,
+  purgeWalk,
 } from '@durablerun/core'
 import { Rng } from '@durablerun/harness'
 import { describe, expect, it } from 'vitest'
@@ -558,25 +558,22 @@ function slotsByRow(dump: ProtocolSnapshot): Map<string, SqlRow> {
   return new Map(tasksOf(dump).map((task) => [slotByRow(task), task]))
 }
 
-/** One walk of the purge over every candidate, repeated until a walk takes nothing. */
+/** The most units one pass of the week may take: more than the week ever holds. */
+const SOAK_PASS_LIMIT = 1_000
+
+/**
+ * One pass of the purge: core's one walk, which is the pass an operator's `purge` runs. It
+ * is applied until it lets nothing more go, within bounds no pass of the week reaches, and
+ * a pass that stopped at one fails the week.
+ */
 async function purgePass(retention: HeldRetention, policy: RetentionPolicy): Promise<PurgedUnit[]> {
-  const won: PurgedUnit[] = []
-  for (let before = -1; before !== won.length; ) {
-    before = won.length
-    let after: PurgeCursor | null = null
-    do {
-      const page = await retention.purgeCandidates(Q, policy, {
-        limit: 50,
-        ...(after === null ? {} : { after }),
-      })
-      for (const candidate of page.candidates) {
-        const purged = await retention.purgeUnit(Q, candidate, policy)
-        if (purged !== null) won.push(purged)
-      }
-      after = page.next
-    } while (after !== null)
-  }
-  return won
+  const walked = await purgeWalk(retention, Q, policy, { limit: SOAK_PASS_LIMIT, execute: true })
+  if (walked.failed !== null) throw walked.failed.error
+  if (walked.more) throw new Error('soak: a pass stopped at a bound of the walk')
+  return walked.taken.map(({ candidate, rows }) => {
+    if (rows === null) throw new Error(`soak: the purge of ${candidate.taskId} answered no rows`)
+    return { taskId: candidate.taskId, rows }
+  })
 }
 
 /**

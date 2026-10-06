@@ -1,5 +1,10 @@
 import { parseArgs } from 'node:util'
-import { MAX_DURATION_MS, MIN_RETENTION_SECONDS, OPERATOR_LIST_CAP } from '@durablerun/core'
+import {
+  MAX_DURATION_MS,
+  MIN_RETENTION_SECONDS,
+  OPERATOR_LIST_CAP,
+  PURGE_WALK_EXAMINED,
+} from '@durablerun/core'
 import type { ExitName } from './exit.js'
 
 /**
@@ -582,7 +587,13 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
       limit: {
         type: 'string',
         value: 'N',
-        description: `the most units the command purges, or lists as ones it would purge, from 1 to ${OPERATOR_LIST_CAP}; ${PURGE_DEFAULT_LIMIT} when not given`,
+        description: `the most units the command purges, or lists as ones it would purge, from 1 to ${OPERATOR_LIST_CAP}; ${PURGE_DEFAULT_LIMIT} when not given. Whatever the limit, one run examines at most ${PURGE_WALK_EXAMINED} candidates`,
+      },
+      after: {
+        type: 'string',
+        value: 'CURSOR',
+        description:
+          'the place an earlier run stopped, which it printed as resumeAfter: only the candidates behind it are examined',
       },
       execute: {
         type: 'boolean',

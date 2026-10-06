@@ -5,7 +5,6 @@ import {
   MAX_RUN_ORDINAL,
   OPERATOR_LIST_CAP,
   PermanentStoreError,
-  type PurgeCursor,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SpawnResult,
@@ -14,6 +13,7 @@ import {
   isLiveState,
   isPortRefusal,
   isTerminalState,
+  purgeWalk,
 } from '@durablerun/core'
 import {
   COMMANDS,
@@ -75,7 +75,7 @@ import {
   openStore,
   storeTarget,
 } from './open-store.js'
-import { keptView, letsGo, limitOf, policyOf, policyView, unitOf, unitView } from './purge.js'
+import { cursorOf, cursorText, keptView, limitOf, policyOf, policyView, unitView } from './purge.js'
 import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 import { userValue } from './render.js'
@@ -1169,11 +1169,19 @@ const sweep: Handler = async (context) => {
   }
 }
 
+/** The batch each call of the retention port sends, by which a failure names the call it stopped at. */
+const PURGE_CALL_LABEL = {
+  purgeCandidates: 'purge-candidates',
+  purgeUnit: 'purge-unit',
+  purgeAdmission: 'purge-admission',
+} as const
+
 /**
  * Purge the units of a queue's ended tasks that are older than the windows named. It is
- * the store's retention port and nothing else: the candidates are listed by
- * `purgeCandidates`, each unit goes by `purgeUnit`, whose compare-and-set holds the whole
- * barrier at the instant of deletion, and the command builds no statement of its own.
+ * the store's retention port and nothing else: it runs core's one walk over that port
+ * (`purgeWalk`), which lists the candidates by `purgeCandidates` and sends each unit's
+ * purge by `purgeUnit`, whose compare-and-set holds the whole barrier at the instant of
+ * deletion. The command builds no statement of its own.
  *
  * Without `--execute` it is a dry run that sends only reads: each candidate is listed with
  * what the barrier says of it as of that read (`purgeAdmission`), and nothing is deleted.
@@ -1181,15 +1189,22 @@ const sweep: Handler = async (context) => {
  * what keeps it is then read, and it is listed as kept, or as gone when no task is there at
  * that read, which is a unit another purge took or this call delivered twice.
  *
- * The walk follows the port's cursor past the units the barrier keeps, so a queue whose
- * oldest candidates are all kept still purges what stands behind them, and it ends once
- * `--limit` units went, or would go. `more` says candidates were left unread.
+ * One run is one pass, within two bounds. A pass takes what it frees: a unit kept only by
+ * a unit the same run then purges is tried again and goes with it. `--limit` is the most
+ * units a run takes, and it examines at most `PURGE_WALK_EXAMINED` candidates whatever the
+ * limit, so the batches one run sends and the entries it prints are bounded. `finished`
+ * says every call was answered. `more` is false only when the run reached its end: every
+ * candidate from where it began was examined and no kept unit was owed another try. When
+ * candidates stand unread behind the place a run stopped, it prints that place as
+ * `resumeAfter`, and `--after` begins the next run there, past the units the barrier keeps.
  *
  * It refuses, before any candidate is read, a schema version that is not the build's, whose
  * indexes the purge's statements read, and a database whose test clock is set, because a
- * unit's age is read against database time. When the store fails partway, the units that
- * went are printed all the same, on stdout, and the exit is the failure's: the answers
- * already given stand, and running the command again purges what is left.
+ * unit's age is read against database time. When the store fails partway, the units the
+ * run had reached are printed all the same, on stdout, and the exit is the failure's: the
+ * answers already given stand, and running the command again purges what is left. A unit
+ * whose purge was sent and not answered is printed whole under `outcomeNotKnown`: it may
+ * have gone. A failure before any unit was reached prints as any failure does.
  */
 const purge: Handler = async (context) => {
   const { invocation, store, reveal } = context
@@ -1200,9 +1215,18 @@ const purge: Handler = async (context) => {
   const bound = limitOf(strings.limit)
   if ('refused' in bound) return flagRefused(bound.refused)
   const { limit } = bound
+  const from = cursorOf(strings.after)
+  if ('refused' in from) return flagRefused(from.refused)
+  const { after } = from
   const queue = strings.queue ?? ''
   const execute = booleans.execute === true
-  const named = { queue, execute, policy: policyView(policy), limit }
+  const named = {
+    queue,
+    execute,
+    policy: policyView(policy),
+    limit,
+    after: after === null ? null : cursorText(after),
+  }
   const recorded = await store.admin.schemaVersion()
   if (recorded !== store.window.newest) {
     const message =
@@ -1227,73 +1251,58 @@ const purge: Handler = async (context) => {
       },
     }
   }
-  const taken: Record<string, unknown>[] = []
-  const kept: Record<string, unknown>[] = []
-  const gone: Record<string, unknown>[] = []
-  let more = false
-  /** The call the walk is in, and the task it is for, so a failure says where it stopped. */
-  let asking: { readonly call: string; readonly taskId?: string } = { call: 'purge-candidates' }
-  const report = () => ({
-    ...named,
-    [execute ? 'purged' : 'wouldPurge']: taken,
-    kept,
-    gone,
-    more,
+  const walked = await purgeWalk(store.retention, queue, policy, {
+    limit,
+    execute,
+    ...(after === null ? {} : { after }),
   })
-  try {
-    let after: PurgeCursor | null = null
-    walk: for (;;) {
-      asking = { call: 'purge-candidates' }
-      const page = await store.retention.purgeCandidates(queue, policy, {
-        limit,
-        ...(after === null ? {} : { after }),
-      })
-      for (const candidate of page.candidates) {
-        if (taken.length === limit) {
-          more = true
-          break walk
-        }
-        const unit = unitOf(candidate)
-        if (execute) {
-          asking = { call: 'purge-unit', taskId: candidate.taskId }
-          const purged = await store.retention.purgeUnit(queue, unit, policy)
-          if (purged !== null) {
-            taken.push({ ...unitView(candidate), rows: purged.rows })
-            continue
-          }
-        }
-        asking = { call: 'purge-admission', taskId: candidate.taskId }
-        const admission = await store.retention.purgeAdmission(queue, unit, policy)
-        if (admission === null) gone.push(unitView(candidate))
-        else if (!execute && letsGo(admission)) taken.push(unitView(candidate))
-        else kept.push(keptView(candidate, admission))
-      }
-      if (page.next === null) break
-      after = page.next
-    }
-  } catch (error) {
-    const failed = failure(error, reveal)
+  const report = {
+    ...named,
+    examined: walked.examined,
+    [execute ? 'purged' : 'wouldPurge']: walked.taken.map(({ candidate, rows }) =>
+      rows === null ? unitView(candidate) : { ...unitView(candidate), rows },
+    ),
+    kept: walked.kept.map(({ candidate, admission }) => keptView(candidate, admission)),
+    gone: walked.gone.map(unitView),
+    outcomeNotKnown: walked.outcomeNotKnown.map(unitView),
+    more: walked.more,
+    resumeAfter: walked.resumeAfter === null ? null : cursorText(walked.resumeAfter),
+  }
+  const { failed } = walked
+  if (failed !== null) {
+    const answer = failure(failed.error, reveal)
+    // A report that holds no unit says nothing a failure does not: it prints as one.
+    const holdsAUnit =
+      walked.taken.length +
+        walked.kept.length +
+        walked.gone.length +
+        walked.outcomeNotKnown.length >
+      0
+    if (!holdsAUnit) return answer
     return {
-      exit: failed.exit,
+      exit: answer.exit,
       holdsFacts: true,
       view: {
-        ...report(),
+        ...report,
         finished: false,
-        stoppedAt: asking,
-        ...failed.view,
+        stoppedAt: {
+          call: PURGE_CALL_LABEL[failed.call],
+          ...(failed.taskId === undefined ? {} : { taskId: failed.taskId }),
+        },
+        ...answer.view,
       },
     }
   }
   return {
     exit: 'done',
     view: {
-      ...report(),
+      ...report,
       finished: true,
       ...(execute
         ? {}
         : {
             dryRun:
-              'nothing was deleted. Each verdict is as of this read: a purge reads every condition again, inside the statement that deletes',
+              'nothing was deleted. Each verdict is as of this read: a purge reads every condition again, inside the statement that deletes, and takes with a unit the units that only it kept',
           }),
     },
   }

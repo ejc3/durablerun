@@ -8,6 +8,7 @@ import {
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   type SqlExecutor,
+  purgeWalk,
   taskDoneEventName,
 } from '@durablerun/core'
 import { SimWorld } from '@durablerun/harness'
@@ -924,14 +925,11 @@ export async function runFaultMatrixCase(
       now += SHORTEST_WINDOW_MS
       await go(() => admin.setFakeNowEpochMs(now))
       const retention = f.retentionOver(simDb)
-      const listed = await go(() =>
-        retention.purgeCandidates(Q, MATRIX_RETENTION_POLICY, { limit: 50 }),
-      )
-      for (const candidate of listed?.candidates ?? []) {
-        // What the barrier says of the unit is read, and the unit is then purged.
-        await go(() => retention.purgeAdmission(Q, candidate, MATRIX_RETENTION_POLICY))
-        await go(() => retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
-      }
+      // Core's one walk, twice. Without `execute` it reads what the barrier says of every
+      // candidate, and with it each unit is purged. A call a fault ends is where its walk
+      // stops: the walk answers the failure and throws nothing.
+      await go(() => purgeWalk(retention, Q, MATRIX_RETENTION_POLICY, { limit: 50 }))
+      await go(() => purgeWalk(retention, Q, MATRIX_RETENTION_POLICY, { limit: 50, execute: true }))
     })
     await world.run()
 

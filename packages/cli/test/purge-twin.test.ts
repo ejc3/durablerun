@@ -1,5 +1,11 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { PurgeCursor, PurgedUnit, Retention, RetentionPolicy } from '@durablerun/core'
+import {
+  type PurgeCursor,
+  type PurgedUnit,
+  type Retention,
+  type RetentionPolicy,
+  purgeWalk,
+} from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { retention } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
@@ -68,54 +74,62 @@ const purgeOf = (name: string, limit: number | undefined, keepFailed = false): C
 })
 
 /**
- * The port calls a purge is: list the candidates, and purge each in the order it is listed,
- * until `limit` units went or none is left. It is written here from the port's own words,
- * with a page of another size than the command's, so the comparison does not turn on a page.
+ * The purge a command is, on the twin: core's one walk over the port, which is what the
+ * command runs. It answers the units that went, each with its rows.
  */
 async function portPurge(
   port: Retention,
   policy: RetentionPolicy,
   limit: number,
 ): Promise<PurgedUnit[]> {
-  const went: PurgedUnit[] = []
+  const walked = await purgeWalk(port, QUEUE, policy, { limit, execute: true })
+  if (walked.failed !== null) throw walked.failed.error
+  return walked.taken.map(({ candidate, rows }) => {
+    if (rows === null) throw new Error(`the purge of ${candidate.taskId} answered no rows`)
+    return { taskId: candidate.taskId, rows }
+  })
+}
+
+/**
+ * What the port itself says of every candidate, on the twin, read here from the port's own
+ * words and not through the walk: each candidate it lists, and whether every condition of
+ * the barrier holds of it. A dry run prints a unit as one a purge would take where the
+ * port says every condition holds, and as kept where it does not.
+ */
+async function portVerdicts(
+  port: Retention,
+  policy: RetentionPolicy,
+): Promise<{ wouldGo: string[]; keeps: string[] }> {
+  const wouldGo: string[] = []
+  const keeps: string[] = []
   let after: PurgeCursor | null = null
   for (;;) {
     const page = await port.purgeCandidates(QUEUE, policy, {
       limit: 7,
       ...(after === null ? {} : { after }),
     })
-    for (const { taskId, idempotencyKey } of page.candidates) {
-      if (went.length === limit) return went
-      const purged = await port.purgeUnit(
-        QUEUE,
-        idempotencyKey === undefined ? { taskId } : { taskId, idempotencyKey },
-        policy,
-      )
-      if (purged !== null) went.push(purged)
+    for (const candidate of page.candidates) {
+      const said = await port.purgeAdmission(QUEUE, candidate, policy)
+      if (said === null) continue
+      const holds = Object.values(said.holds).every((held) => held)
+      ;(holds ? wouldGo : keeps).push(candidate.taskId)
     }
-    if (page.next === null) return went
+    if (page.next === null) return { wouldGo, keeps }
     after = page.next
-  }
-}
-
-/** The port's reads a dry run is: the listing, and what the barrier says of each candidate. */
-async function portDryRun(port: Retention, policy: RetentionPolicy): Promise<void> {
-  const page = await port.purgeCandidates(QUEUE, policy, { limit: 100 })
-  for (const { taskId, idempotencyKey } of page.candidates) {
-    await port.purgeAdmission(
-      QUEUE,
-      idempotencyKey === undefined ? { taskId } : { taskId, idempotencyKey },
-      policy,
-    )
   }
 }
 
 type PurgeAnswer = JsonAnswer & {
   readonly purged?: readonly { readonly taskId: string; readonly rows: unknown; state: string }[]
-  readonly wouldPurge?: readonly unknown[]
-  readonly kept?: readonly unknown[]
+  readonly wouldPurge?: readonly { readonly taskId: string }[]
+  readonly kept?: readonly { readonly taskId: string; readonly reasons: readonly string[] }[]
   readonly gone?: readonly unknown[]
+  readonly more?: boolean
+  readonly finished?: boolean
 }
+
+const idsOf = (units: readonly { readonly taskId: string }[] | undefined): string[] =>
+  (units ?? []).map(({ taskId }) => taskId)
 
 /** What the command printed as purged, and what the port answered for: each unit by its task and its rows. */
 const printed = (answer: PurgeAnswer) =>
@@ -163,10 +177,9 @@ describe('purge is the retention port and nothing else', () => {
           )
           const answer = JSON.parse(run.stdout) as PurgeAnswer
           const port = twin.retentionWith(testIdSource(seed))
+          const said = command.limit === null ? await portVerdicts(port, command.policy) : null
           const ported =
-            command.limit === null
-              ? await portDryRun(port, command.policy).then(() => [])
-              : await portPurge(port, command.policy, command.limit)
+            command.limit === null ? [] : await portPurge(port, command.policy, command.limit)
           const after = await subject.dump()
           expect(
             { where, same: after === (await twin.dump()) },
@@ -176,6 +189,15 @@ describe('purge is the retention port and nothing else', () => {
             { where, printed: printed(answer) },
             'mutation-verdict:behavior:cli-purge-prints-exactly-the-units-that-went',
           ).toEqual({ where, printed: answered(ported) })
+          // A dry run lists as ones a purge would take the units the port says every
+          // condition holds of, and as kept the ones it says one does not.
+          if (said !== null) {
+            expect({
+              where,
+              wouldPurge: idsOf(answer.wouldPurge),
+              kept: idsOf(answer.kept),
+            }).toEqual({ where, wouldPurge: said.wouldGo, kept: said.keeps })
+          }
           const purges = recorded.sent().filter((batch) => batch.label === 'purge-unit').length
           expect({
             where,
@@ -232,6 +254,8 @@ const FLOORS = {
   failed: 14,
   cancelled: 34,
   checkpointsPurged: 25,
+  // Each walk's last command repeats the one before it, which had no more to do.
+  repeats: 10,
 }
 
 describe('purge over the states a walk of the engine leaves, on libSQL', () => {
@@ -247,6 +271,7 @@ describe('purge over the states a walk of the engine leaves, on libSQL', () => {
       cancelled: 0,
       kept: 0,
       checkpointsPurged: 0,
+      repeats: 0,
     }
     const differed: string[] = []
     for (const walk of WALKS) {
@@ -258,6 +283,8 @@ describe('purge over the states a walk of the engine leaves, on libSQL', () => {
           expect(await dumpOf('libsql', twin.raw), `walk ${walk}: the twins start equal`).toBe(
             await dumpOf('libsql', subject.raw),
           )
+          /** The run before this one, when it ended finished with no more to do. */
+          let before: { flags: string; kept: string } | null = null
           for (const [index, command] of WALK_COMMANDS.entries()) {
             const seed = `walk-${index}`
             const where = `walk ${walk}: ${command.name}`
@@ -269,10 +296,34 @@ describe('purge over the states a walk of the engine leaves, on libSQL', () => {
             )
             const answer = JSON.parse(run.stdout) as PurgeAnswer
             const port = retention(twin.raw, testIdSource(seed))
+            const said = command.limit === null ? await portVerdicts(port, command.policy) : null
             const ported =
-              command.limit === null
-                ? await portDryRun(port, command.policy).then(() => [])
-                : await portPurge(port, command.policy, command.limit)
+              command.limit === null ? [] : await portPurge(port, command.policy, command.limit)
+            if (
+              said !== null &&
+              !isDeepStrictEqual(
+                [idsOf(answer.wouldPurge), idsOf(answer.kept)],
+                [said.wouldGo, said.keeps],
+              )
+            ) {
+              differed.push(`${where}: a dry run lists other units than the port lets go and keeps`)
+            }
+            // A run that ended finished with no more to do is repeated at once by the
+            // command after it, on a database nothing else touched: the repeat purges
+            // nothing, and lists the same units as kept for the same reasons.
+            const keptNow = JSON.stringify(
+              (answer.kept ?? []).map(({ taskId, reasons }) => [taskId, reasons]),
+            )
+            if (before !== null && before.flags === command.flags.join(' ')) {
+              reached.repeats += 1
+              if ((answer.purged ?? []).length > 0 || keptNow !== before.kept) {
+                differed.push(`${where}: a repeat of a run that had no more to do did more`)
+              }
+            }
+            before =
+              command.limit !== null && answer.finished === true && answer.more === false
+                ? { flags: command.flags.join(' '), kept: keptNow }
+                : null
             if ((await dumpOf('libsql', subject.raw)) !== (await dumpOf('libsql', twin.raw))) {
               differed.push(`${where}: the dumps differ`)
             }

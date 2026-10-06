@@ -21877,9 +21877,9 @@ MUTATION_SPECS.extend(
     (
         (
             "cli-purge-deletes-nothing-without-execute",
-            "packages/cli/src/main.ts",
-            "        if (execute) {\n",
-            "        if (!execute) {\n",
+            "packages/core/src/retention-walk.ts",
+            "    if (execute) {\n      let purged: PurgedUnit | null\n",
+            "    if (!execute) {\n      let purged: PurgedUnit | null\n",
             "a dry run sends the purge of every candidate, and a purge with --execute sends none",
         ),
         (
@@ -21926,17 +21926,17 @@ MUTATION_SPECS.extend(
         ),
         (
             "cli-purge-walks-past-the-units-the-barrier-keeps",
-            "packages/cli/src/main.ts",
-            "      if (page.next === null) break\n",
-            "      break\n",
-            "purge reads one page of candidates and stops, so a queue whose oldest candidates are all kept is never purged",
+            "packages/core/src/retention-walk.ts",
+            "      if (failed !== null) break list\n",
+            "      if (failed !== null || kept.size > 0) break list\n",
+            "the walk stops at the first unit the barrier keeps, so a queue whose oldest candidates are all kept is never purged",
         ),
         (
             "cli-purge-stops-at-its-limit-inside-a-page",
-            "packages/cli/src/main.ts",
-            "        if (taken.length === limit) {\n          more = true\n          break walk\n        }\n",
+            "packages/core/src/retention-walk.ts",
+            "      if (atABound()) {\n        unread = true\n        break list\n      }\n",
             "",
-            "purge takes every candidate of the page it is in after its limit is reached",
+            "the walk takes every candidate of the page it is in after its limit is reached",
         ),
         (
             "cli-purge-names-the-condition-that-keeps-a-unit",
@@ -21948,7 +21948,7 @@ MUTATION_SPECS.extend(
         (
             "cli-purge-reports-what-went-before-an-outage",
             "packages/cli/src/main.ts",
-            "        ...report(),\n        finished: false,\n",
+            "        ...report,\n        finished: false,\n",
             "        finished: false,\n",
             "a purge that meets an outage prints nothing of the units that went",
         ),
@@ -21962,23 +21962,23 @@ MUTATION_SPECS.extend(
         (
             "cli-purge-is-the-retention-port-and-nothing-else",
             "packages/cli/src/main.ts",
-            "        if (execute) {\n          asking = { call: 'purge-unit', taskId: candidate.taskId }\n",
-            "        if (execute && candidate === null) {\n          asking = { call: 'purge-unit', taskId: candidate.taskId }\n",
-            "purge with --execute sends no purge, and leaves every unit the port takes",
+            "    limit,\n    execute,\n    ...(after === null ? {} : { after }),\n",
+            "    limit,\n    execute: false,\n    ...(after === null ? {} : { after }),\n",
+            "purge with --execute hands the walk no leave to purge, and leaves every unit the port takes",
         ),
         (
             "cli-purge-prints-exactly-the-units-that-went",
             "packages/cli/src/main.ts",
-            "            taken.push({ ...unitView(candidate), rows: purged.rows })\n",
-            "            taken.push(unitView(candidate))\n",
+            "      rows === null ? unitView(candidate) : { ...unitView(candidate), rows },\n",
+            "      unitView(candidate),\n",
             "purge deletes a unit and prints it without the rows that went",
         ),
         (
             "cli-purge-is-the-retention-port-over-a-walk",
             "packages/cli/src/purge.ts",
-            "    : { taskId: candidate.taskId, idempotencyKey: candidate.idempotencyKey }\n",
-            "    : { taskId: candidate.taskId }\n",
-            "purge names a unit without the key it was listed under, and the barrier keeps every task that has one",
+            "      ...(failedSeconds === undefined ? {} : { failedSeconds }),\n",
+            "",
+            "purge drops the window a command line names for failed tasks, and keeps every failed task the port takes",
         ),
     )
 )

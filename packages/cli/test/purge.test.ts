@@ -692,18 +692,18 @@ describe('how far one purge goes', () => {
       const behind = await completedTasks(db, 3, 'job')
       await aged(db)
       const recorded = recordingOpener()
-      // A limit of two is also the size of a page, so the first page holds kept units alone.
+      // The three kept units stand first among the candidates the walk lists.
       const { exit, answer } = await purge(
         db,
         [...PURGE_WINDOWS, '--limit', '2', '--execute'],
         recorded.opener,
       )
-      // Past the first page, which holds kept units alone, something goes.
+      // Past the kept units, something goes.
       expect(
         { exit, kept: idsOf(answer.kept), purgedSome: idsOf(answer.purged).length > 0 },
         'mutation-verdict:behavior:cli-purge-walks-past-the-units-the-barrier-keeps',
       ).toEqual({ exit: 0, kept, purgedSome: true })
-      // And inside the page in which its limit is reached, it stops.
+      // And where its limit is reached, inside the page, it stops, with one listing sent.
       expect(
         {
           purged: idsOf(answer.purged),
@@ -711,7 +711,7 @@ describe('how far one purge goes', () => {
           pages: recorded.sent().filter((batch) => batch.label === 'purge-candidates').length,
         },
         'mutation-verdict:behavior:cli-purge-stops-at-its-limit-inside-a-page',
-      ).toEqual({ purged: behind.slice(0, 2), more: true, pages: 3 })
+      ).toEqual({ purged: behind.slice(0, 2), more: true, pages: 1 })
       // A dry run walks the same way, and says the same of what is left.
       const dry = await purge(db, [...PURGE_WINDOWS, '--limit', '2'])
       expect({
@@ -1068,15 +1068,16 @@ describe('a purge whose store answers otherwise than a clean run', () => {
           faultAt({ label: 'purge-candidates', occurrence: 1 }, 'crash-before'),
         ),
       )
+      // No unit was reached, so there is no report: the failure is the whole answer.
       expect({
         exit: run.out.exit,
+        kind: run.out.answer.error?.kind,
         purged: run.out.answer.purged,
-        stoppedAt: run.out.answer.stoppedAt,
         unchanged: run.unchanged,
       }).toEqual({
         exit: exitCode('unavailable'),
-        purged: [],
-        stoppedAt: { call: 'purge-candidates' },
+        kind: 'store-unavailable',
+        purged: undefined,
         unchanged: true,
       })
     })
