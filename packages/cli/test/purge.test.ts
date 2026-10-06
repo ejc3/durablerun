@@ -627,6 +627,43 @@ describe('what purge refuses, each beside the command that is not refused', () =
       })
     }))
 
+  it('refuses an --after that is no place a purge printed, before anything is sent, and takes one that is', () =>
+    onDb('purge-cursor', async (db) => {
+      await completedTasks(db, 2, 'job')
+      await aged(db)
+      const places = [
+        'nowhere',
+        '12',
+        ':a-task',
+        '5:',
+        '1e3:a-task',
+        '1.5:a-task',
+        '007:a-task',
+        // Past the last instant the engine stores, in sixteen digits and in seventeen.
+        '9999999999999999:a-task',
+        '99999999999999999:a-task',
+        `1:${'x'.repeat(300)}`,
+      ]
+      const answered: unknown[] = []
+      for (const place of places) {
+        const asked = await refused(db, [...PURGE_WINDOWS, '--execute', '--after', place])
+        // The refusal does not quote what it was given.
+        answered.push([
+          asked.exit,
+          asked.kind,
+          asked.unchanged,
+          asked.labels.length,
+          asked.message.includes(place),
+        ])
+      }
+      expect(answered).toEqual(places.map(() => [2, 'usage', true, 0, false]))
+      // The control: a place before every task is taken, and the purge begins there.
+      expect(await control(db, [...PURGE_WINDOWS, '--execute', '--after', '0:a-task'])).toEqual({
+        exit: 0,
+        unchanged: false,
+      })
+    }))
+
   it('creates no database: a purge of a file that is not there exits 5 and leaves no file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'durablerun-cli-purge-missing-'))
     try {
