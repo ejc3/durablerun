@@ -217,6 +217,38 @@ describe("the rule that only a purge deletes a row of a task's unit", () => {
     ])
   })
 
+  it('sends the delete of the task row last, after every delete that finds its rows through it', async () => {
+    const b = batch('purge-unit')
+    addUnitPurge(b, UNIT)
+    const { captured, executor } = capturingExecutor(1)
+    await b.run(executor).catch(() => undefined)
+    const deletes = captured.flatMap(({ sql }) => /^delete from "(\w+)"/.exec(sql)?.[1] ?? [])
+    expect(deletes, 'mutation-verdict:behavior:purge-deletes-the-task-row-last').toEqual([
+      'checkpoints',
+      'waits',
+      'runs',
+      'events',
+      'tasks',
+    ])
+  })
+
+  it("builds the batch of a purge only under the lock of the unit's completion event", () => {
+    // The delete of the completion event names the event from the lock the batch holds,
+    // so a purge whose compare-and-set names no lock builds no batch.
+    accepts('mutation-verdict:construction:purge-holds-the-lock-of-its-completion-event', () =>
+      addUnitPurge(batch('purge-unit'), UNIT),
+    )
+  })
+
+  it('builds no delete of a purge that skips a locked row', () => {
+    // The statement grammar takes no locking modifier, so a delete whose keys are read
+    // with SKIP LOCKED is refused when the batch is built (DESIGN.md §3.12).
+    const b = batch('purge-unit')
+    accepts('mutation-verdict:construction:purge-delete-skips-no-locked-row', () =>
+      addUnitPurge(b, UNIT),
+    )
+  })
+
   it("refuses a delete of a unit's rows under a stamp of the purge's batch that is not the purge's own", () => {
     // The purge stamps the runs of its unit so that their waits can be found. That stamp
     // is a follow-on's, and nothing of the unit is deleted under it but the waits.

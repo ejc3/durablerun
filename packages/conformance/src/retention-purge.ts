@@ -141,6 +141,27 @@ async function purgedCell(f: StoreFixture, cell: GridCell) {
 }
 
 /**
+ * The grid block that each registered mutation of the barrier is caught by, named by the
+ * state of the block's unit and of its parent. A marker is a literal because the mutation
+ * audit reads it from this source, and a block no mutation is registered to has none.
+ */
+const GRID_VERDICTS: Readonly<Record<string, string>> = {
+  'completed/live': 'mutation-verdict:behavior:purge-keeps-the-child-of-a-live-parent',
+  'completed/failed': 'mutation-verdict:behavior:purge-keeps-the-child-of-a-failed-parent',
+  'cancelled/live': 'mutation-verdict:behavior:purge-finds-a-parent-in-any-queue',
+  'completed/none': 'mutation-verdict:behavior:purge-is-not-kept-by-a-run-that-holds-no-payload',
+  'cancelled/none': 'mutation-verdict:behavior:purge-keeps-a-unit-whose-outcome-a-run-holds',
+  'failed/none': 'mutation-verdict:behavior:purge-keeps-a-unit-whose-event-a-wait-names',
+  'failed with a saga/none': 'mutation-verdict:behavior:purge-takes-a-unit-exactly-a-window-old',
+}
+
+/** The size block that each registered mutation of the checkpoint cap is caught by. */
+const SIZE_VERDICTS: Readonly<Record<string, string>> = {
+  completed: 'mutation-verdict:behavior:purge-keeps-a-unit-past-the-checkpoint-cap',
+  cancelled: 'mutation-verdict:behavior:purge-takes-a-unit-at-the-checkpoint-cap',
+}
+
+/**
  * The purge (DESIGN.md §3.12, BUILD.md exit test line 42), on every dialect: the barrier
  * grid against the oracle, what a kept unit's parent and holder then find, the purge
  * beside an await of the same child, what the ports answer of a unit that is gone, what
@@ -165,7 +186,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
               `${unit} ${parent}`,
               barrierCells(unit, parent),
             )
-            expect(observed).toEqual(expected)
+            expect(observed, GRID_VERDICTS[`${unit}/${parent}`]).toEqual(expected)
           },
           GRID_TIMEOUT_MS,
         )
@@ -178,7 +199,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             `${unit} sizes`,
             sizeCells(unit),
           )
-          expect(observed).toEqual(expected)
+          expect(observed, SIZE_VERDICTS[unit]).toEqual(expected)
         },
         GRID_TIMEOUT_MS,
       )
@@ -293,24 +314,30 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           CONTEST_POLICY,
           async () => undefined,
         ),
+        'mutation-verdict:behavior:purge-keeps-a-state-the-policy-does-not-name',
       ).toEqual(kept('state'))
     })
 
-    it('a unit whose stamp is NULL is kept, however old its rows are', async () => {
-      expect(
-        await bentPurge(
+    it('a unit whose stamp is NULL, or below every instant, is kept, however old its rows are', async () => {
+      // A NULL stamp has no age to read. A stamp below every instant reads as older than
+      // any window, so only the store's proof that the stamp is an instant in range keeps it.
+      const stamped = (stamp: 'NULL' | '-5') =>
+        bentPurge(
           makeFixture,
           'stamp',
           nothingInItsWay('completed'),
           GRID_POLICY,
           async (f, built) => {
-            await write(f, 'UPDATE tasks SET fence_at_ms = NULL WHERE task_id = ?', [
+            await write(f, `UPDATE tasks SET fence_at_ms = ${stamp} WHERE task_id = ?`, [
               built.target.taskId,
             ])
             return undefined
           },
-        ),
-      ).toEqual(kept('stamp'))
+        )
+      expect(
+        { asNull: await stamped('NULL'), belowEveryInstant: await stamped('-5') },
+        'mutation-verdict:behavior:purge-reads-an-age-only-from-a-stamp-in-range',
+      ).toEqual({ asNull: kept('stamp'), belowEveryInstant: kept('stamp') })
     })
 
     it('a unit one of whose runs is live is kept, though its task has ended', async () => {
@@ -327,6 +354,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             return undefined
           },
         ),
+        'mutation-verdict:behavior:purge-keeps-a-unit-with-a-live-run',
       ).toEqual(kept('live-run'))
     })
 
@@ -344,6 +372,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             return undefined
           },
         ),
+        'mutation-verdict:behavior:purge-keeps-a-unit-with-a-run-in-another-queue',
       ).toEqual(kept('foreign-run'))
     })
 
@@ -363,6 +392,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             return { taskId: built.target.taskId, idempotencyKey: key }
           },
         ),
+        'mutation-verdict:behavior:purge-keeps-a-unit-whose-key-names-no-parent',
       ).toEqual(kept('parent'))
     })
 
@@ -375,13 +405,16 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           GRID_POLICY,
           async (_f, built) => target(built),
         )
-      expect({
-        underAnotherKey: await named(({ target }) => ({
-          taskId: target.taskId,
-          idempotencyKey: 'another-key',
-        })),
-        underNoKey: await named(({ target }) => ({ taskId: target.taskId })),
-      }).toEqual({ underAnotherKey: kept('key'), underNoKey: kept('key') })
+      expect(
+        {
+          underAnotherKey: await named(({ target }) => ({
+            taskId: target.taskId,
+            idempotencyKey: 'another-key',
+          })),
+          underNoKey: await named(({ target }) => ({ taskId: target.taskId })),
+        },
+        'mutation-verdict:behavior:purge-holds-the-key-the-unit-was-spawned-under',
+      ).toEqual({ underAnotherKey: kept('key'), underNoKey: kept('key') })
     })
 
     it("a run of the unit itself that holds the unit's own outcome does not keep it", async () => {
@@ -400,6 +433,7 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             return undefined
           },
         ),
+        'mutation-verdict:behavior:purge-is-not-kept-by-its-own-run',
       ).toEqual({ keptBy: [], purged: true, differences: [] })
     })
   })
@@ -680,24 +714,25 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
             )
           },
         })
-        const spawned = await store
-          .spawn(built.queue, 'child', '{}', { idempotencyKey: key })
-          .then(
-            (answer) => ({
-              created: answer.created,
-              another: answer.taskId !== built.target.taskId,
-            }),
-            describeFailure,
-          )
+        const spawned = await store.spawn(built.queue, 'child', '{}', { idempotencyKey: key }).then(
+          (answer) => ({
+            created: answer.created,
+            another: answer.taskId !== built.target.taskId,
+          }),
+          describeFailure,
+        )
         const holders = (await snapshot(f.raw)).tasks.filter(
           (task) => task.queue === built.queue && task.idempotency_key === key,
         )
-        expect({
-          purgedBetween: purged.map((unit) => unit !== null),
-          spawned,
-          holdersOfTheKey: holders.map((task) => task.task_id === built.target.taskId),
-          violations: await engineHistoryViolations(f.raw),
-        }).toEqual({
+        expect(
+          {
+            purgedBetween: purged.map((unit) => unit !== null),
+            spawned,
+            holdersOfTheKey: holders.map((task) => task.task_id === built.target.taskId),
+            violations: await engineHistoryViolations(f.raw),
+          },
+          'mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone',
+        ).toEqual({
           purgedBetween: [true],
           spawned: { created: true, another: true },
           holdersOfTheKey: [false],

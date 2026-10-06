@@ -1408,14 +1408,17 @@ describe('retention beside a history of ended tasks, on MySQL', () => {
       // Each entry is the rows a label's batch walked beside the HISTORY ended units.
       // Measured on MySQL 8.4: the read of ten candidates walked ten rows, and the purge
       // of one unit 36.
-      expect({
-        listed: listed.candidates.length,
-        more: listed.next !== null,
-        purged: purged?.rows,
-        walkedFew: Object.fromEntries(
-          labels.map((label) => [label, Number(walked.get(label)) < 50]),
-        ),
-      }).toEqual({
+      expect(
+        {
+          listed: listed.candidates.length,
+          more: listed.next !== null,
+          purged: purged?.rows,
+          walkedFew: Object.fromEntries(
+            labels.map((label) => [label, Number(walked.get(label)) < 50]),
+          ),
+        },
+        'mutation-verdict:behavior:mysql-purge-reads-its-keys-by-the-stamp-of-tasks',
+      ).toEqual({
         listed: 10,
         more: true,
         purged: { tasks: 1, runs: 1, checkpoints: 1, waits: 0, events: 1 },
@@ -1462,13 +1465,16 @@ describe('a purge beside a spawn under the key of its unit, on MySQL', () => {
         if (gone !== null) purged += 1
         if (again.created) created += 1
       }
-      expect({
-        deadlockVictims: db.raw.deadlocks - victimsBefore,
-        // A purge that came first frees the key and the spawn creates a task. A spawn that
-        // came first finds the task, and the purge then takes its unit all the same.
-        everyUnitPurged: purged === units.length,
-        aSpawnMetItsTask: created < units.length || created === units.length,
-      }).toEqual({ deadlockVictims: 0, everyUnitPurged: true, aSpawnMetItsTask: true })
+      expect(
+        {
+          deadlockVictims: db.raw.deadlocks - victimsBefore,
+          // A purge that came first frees the key and the spawn creates a task. A spawn that
+          // came first finds the task, and the purge then takes its unit all the same.
+          everyUnitPurged: purged === units.length,
+          aSpawnMetItsTask: created < units.length || created === units.length,
+        },
+        'mutation-verdict:behavior:mysql-purge-takes-the-key-before-the-row',
+      ).toEqual({ deadlockVictims: 0, everyUnitPurged: true, aSpawnMetItsTask: true })
     } finally {
       await db.close()
     }
