@@ -80,6 +80,8 @@ const STAMP_INDEX_PREFIX = 768
 export const RUNS_TASK_ATTEMPT_INDEX = 'runs_task_attempt'
 export const RUNS_STAMP_INDEX = 'runs_stamp'
 export const TASKS_STAMP_INDEX = 'tasks_stamp'
+/** The unique index of a task's idempotency key within its queue. */
+export const TASKS_KEY_INDEX = 'tasks_idem'
 
 /**
  * How much of a claim token `runs_held` holds. A key of `(queue, claimed_by, state)` is 255
@@ -175,7 +177,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
         fence_stamp ${BODY},
         fence_at_ms BIGINT,
         CONSTRAINT tasks_state CHECK (state IN ${LIVE_OR_TERMINAL}),
-        UNIQUE KEY tasks_idem (queue, idempotency_key),
+        UNIQUE KEY ${TASKS_KEY_INDEX} (queue, idempotency_key),
         KEY tasks_cancel (queue, state, cancel_at_ms)
       )`,
 

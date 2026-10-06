@@ -304,7 +304,7 @@ describe('the plan reader against a measured backlog', () => {
         .map((s) => s.name.split(' ')[0])
         .sort(),
     ).toEqual(['fail#3', 'sweep:claim-timeout#4', 'sweep:lost-launch#4'])
-    expect(rows.filter((r) => r.variation === 'without its WHERE')).toHaveLength(80)
+    expect(rows.filter((r) => r.variation === 'without its WHERE')).toHaveLength(87)
     expect(rows.length + skipped.length).toBeGreaterThan(contexts.size * indexes.length)
     expect(spellingErrors).toEqual([])
   }, 30_000)

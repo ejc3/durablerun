@@ -3761,9 +3761,9 @@ not depend on careful reading:
   that are not identifiers. The test's reader refuses a migration statement
   that types a VARCHAR column it did not read.
   Generated just-over-bound witnesses, along with the ownership witnesses,
-  keep the poison matrix complete. The poison surface crosses the 21<!-- count: poison-write-labels --> classified
+  keep the poison matrix complete. The poison surface crosses the 22<!-- count: poison-write-labels --> classified
   write labels with 147<!-- count: poison-witnesses --> corrupt-state witnesses covering that exact
-  condition inventory: 3,087<!-- count: poison-cells --> generated cells,
+  condition inventory: 3,234<!-- count: poison-cells --> generated cells,
   plus two inventory cases. Every injectable witness invokes its label; a
   strict dialect may instead produce an observed `structurally-rejected`
   attempt before invocation, the stronger result that the forbidden pre-state

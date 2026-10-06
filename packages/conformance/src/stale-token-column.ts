@@ -1,4 +1,9 @@
-import { LeaseLostError, type SchedulerStore, type SqlExecutor } from '@durablerun/core'
+import {
+  LeaseLostError,
+  type Retention,
+  type SchedulerStore,
+  type SqlExecutor,
+} from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { MATRIX_WRITE_LABELS } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
@@ -9,6 +14,7 @@ import {
   type InvocationTarget,
   POISON_INVOCATION,
   invoke,
+  portsOver,
   seedBase,
   seedHealthyTrigger,
   snapshot,
@@ -42,6 +48,8 @@ import { describeFailure, withFixture } from './scenario.js'
  */
 
 type WriteLabel = (typeof MATRIX_WRITE_LABELS)[number]
+/** A method of a port a write label is sent through: the scheduler's, or retention's. */
+type PortMethod = keyof SchedulerStore | keyof Retention
 type ClaimPart = 'token' | 'generation'
 
 /** Values no seed and no invocation holds, so an argument equal to one was read from the target. */
@@ -56,7 +64,7 @@ interface CallForm {
   /** The caller that holds the claim. The label's healthy seed is laid down for it. */
   readonly holder: InvocationTarget
   /** The port method the call reaches. */
-  readonly method: keyof SchedulerStore
+  readonly method: PortMethod
   /** The parts of its claim the call presents, in the order the case checks them. */
   readonly parts: readonly ClaimPart[]
 }
@@ -67,20 +75,25 @@ const carries = (value: unknown, probe: string | number): boolean =>
     value !== null &&
     Object.values(value).some((inner) => carries(inner, probe)))
 
-/** The one port call `invoke` makes for `label` on `target`. */
+/** The one port call `invoke` makes for `label` on `target`, on whichever port it goes through. */
 function recordedCall(label: WriteLabel, target: InvocationTarget) {
-  const calls: { method: keyof SchedulerStore; args: readonly unknown[] }[] = []
-  const recorder = new Proxy({} as SchedulerStore, {
-    get:
-      (_store, method) =>
-      (...args: unknown[]) => {
-        calls.push({ method: String(method) as keyof SchedulerStore, args })
-        return Promise.resolve(undefined)
-      },
-  })
+  const calls: { method: PortMethod; args: readonly unknown[] }[] = []
+  const recording = <Port extends object>(): Port =>
+    new Proxy({} as Port, {
+      get:
+        (_port, method) =>
+        (...args: unknown[]) => {
+          calls.push({ method: String(method) as PortMethod, args })
+          return Promise.resolve(undefined)
+        },
+    })
   // `invoke` reaches its port call before its first await, so the call is on record by
   // the time `invoke` hands back its promise.
-  invoke(label, recorder, target).catch(() => undefined)
+  invoke(
+    label,
+    { store: recording<SchedulerStore>(), retention: recording<Retention>() },
+    target,
+  ).catch(() => undefined)
   const [call, ...others] = calls
   if (call === undefined || others.length > 0) {
     throw new Error(`invoking '${label}' made ${calls.length} port calls, and the column reads one`)
@@ -160,7 +173,7 @@ const outcomeOf = (call: Promise<unknown>): Promise<Outcome> =>
  * other method refuses by throwing LeaseLostError, and never RunCancelledError: no task
  * here is cancelled.
  */
-const ANSWERED_REFUSALS: Partial<Record<keyof SchedulerStore, unknown>> = {
+const ANSWERED_REFUSALS: Partial<Record<PortMethod, unknown>> = {
   activate: null,
   heartbeat: { held: false, remainingMs: 0, reason: 'lease-lost' },
   expireLeaseNow: false,
@@ -276,7 +289,7 @@ async function seedSwept(f: StoreFixture, label: SweepLabel) {
 /** Runs `label`'s sweep through a scan that stands `claims` off from the run. */
 async function sweepOverAScanOf(f: StoreFixture, label: SweepLabel, claims: number) {
   const scan = scanOfAnotherClaim(f.raw, SWEPT.runId, claims)
-  const swept = await outcomeOf(invoke(label, f.storeOver(scan.executor), SWEPT))
+  const swept = await outcomeOf(invoke(label, portsOver(f, scan.executor), SWEPT))
   return { swept, rewritten: scan.rewritten() }
 }
 
@@ -340,7 +353,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
             const answers: Record<string, Outcome> = {}
             for (const [who, stale] of Object.entries(STALE_CALLERS[part](form.holder))) {
               answers[who] = await outcomeOf(
-                invoke(form.label, f.store, { ...form.holder, ...stale }),
+                invoke(form.label, portsOver(f), { ...form.holder, ...stale }),
               )
             }
             expect({ answers, rows: await snapshot(f.raw) }, VERDICTS[part][form.name]).toEqual({
@@ -353,7 +366,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
           // The same call under the claim itself wins from the rows the refusals left. If
           // it did not, the seed would be one in which the call is refused whoever makes
           // it, and the refusals above would hold with the comparison removed.
-          const held = await outcomeOf(invoke(form.label, f.store, form.holder))
+          const held = await outcomeOf(invoke(form.label, portsOver(f), form.holder))
           expect(held.kind, `${form.name} under its own claim: ${JSON.stringify(held)}`).toBe(
             'resolved',
           )
@@ -399,7 +412,7 @@ export function staleTokenConformance(dialect: string, makeFixture: StoreFixture
           }
           // The same sweep over the scan the store really sends acts, so the generation
           // was the only reason the others did not.
-          expect(await outcomeOf(invoke(label, f.store, SWEPT))).toMatchObject({
+          expect(await outcomeOf(invoke(label, portsOver(f), SWEPT))).toMatchObject({
             kind: 'resolved',
             value: [{ kind: label.slice('sweep:'.length), runId: SWEPT.runId }],
           })

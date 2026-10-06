@@ -226,6 +226,24 @@ export function parseChildSpawnKey(
   return childSpawnKey(parentTaskId, replayKey) === key ? { parentTaskId, replayKey } : null
 }
 
+/** Whose child a task is, as far as its idempotency key says (`spawningParent`). */
+export type SpawningParent =
+  | { readonly known: true; readonly taskId: string | null }
+  | { readonly known: false }
+
+/**
+ * The task that spawned a task, read from the idempotency key the task was spawned under
+ * (DESIGN.md §3.12, B5). A task with no key, or with a caller's own, was spawned by no
+ * task. A key `childSpawnKey` built names its parent. A key in the engine's spawn
+ * namespace that the builder could not have built names nobody that can be read: it is
+ * then not known whose child the task is, and retention keeps such a unit.
+ */
+export function spawningParent(key: string | null): SpawningParent {
+  if (key === null || !startsWith(key, CHILD_SPAWN_KEY_PREFIX)) return { known: true, taskId: null }
+  const named = parseChildSpawnKey(key)
+  return named === null ? { known: false } : { known: true, taskId: named.parentTaskId }
+}
+
 /**
  * Refuse a caller's idempotency key in the engine's namespace. `ctx.spawn` keys its
  * children there, and the spawn receipt adopts whatever task holds a key, so a caller

@@ -20,8 +20,14 @@ import {
   SelectQueryNode,
   TableNode,
   type UpdateQueryNode,
+  ValueNode,
 } from 'kysely'
-import { RUNS_STAMP_INDEX, RUNS_TASK_ATTEMPT_INDEX } from './schema.js'
+import {
+  RUNS_STAMP_INDEX,
+  RUNS_TASK_ATTEMPT_INDEX,
+  TASKS_KEY_INDEX,
+  TASKS_STAMP_INDEX,
+} from './schema.js'
 
 /** The name a conflict arm reads the incoming row by, as PostgreSQL and SQLite spell it. */
 const INCOMING = 'excluded'
@@ -172,6 +178,10 @@ function readersBeforeWriters(
  * table and looks each row up in the materialized keys.
  */
 const KEY_INDEXES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  // A purge deletes a task's checkpoints by the task, and its completion event by the queue
+  // and then the name, which are the leading columns of those tables' primary keys.
+  checkpoints: { task_id: 'primary' },
+  events: { queue: 'primary' },
   runs: { run_id: 'primary', task_id: RUNS_TASK_ATTEMPT_INDEX },
   tasks: { task_id: 'primary' },
   waits: { run_id: 'primary' },
@@ -200,6 +210,79 @@ const unkeyedDelete = (target: string | null): Error =>
   new Error(
     `store-mysql: a delete of ${target ?? 'something other than one table'} is keyed by no subquery, so nothing says how its keys are read`,
   )
+
+/**
+ * The column that is a table's whole primary key, for each table a tree deletes one row of
+ * by that key. The last statement of a purge deletes the task row the batch stamped, and
+ * every other delete of the batch has found its rows through that row, so no other table
+ * is left to key it from, and MySQL takes no index hint for keys read from the table a
+ * delete writes (`stampedKeys`).
+ */
+const POINT_KEYS: Readonly<Record<string, string>> = { tasks: 'task_id' }
+
+/** Whether a condition is `column = …` of the written table, compared with no subquery. */
+function requiresOwn(target: string, column: string, condition: OperationNode): boolean {
+  if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) return false
+  const { table, name } = referenced(condition.leftOperand)
+  return (
+    operatorOf(condition.operator) === '=' &&
+    name === column &&
+    (table === undefined || table === target) &&
+    !SelectQueryNode.is(condition.rightOperand)
+  )
+}
+
+/**
+ * Whether a delete that no subquery keys is the delete of one row by its own primary key
+ * and its own stamp. The key is an equality on the whole primary key, so the server reads
+ * one index record, and the stamp is this batch's, so the record is one this transaction
+ * already holds: it waits for nothing and locks nothing new. Any other unkeyed delete is
+ * refused.
+ */
+function deletesOneStampedRow(target: string | null, where: OperationNode | undefined): boolean {
+  const key = target === null ? undefined : POINT_KEYS[target]
+  if (target === null || key === undefined) return false
+  const required = requiredConditions(where)
+  return (
+    required.some((condition) => requiresOwn(target, key, condition)) &&
+    required.some((condition) => requiresOwn(target, 'fence_stamp', condition))
+  )
+}
+
+/**
+ * Whether an update of `tasks` requires its row to hold one given idempotency key: the
+ * null-safe comparison of the key with a value that is not NULL, which is how a purge names
+ * the key its unit was spawned under.
+ *
+ * Such an update reaches its row through the unique index of the key, and not through the
+ * primary key its WHERE also names. A spawn under a key that exists locks the key's entry
+ * in that index and then the row. A purge that found its task by the primary key locked
+ * the row first, and its last statement, which deletes the row, then asked for the key's
+ * entry: a spawn that reused the key of a unit being purged held the one and waited for
+ * the other, and the server rolled one of them back, 40 times in 20 rounds of the
+ * retention contest. Read through the key's index, the purge takes the two in the order
+ * the spawn does. A task with no key has no entry any spawn can meet, and is reached by
+ * its primary key as before.
+ */
+function requiresAGivenKey(target: string | null, where: OperationNode | undefined): boolean {
+  return (
+    target === 'tasks' &&
+    requiredConditions(where).some((condition) => {
+      if (!BinaryOperationNode.is(condition) || !ReferenceNode.is(condition.leftOperand)) {
+        return false
+      }
+      const { table, name } = referenced(condition.leftOperand)
+      const given = condition.rightOperand
+      return (
+        operatorOf(condition.operator) === 'is not distinct from' &&
+        name === 'idempotency_key' &&
+        (table === undefined || table === target) &&
+        ValueNode.is(given) &&
+        given.value !== null
+      )
+    })
+  )
+}
 
 /** The query block a write's keys are read in, and the name the block's one table goes by. */
 const KEYS = { block: 'keys', table: 'k' } as const
@@ -276,7 +359,10 @@ function keyIndex(
  * InnoDB skips by index record, and it skipped a row its own transaction had stamped while
  * another transaction held that row's entry in the index the keys were read through.
  */
-const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: RUNS_STAMP_INDEX }
+const STAMP_INDEXES: Readonly<Record<string, string>> = {
+  runs: RUNS_STAMP_INDEX,
+  tasks: TASKS_STAMP_INDEX,
+}
 
 /** Whether a condition is `alias.fence_stamp = …`, the stamp of the table read as `alias`. */
 function requiresStampOf(alias: string, condition: OperationNode): boolean {
@@ -523,6 +609,25 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
         : readersBeforeWriters(node.updates, target)
     const keyed = keyIndex(target, node.where?.where)
     this.writing(target, () => {
+      if (
+        keyed === null &&
+        node.table !== undefined &&
+        requiresAGivenKey(target, node.where?.where)
+      ) {
+        this.requireKeyedGrammar(
+          [node.table],
+          [node.from, ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause])],
+        )
+        this.append('update ')
+        this.visitKeyedTarget(node.table, TASKS_KEY_INDEX)
+        this.append(' set ')
+        this.compileList(updates ?? [])
+        if (node.where !== undefined) {
+          this.append(' ')
+          this.visitNode(node.where)
+        }
+        return
+      }
       if (keyed === null || target === null || node.table === undefined) {
         super.visitUpdateQuery(updates === undefined ? node : { ...node, updates })
         return
@@ -543,6 +648,16 @@ class MysqlTreeCompiler extends MysqlQueryCompiler {
     const [table] = node.from.froms
     const target = tableName(table)
     const keyed = keyIndex(target, node.where?.where)
+    if (keyed === null && deletesOneStampedRow(target, node.where?.where)) {
+      this.writing(target, () => {
+        this.requireKeyedGrammar(node.from.froms, [
+          node.using,
+          ...NOT_IN_A_KEYED_WRITE.map((clause) => node[clause]),
+        ])
+        super.visitDeleteQuery(node)
+      })
+      return
+    }
     if (keyed === null || target === null || table === undefined) throw unkeyedDelete(target)
     this.writing(target, () => {
       this.requireKeyedGrammar(node.from.froms, [

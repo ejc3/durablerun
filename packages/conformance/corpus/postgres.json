@@ -940,5 +940,57 @@
         "bindArity": 0
       }
     ]
+  },
+  "purge-candidates": {
+    "read": [
+      {
+        "sql": "select \"t\".\"task_id\", \"t\".\"task_name\", \"t\".\"state\", \"t\".\"fence_at_ms\", \"t\".\"idempotency_key\" from \"tasks\" as \"t\" where (t.queue = ? AND t.state IN ('completed','failed','cancelled') AND t.state = 'completed'\n    AND t.fence_at_ms IS NOT NULL AND ((t.fence_at_ms) IS NOT NULL AND t.fence_at_ms BETWEEN 0 AND 253402300799000)) and \"t\".\"fence_at_ms\" <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) - ? and \"t\".\"fence_at_ms\" >= ? and (\"t\".\"fence_at_ms\" > ? or \"t\".\"task_id\" > ?) order by \"t\".\"fence_at_ms\", \"t\".\"task_id\" limit ?",
+        "bindArity": 6
+      },
+      {
+        "sql": "select \"t\".\"task_id\", \"t\".\"task_name\", \"t\".\"state\", \"t\".\"fence_at_ms\", \"t\".\"idempotency_key\" from \"tasks\" as \"t\" where (t.queue = ? AND t.state IN ('completed','failed','cancelled') AND t.state = 'failed'\n    AND t.fence_at_ms IS NOT NULL AND ((t.fence_at_ms) IS NOT NULL AND t.fence_at_ms BETWEEN 0 AND 253402300799000)) and \"t\".\"fence_at_ms\" <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) - ? and \"t\".\"fence_at_ms\" >= ? and (\"t\".\"fence_at_ms\" > ? or \"t\".\"task_id\" > ?) order by \"t\".\"fence_at_ms\", \"t\".\"task_id\" limit ?",
+        "bindArity": 6
+      },
+      {
+        "sql": "select \"t\".\"task_id\", \"t\".\"task_name\", \"t\".\"state\", \"t\".\"fence_at_ms\", \"t\".\"idempotency_key\" from \"tasks\" as \"t\" where (t.queue = ? AND t.state IN ('completed','failed','cancelled') AND t.state = 'cancelled'\n    AND t.fence_at_ms IS NOT NULL AND ((t.fence_at_ms) IS NOT NULL AND t.fence_at_ms BETWEEN 0 AND 253402300799000)) and \"t\".\"fence_at_ms\" <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) - ? and \"t\".\"fence_at_ms\" >= ? and (\"t\".\"fence_at_ms\" > ? or \"t\".\"task_id\" > ?) order by \"t\".\"fence_at_ms\", \"t\".\"task_id\" limit ?",
+        "bindArity": 6
+      }
+    ]
+  },
+  "purge-unit": {
+    "purged": [
+      {
+        "sql": "update \"tasks\" set \"fence_stamp\" = ?, \"fence_at_ms\" = COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) where \"task_id\" = ? and \"queue\" = ? and (((\"state\" = 'completed' and \"fence_at_ms\" <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) - ?) or (\"state\" = 'failed' and \"fence_at_ms\" <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) - ?) or (\"state\" = 'cancelled' and \"fence_at_ms\" <= COALESCE(\n  (SELECT CAST(value AS BIGINT) FROM meta WHERE key = 'fake_now_ms'),\n  CAST(FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000) AS BIGINT)\n) - ?)) and (((fence_at_ms) IS NOT NULL AND fence_at_ms BETWEEN 0 AND 253402300799000)) and not exists (select \"live\".\"run_id\" from \"runs\" as \"live\" where \"live\".\"task_id\" = ? and \"live\".\"state\" in (?, ?, ?)) and not exists (select \"holder\".\"run_id\" from \"runs\" as \"holder\" where \"holder\".\"queue\" = ? and \"holder\".\"wake_event\" is not null and \"holder\".\"event_payload\" is not null and \"holder\".\"wake_event\" = ? and \"holder\".\"task_id\" <> ?) and not exists (select \"waiter\".\"run_id\" from \"waits\" as \"waiter\" where \"waiter\".\"queue\" = ? and \"waiter\".\"event_name\" = ?) and not exists (select \"parent\".\"state\" from (select distinct \"p\".\"state\" from \"tasks\" as \"p\" where \"p\".\"task_id\" = ?) as \"parent\" where (\"parent\".\"state\" in (?, ?, ?) or \"parent\".\"state\" = 'failed')) and \"idempotency_key\" is not distinct from ? and not exists (select \"stray\".\"run_id\" from \"runs\" as \"stray\" where \"stray\".\"task_id\" = ? and \"stray\".\"queue\" <> ?) and (select count(*) as \"held\" from (select \"c\".\"task_id\" from \"checkpoints\" as \"c\" where \"c\".\"task_id\" = ? limit ?) as \"counted\") <= ?)",
+        "bindArity": 25
+      },
+      {
+        "sql": "select (select count(*) as \"held\" from \"runs\" as \"r\" where \"r\".\"task_id\" = ? and \"r\".\"queue\" = ?) as \"runs\", (select count(*) as \"held\" from \"checkpoints\" as \"c\" where \"c\".\"task_id\" = ?) as \"checkpoints\", (select count(*) as \"held\" from \"waits\" as \"w\" where \"w\".\"run_id\" in (select \"wr\".\"run_id\" from \"runs\" as \"wr\" where \"wr\".\"task_id\" = ? and \"wr\".\"queue\" = ?)) as \"waits\", (select count(*) as \"held\" from \"events\" as \"e\" where \"e\".\"queue\" = ? and \"e\".\"event_name\" = ?) as \"events\" from \"tasks\" as \"f\" where \"f\".\"task_id\" = ? and \"f\".\"fence_stamp\" = ?",
+        "bindArity": 9
+      },
+      {
+        "sql": "delete from \"checkpoints\" where \"task_id\" in (select \"f\".\"task_id\" from \"tasks\" as \"f\" where (f.task_id = ?) and \"f\".\"fence_stamp\" = ?)",
+        "bindArity": 2
+      },
+      {
+        "sql": "update \"runs\" set \"claimed_by\" = (NULL), \"fence_stamp\" = ?, \"fence_at_ms\" = (select min(\"f\".\"fence_at_ms\") as \"source_instant\" from \"tasks\" as \"f\" where (f.task_id = ?) and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) where \"task_id\" in (select \"f\".\"task_id\" from \"tasks\" as \"f\" where (f.task_id = ?) and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?) and \"runs\".\"queue\" = ? and (task_id = ?)",
+        "bindArity": 9
+      },
+      {
+        "sql": "delete from \"waits\" where \"run_id\" in (select \"f\".\"run_id\" from \"runs\" as \"f\" where (f.task_id = ?) and \"f\".\"fence_stamp\" = ?)",
+        "bindArity": 2
+      },
+      {
+        "sql": "delete from \"runs\" where \"task_id\" in (select \"f\".\"task_id\" from \"tasks\" as \"f\" where (f.task_id = ?) and \"f\".\"queue\" = ? and \"f\".\"fence_stamp\" = ?)",
+        "bindArity": 3
+      },
+      {
+        "sql": "delete from \"events\" where \"queue\" in (select \"f\".\"queue\" from \"tasks\" as \"f\" where (f.task_id = ?) and \"f\".\"fence_stamp\" = ?) and \"event_name\" = ?",
+        "bindArity": 3
+      },
+      {
+        "sql": "delete from \"tasks\" where \"task_id\" = ? and \"queue\" = ? and \"fence_stamp\" = ?",
+        "bindArity": 3
+      }
+    ]
   }
 }

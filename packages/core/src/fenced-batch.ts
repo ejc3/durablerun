@@ -54,6 +54,7 @@ import {
 } from './sql-tree.js'
 import { treeBuilder } from './store-tables.js'
 import { readingOnce } from './tree-walk.js'
+import { isUnitPurge } from './unit-purge.js'
 
 /**
  * Structural enforcement of DESIGN.md §3.4 rules 1, 2 and 8.
@@ -260,6 +261,8 @@ interface Named {
   endsTask: boolean
   /** For the follow-on that records a task's completion event, the statement whose stamp gates it. */
   recordsEndOf: string | undefined
+  /** It is the compare-and-set of a purge, under whose stamp alone a row of a task's unit is deleted. */
+  purges: boolean
 }
 
 /**
@@ -268,6 +271,13 @@ interface Named {
  * static table types do not apply here.
  */
 const generatedBuilder = treeBuilder as unknown as Kysely<Record<string, Record<string, unknown>>>
+
+/**
+ * The tables whose rows only the purge of a task's unit deletes (DESIGN.md §3.12): the
+ * task, its runs, its checkpoints, and its completion event. A wait is deleted by every
+ * batch that ends or parks the run it names, so `waits` is not among them.
+ */
+const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']
 
 /**
  * The last sentence of a clock refusal where a clock was spelled: what to write in place of
@@ -556,9 +566,14 @@ export class FencedBatch {
     const whereArgs = spec.whereArgs ?? []
     const boundQueue = spec.queue
     if (boundQueue !== undefined && spec.set === undefined) {
-      throw new Error(
-        `FencedBatch[${this.label}] derived('${name}') binds a queue on a DELETE: no generated DELETE follows a queue-scoped relation, so nothing holds that shape`,
-      )
+      // A purge deletes the runs of its unit, which its task owns within its queue
+      // (DESIGN.md §3.12). No other generated DELETE follows a queue-scoped relation.
+      const fenced = this.statements.find((earlier) => earlier.name === spec.fence)
+      if (fenced?.purges !== true) {
+        throw new Error(
+          `FencedBatch[${this.label}] derived('${name}') binds a queue on a DELETE: no generated DELETE follows a queue-scoped relation but a purge's, so nothing else holds that shape`,
+        )
+      }
     }
     if (boundQueue !== undefined && !relation.queueScoped) {
       throw new Error(
@@ -593,9 +608,14 @@ export class FencedBatch {
       : null
 
     if (spec.set === undefined) {
-      const selected = generatedBuilder
+      let selected = generatedBuilder
         .deleteFrom(target)
         .where((eb) => eb(eb.ref(key), 'in', sourceKeys))
+      // A generated delete of `events` removes one event and names it here, from the lock
+      // the batch holds, so that no caller's text decides which event goes.
+      if (target === 'events') {
+        selected = selected.where('event_name', '=', this.heldCompletionEvent(name))
+      }
       return this.addGenerated(name, narrow === null ? selected : selected.where(narrow), rows)
     }
     if (assignments.length === 0) {
@@ -662,6 +682,21 @@ export class FencedBatch {
       throw new Error(`FencedBatch[${this.label}] ${at} names unknown fence relation '${name}'`)
     }
     return FENCE_RELATIONS[name]
+  }
+
+  /**
+   * The completion event this batch is serialized on, for a generated delete of `events`:
+   * the one event such a delete removes (DESIGN.md §3.12). A batch that holds no event's
+   * lock, or a caller's event's, generates no delete of an event.
+   */
+  private heldCompletionEvent(name: string): string {
+    const held = this.transactionLocks[0]
+    if (held?.kind !== 'event' || taskIdOfDoneEvent(held.eventName) === null) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') deletes an event, and the batch holds no completion event's lock: a generated delete removes the one completion event its batch is serialized on, and nothing else of events`,
+      )
+    }
+    return held.eventName
   }
 
   /**
@@ -800,6 +835,7 @@ export class FencedBatch {
       compiled,
       endsTask: false,
       recordsEndOf: undefined,
+      purges: false,
     })
     this.reads.push(name)
     return this
@@ -1072,6 +1108,20 @@ export class FencedBatch {
           )
         }
       }
+      // A row of a task's unit is deleted by the purge of that unit and by nothing else
+      // (DESIGN.md §3.12): the stamp that gates the delete is the purge's compare-and-set,
+      // which holds the unit ended, old enough, and needed by nobody.
+      if (
+        tree.kind === 'DeleteQueryNode' &&
+        DELETED_BY_A_PURGE_ALONE.some((table) => table === written)
+      ) {
+        const gate = this.statements.find((earlier) => earlier.name === gateName)
+        if (gate?.purges !== true) {
+          throw new Error(
+            `${at} deletes from ${written}, and the stamp that gates it is not the purge of a task's unit: a row of a task, a run, a checkpoint, or an event is deleted only with its whole unit (§3.12)`,
+          )
+        }
+      }
     }
 
     const rawTexts = rawFragmentTexts(tree)
@@ -1134,6 +1184,7 @@ export class FencedBatch {
           : { sql: compiled.sql, args, skipUnlessWrote: gatedBy },
       endsTask: writesTerminalTaskState(tree),
       recordsEndOf,
+      purges: isUnitPurge(statement),
     }
     weakSetAdd(treeBuilt, held.compiled)
     if (reading) brandRead(held.compiled)

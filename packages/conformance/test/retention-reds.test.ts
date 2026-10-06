@@ -33,33 +33,58 @@ function following(db: SqlExecutor, label: string, bend: SqlStatement): SqlExecu
 function bent(label: string, bend: SqlStatement): StoreFixtureFactory {
   return async (seed, options) => {
     const f = await makeLibsqlFixture(seed, options)
-    return { ...f, storeOver: (db, buggify) => f.storeOver(following(db, label, bend), buggify) }
+    return {
+      ...f,
+      storeOver: (db, buggify) => f.storeOver(following(db, label, bend), buggify),
+      retentionOver: (db) => f.retentionOver(following(db, label, bend)),
+    }
   }
 }
 
 /**
- * A fixture whose stores answer their first call without sending anything, as a store
- * would that skipped the batch for a task it took to have ended. Every later call goes
- * through.
+ * A fixture whose ports answer the first call made over an executor without sending
+ * anything, as a store would that skipped the batch for a task it took to have ended.
+ * Every later call goes through. The first call is counted by executor, because a purge
+ * is sent through retention's port and every other label through the store's.
  */
 const skippingTheFirstCall: StoreFixtureFactory = async (seed, options) => {
   const f = await makeLibsqlFixture(seed, options)
+  const called = new WeakSet<SqlExecutor>()
+  const isTheFirstCallOver = (db: SqlExecutor): boolean => {
+    if (called.has(db)) return false
+    called.add(db)
+    return true
+  }
   return {
     ...f,
     storeOver: (db, buggify) => {
       const store = f.storeOver(db, buggify)
-      let skipped = false
       return new Proxy(store, {
         get(target, member) {
           const value: unknown = Reflect.get(target, member, target)
           if (typeof value !== 'function') return value
-          return (...args: unknown[]) => {
-            if (skipped) return value.apply(target, args) as unknown
-            skipped = true
-            return Promise.resolve(undefined)
-          }
+          return (...args: unknown[]) =>
+            isTheFirstCallOver(db)
+              ? Promise.resolve(undefined)
+              : (value.apply(target, args) as unknown)
         },
       }) as ReturnType<StoreFixture['storeOver']>
+    },
+    retentionOver: (db) => {
+      const retention = f.retentionOver(db)
+      // Core's retention is frozen, which a proxy may not answer differently from, so its
+      // two methods are wrapped by name.
+      return {
+        ...retention,
+        purgeCandidates: (...args) =>
+          isTheFirstCallOver(db)
+            ? (Promise.resolve(undefined) as never)
+            : retention.purgeCandidates(...args),
+        purgeUnit: (...args) =>
+          isTheFirstCallOver(db)
+            ? (Promise.resolve(undefined) as never)
+            : retention.purgeUnit(...args),
+      }
     },
   }
 }
@@ -108,8 +133,8 @@ describe('the cell of each write label over an ended task can fail', () => {
           label,
           state,
         )
-        expect(observed.tasks[TASK]?.after.stampedAtMs).toBe(MOVED_TO)
-        expect(expected.tasks[TASK]?.after.stampedAtMs).not.toBe(MOVED_TO)
+        expect(observed.tasks[TASK]?.after?.stampedAtMs).toBe(MOVED_TO)
+        expect(expected.tasks[TASK]?.after?.stampedAtMs).not.toBe(MOVED_TO)
         expect(observed).not.toEqual(expected)
       })
 
@@ -139,7 +164,7 @@ describe('the cell of each write label over an ended task can fail', () => {
         state,
       )
       const cleared = Object.values(observed.tasks).filter(
-        (task) => task.before.stampedAtMs !== null && task.after.stampedAtMs === null,
+        (task) => task.before.stampedAtMs !== null && task.after?.stampedAtMs === null,
       )
       expect(cleared).toHaveLength(1)
       expect(observed).not.toEqual(expected)
@@ -159,7 +184,7 @@ describe('the cell of each write label over an ended task can fail', () => {
           shape,
           state,
         )
-        expect(observed.child.after.stampedAtMs).toBe(MOVED_TO)
+        expect(observed.child.after?.stampedAtMs).toBe(MOVED_TO)
         expect(observed).not.toEqual(expected)
       })
     }

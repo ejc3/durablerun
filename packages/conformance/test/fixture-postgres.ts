@@ -3,6 +3,7 @@ import {
   PostgresSchedulerStore,
   PostgresStoreAdmin,
   operatorReads,
+  retention,
 } from '@durablerun/store-postgres'
 import {
   openPostgresTestDb,
@@ -106,6 +107,7 @@ export async function makePostgresFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new PostgresSchedulerStore(db, ids, buggify),
     operatorReadsOver: operatorReads,
+    retentionOver: (db: SqlExecutor) => retention(db, ids),
     deadlocks: () => raw.deadlocks,
     lockWait: async () => ({
       store,

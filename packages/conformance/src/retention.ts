@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 import { type ReadyChild, TERMINAL_BATCHES, type TerminalBatch } from './child-tasks.js'
 import { engineHistoryViolations } from './engine-history.js'
 import {
+  MATRIX_RETENTION_POLICY,
   MATRIX_WRITE_LABELS,
   type MatrixWriteLabel,
   TERMINAL_BATCH_LABELS,
@@ -24,12 +25,14 @@ import {
   type EndedChildReplayObservation,
   type EndedTaskStamp,
   type EndedTaskStamps,
+  HEALTHY_INVOCATION,
   INVOCATION_SHAPES,
   POISON_INVOCATION,
   TERMINAL_PRE_STATE_ENDED_AT_MS,
   TERMINAL_PRE_STATE_INVOKED_AT_MS,
   type TerminalPreStateObservation,
   observeTerminalPreState,
+  snapshot,
   storedInstant,
 } from './poison-matrix.js'
 import {
@@ -376,6 +379,16 @@ export async function terminalPreStateCase(
   for (const [taskId, seen] of Object.entries(observed.tasks)) {
     tasks[taskId] = { before: seen.before, after: after(seen.before) }
   }
+  // The purge is the one label that removes a task that had ended. Its healthy call names
+  // a unit that completed at the cell's first instant, and is sent a window later, so that
+  // unit goes. It is expected whether or not it was read, so a purge that took nothing
+  // fails here.
+  if (label === 'purge-unit') {
+    tasks[HEALTHY_INVOCATION.taskId] = {
+      before: { state: 'completed', stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS },
+      after: null,
+    }
+  }
   // The task the cell is about was ended by the engine, at the instant the cell set. It is
   // expected whether or not it was read, so a cell whose task had not ended fails.
   const ended = { state, stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS }
@@ -387,6 +400,9 @@ export async function terminalPreStateCase(
 }
 
 function terminalPreStateTitle(label: MatrixWriteLabel, state: TerminalState): string {
+  if (label === 'purge-unit') {
+    return `purge-unit leaves a ${state} task younger than its window as its ending left it, and takes the unit that is a window old`
+  }
   return revives(label, state)
     ? 'retry-task moves the stamp of the failed task it revives to the instant of the revival'
     : `${label} leaves the stamp of a ${state} task where its ending put it`
@@ -556,6 +572,73 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           ).toEqual([
             `completion-wait-without-its-task-or-event: waiter-run/${step} awaits purged-child`,
           ])
+        })
+      })
+    })
+
+    describe('the purge of a unit', () => {
+      // fenceTwin('PurgeChild') fenceTwin('PurgeHolder'): this case is the executable twin of
+      // the guard the two purge actions share against a caller that comes again. The first
+      // purge of each unit takes it whole. The same call sent again finds no task row for
+      // its compare-and-set, answers null, and leaves every table as it was.
+      it('takes a child and its parent, each whole, and the same purge sent again takes nothing', async () => {
+        await withFixture(makeFixture, 'retention-purge-again', async (f) => {
+          await f.admin.setFakeNowEpochMs(START_MS)
+          const parent = await f.store.spawn(Q, 'parent', '{}')
+          const parentRun = await claimActivated(f.store, Q, 'w-parent')
+          const child = await f.store.spawn(Q, 'child', '{}', {
+            childOf: {
+              parentQueue: Q,
+              parentTaskId: parent.taskId,
+              runId: parentRun.runId,
+              claimToken: parentRun.claimToken,
+              replayKey: 'child#1',
+            },
+          })
+          const childRun = await claimActivated(f.store, Q, 'w-child')
+          await checkpointOwned(f.store, Q, childRun, 'step', '1', 60)
+          await f.store.complete(Q, childRun.runId, childRun.claimToken, '"child"')
+          await f.store.complete(Q, parentRun.runId, parentRun.claimToken, '"parent"')
+
+          await f.admin.setFakeNowEpochMs(
+            START_MS + MATRIX_RETENTION_POLICY.completedSeconds * 1_000,
+          )
+          const retention = f.retentionOver(f.raw)
+          const { candidates, next } = await retention.purgeCandidates(Q, MATRIX_RETENTION_POLICY, {
+            limit: 10,
+          })
+          const purged = []
+          for (const candidate of candidates) {
+            purged.push(await retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
+          }
+          const left = await snapshot(f.raw)
+          const again = []
+          for (const candidate of candidates) {
+            again.push(await retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
+          }
+          const whole = (taskId: string, checkpoints: number) => ({
+            taskId,
+            rows: { tasks: 1, runs: 1, checkpoints, waits: 0, events: 1 },
+          })
+          const byTask = (units: readonly ({ taskId: string } | null)[]) =>
+            [...units].sort((a, b) => String(a?.taskId).localeCompare(String(b?.taskId)))
+          expect({
+            listed: candidates.map(({ taskId }) => taskId).sort(),
+            next,
+            purged: byTask(purged),
+            left,
+            again,
+            rowsAfterwards: await snapshot(f.raw),
+            violations: await engineHistoryViolations(f.raw),
+          }).toEqual({
+            listed: [child.taskId, parent.taskId].sort(),
+            next: null,
+            purged: byTask([whole(child.taskId, 1), whole(parent.taskId, 0)]),
+            left: { tasks: [], runs: [], checkpoints: [], events: [], waits: [], drivers: [] },
+            again: [null, null],
+            rowsAfterwards: left,
+            violations: [],
+          })
         })
       })
     })

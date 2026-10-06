@@ -4,6 +4,7 @@ import {
   MysqlSchedulerStore,
   MysqlStoreAdmin,
   operatorReads,
+  retention,
 } from '@durablerun/store-mysql'
 import {
   mysqlPersistedIntegerCatalogStatements,
@@ -134,6 +135,7 @@ export async function makeMysqlFixture(
     storageCorruptionAttempt,
     storeOver: (db: SqlExecutor, buggify?: Buggify) => new MysqlSchedulerStore(db, ids, buggify),
     operatorReadsOver: operatorReads,
+    retentionOver: (db: SqlExecutor) => retention(db, ids),
     deadlocks: () => raw.deadlocks,
     lockWait: async () => ({
       store,

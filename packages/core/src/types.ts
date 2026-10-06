@@ -689,3 +689,61 @@ export interface EventWaiters {
   readonly waiters: Capped<EventWaiter>
   readonly corrupt: readonly CorruptInteger[]
 }
+
+/**
+ * A retention policy (DESIGN.md §3.12): how long an ended task is kept, by the state it
+ * ended in, counted from the instant it ended. Each window is a whole number of seconds,
+ * at least `MIN_RETENTION_SECONDS`. There is no default: a caller names the windows on
+ * every call, and none is stored. A state the policy does not name is kept for ever, which
+ * is what leaving `failedSeconds` out means: `retryTask` can revive a failed task.
+ */
+export interface RetentionPolicy {
+  readonly completedSeconds: number
+  readonly cancelledSeconds: number
+  readonly failedSeconds?: number
+}
+
+/** Where a page of purge candidates ended: the instant its last task ended, and that task. */
+export interface PurgeCursor {
+  readonly endedAtMs: number
+  readonly taskId: string
+}
+
+/** What `purgeCandidates` is asked for. */
+export interface PurgeCandidatesOptions {
+  /** The most candidates one page lists, from 1 to `OPERATOR_LIST_CAP`. */
+  readonly limit: number
+  /** The `next` of the page before, to list what follows it. Left out, the oldest come first. */
+  readonly after?: PurgeCursor
+}
+
+/** What names a unit to `purgeUnit`: its task, and the key the task was spawned under. */
+export interface PurgeUnitTarget {
+  readonly taskId: string
+  /** The idempotency key the task was spawned under. Left out for a task spawned under none. */
+  readonly idempotencyKey?: string
+}
+
+/**
+ * One ended task that is at least its state's window old. It is only a candidate: whether
+ * its unit may go is decided by `purgeUnit`, inside the statement that deletes it.
+ */
+export interface PurgeCandidate extends PurgeUnitTarget {
+  readonly taskName: string
+  readonly state: TerminalState
+  /** The instant the task ended, which is when its row was last stamped. */
+  readonly endedAtMs: number
+}
+
+/** One page of purge candidates, oldest first. */
+export interface PurgeCandidates {
+  readonly candidates: readonly PurgeCandidate[]
+  /** The cursor that lists what follows this page, or null when nothing follows it. */
+  readonly next: PurgeCursor | null
+}
+
+/** A unit a purge deleted: its task, and how many rows of each table went with it. */
+export interface PurgedUnit {
+  readonly taskId: string
+  readonly rows: Readonly<Record<QueueTable, number>>
+}

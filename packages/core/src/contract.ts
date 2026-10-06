@@ -269,3 +269,17 @@ export const OPERATOR_LIST_CAP = 1_000
 
 /** The cap of every count of a queue's rows of one table. */
 export const OPERATOR_TABLE_ROWS_CAP = 1_000_000
+
+/**
+ * The shortest window a retention policy may name, in seconds: one hour (DESIGN.md §3.12).
+ * A window is how long an idempotency key still dedupes and a handle of the task still
+ * answers after the task ended, so core refuses a policy that names less.
+ */
+export const MIN_RETENTION_SECONDS = 3_600
+
+/**
+ * The most checkpoints a task's unit may hold and still be purged (DESIGN.md §3.12). A
+ * purge deletes a unit whole, in one batch, and a batch holds the database's writer for as
+ * long as it runs. A unit past the cap is kept.
+ */
+export const MAX_PURGE_UNIT_CHECKPOINTS = 5_000

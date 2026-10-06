@@ -145,9 +145,9 @@
 \* action named is an action of Next below, and every action of Next is mapped
 \* here or listed as having no batch, with the reason.  An entry's layout and
 \* its class are as that block describes them.  The engine's actions keep the
-\* labels ChildTasks.tla and Sagas.tla map them from.  No store sends a purge
-\* batch yet, so the purge's actions are listed as having none.  PR5.2c2 writes
-\* that batch and turns those lines into mappings.  The script reads no guard.
+\* labels ChildTasks.tla and Sagas.tla map them from.  The purge's two actions
+\* are one batch, 'purge-unit': the unit it purges is the child's or a
+\* holder's.  The script reads no guard.
 \* Each property below names its executable twin.
 \*
 \* Modeled (a label and its condition, its actions, its class):
@@ -179,8 +179,10 @@
 \*     clears the wake columns, as complete does)
 \*   'fail' with a retry -> HolderAttemptFails  [cas-fenced]  (the failed run
 \*     keeps the wake columns, and the successor carries them)
+\*   'purge-unit' -> PurgeChild / PurgeHolder  [cas-fenced]  (the barrier is the
+\*     batch's compare-and-set, and every delete of the batch is keyed on its
+\*     stamp, so the unit goes whole or not at all)
 \* No batch (action -- reason):
-\*   PurgeChild / PurgeHolder -- the purge batch lands in PR5.2c2
 \*   LegacyEnds -- a terminal batch of an older build: no SQL of this build
 \*   Tick -- database time passes
 \*   PurgeRow / MaterializeWrite -- exist only for vacuity probes

@@ -8,5 +8,6 @@ export {
   SCHEMA_VERSION_NOTES,
 } from './schema.js'
 export { operatorReads } from './operator-reads.js'
+export { retention } from './retention.js'
 export { NOW_MS } from './time.js'
 export { TREE_DIALECT } from './tree.js'

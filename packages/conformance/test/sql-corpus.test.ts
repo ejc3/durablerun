@@ -197,6 +197,16 @@ describe('generated SQL corpus', () => {
         expect(swept).toContainEqual(
           expect.objectContaining({ kind: 'cancelled', taskId: late.taskId }),
         )
+        // Retention, last of all, because it removes what the scenario made. A window after
+        // the sweep cancelled it, the task that never started is listed, and its unit goes.
+        await fixture.admin.setFakeNowEpochMs(1_061_000 + 3_600_000)
+        const retention = fixture.retentionOver(
+          recordingTreeBatches(fixture.raw, recorded, isTreeBuiltStatement),
+        )
+        const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
+        const listed = await retention.purgeCandidates('q', policy, { limit: 10 })
+        expect(listed.candidates.map(({ taskId }) => taskId)).toContain(late.taskId)
+        expect(await retention.purgeUnit('q', { taskId: late.taskId }, policy)).not.toBeNull()
       })
       const corpus = enrolCorpus(dialect, DESCRIPTOR, recorded, CORPUS_VARIANT_NAMERS)
       const path = new URL(`../corpus/${dialect}.json`, import.meta.url)

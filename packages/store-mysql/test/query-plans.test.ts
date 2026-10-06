@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { countMysqlPlaceholders } from '../src/executor.js'
 import { operatorReads } from '../src/operator-reads.js'
+import { retention } from '../src/retention.js'
 import { RUNS_STAMP_INDEX, RUNS_TASK_ATTEMPT_INDEX } from '../src/schema.js'
 import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
@@ -1350,6 +1351,76 @@ describe("an operator's reads beside a history of tasks, on MySQL", () => {
           countsWalkTheirRows: true,
         },
       ])
+    } finally {
+      await db.close()
+    }
+  })
+})
+
+describe('retention beside a history of ended tasks, on MySQL', () => {
+  it('lists what a purge may take, and purges one unit, without walking the ended tasks of the queue or their runs, checkpoints and events', async () => {
+    // The read of what a purge may take reads each state's ended tasks from the index that
+    // holds them in the order they ended, up to its limit. The purge reaches its task
+    // through the index of the task's key, and every row of the unit through a key the
+    // task names. Beside both stands a history of units that ended at the same instant,
+    // each with a run, a checkpoint and a completion event, under stamps of their own.
+    // Every batch is measured from inside its own transaction.
+    const db = await openMysqlTestDb({ idNamespace: 'plan-retention', nowMs: 1_000_000 })
+    try {
+      const labels = ['purge-candidates', 'purge-unit']
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const task = await store.spawn(Q, 'job', '{}', { idempotencyKey: 'order-7' })
+      const [run] = await store.claim(Q, 'worker', { leaseSeconds: 60, limit: 1 })
+      if (run?.taskId !== task.taskId) throw new Error('the keyed task was not claimed')
+      await store.activate(Q, run.runId, run.claimToken, run.claimGen)
+      await store.setCheckpoint(Q, run.taskId, run.runId, run.claimToken, 'step', '1', 60)
+      await store.complete(Q, run.runId, run.claimToken, '{}')
+      await cloneRows(db, 'tasks', `src.task_id = '${task.taskId}'`, {
+        task_id: "CONCAT('old-task-', seq.n)",
+        idempotency_key: "CONCAT('old-key-', seq.n)",
+        fence_stamp: "CONCAT('old-stamp-', seq.n, ':task')",
+      })
+      await cloneRows(db, 'runs', `src.run_id = '${run.runId}'`, {
+        run_id: "CONCAT('old-run-', seq.n)",
+        task_id: "CONCAT('old-task-', seq.n)",
+        fence_stamp: "CONCAT('old-stamp-', seq.n, ':complete')",
+      })
+      await cloneRows(db, 'checkpoints', `src.task_id = '${task.taskId}'`, {
+        task_id: "CONCAT('old-task-', seq.n)",
+        owner_run_id: "CONCAT('old-run-', seq.n)",
+      })
+      await cloneRows(db, 'events', `src.event_name = '$task-done:${task.taskId}'`, {
+        event_name: "CONCAT('$task-done:old-task-', seq.n)",
+      })
+      await db.raw.batch('fixture:analyze', [
+        { sql: 'ANALYZE TABLE tasks, runs, checkpoints, events', args: [] },
+      ])
+      await db.admin.setFakeNowEpochMs(1_000_000 + 3_600_000)
+      const { executor, walked } = countingRowsWalked(db, labels)
+      const purges = retention(executor, db.ids)
+      const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
+      const listed = await purges.purgeCandidates(Q, policy, { limit: 10 })
+      const purged = await purges.purgeUnit(
+        Q,
+        { taskId: task.taskId, idempotencyKey: 'order-7' },
+        policy,
+      )
+      // Each entry is the rows a label's batch walked beside the HISTORY ended units.
+      // Measured on MySQL 8.4: the read of ten candidates walked ten rows, and the purge
+      // of one unit 36.
+      expect({
+        listed: listed.candidates.length,
+        more: listed.next !== null,
+        purged: purged?.rows,
+        walkedFew: Object.fromEntries(
+          labels.map((label) => [label, Number(walked.get(label)) < 50]),
+        ),
+      }).toEqual({
+        listed: 10,
+        more: true,
+        purged: { tasks: 1, runs: 1, checkpoints: 1, waits: 0, events: 1 },
+        walkedFew: { 'purge-candidates': true, 'purge-unit': true },
+      })
     } finally {
       await db.close()
     }

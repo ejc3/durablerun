@@ -1,6 +1,6 @@
 import { InvalidDurableStringError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
-import type { OperatorReads, SchedulerStore } from './ports.js'
+import type { OperatorReads, Retention, SchedulerStore } from './ports.js'
 import type { CancelOptions } from './types.js'
 import { requireDurableString, requireIdentifiersFit } from './validate.js'
 
@@ -399,6 +399,36 @@ export function requireOperatorReadStrings(
   args: readonly unknown[],
 ): void {
   requireArguments(OPERATOR_READ_STRINGS[method], method, args)
+}
+
+export type RetentionMethod = keyof Retention
+
+/**
+ * Where each named string enters the retention port (`Retention`), under the names and the
+ * rules of the table above, as `OPERATOR_READ_STRINGS` is for the operator's reads. Its
+ * type is computed from `Retention`, so a method that port gains, and a string a method
+ * gains, each stop the build until this names them. A purge names its unit by the task's
+ * id and by the idempotency key the task was spawned under. The key is held as a caller's
+ * is, and one in the engine's namespace is not refused: a child's key is how a purge finds
+ * the task's parent.
+ */
+export const RETENTION_STRINGS = frozenThroughout({
+  purgeCandidates: ['queue', null, { after: { '?': { taskId: 'taskId' } } }],
+  purgeUnit: ['queue', { taskId: 'taskId', idempotencyKey: { '?': 'idempotencyKey' } }, null],
+} as const satisfies PortStringsOf<Retention>)
+
+/** Every method the retention table names, which is every method of that port. */
+export const RETENTION_METHODS: readonly RetentionMethod[] = freeze(
+  objectKeys(RETENTION_STRINGS) as RetentionMethod[],
+)
+
+/**
+ * The one check of the strings a call of the retention port carries, as
+ * `requirePortStrings` is of a store call's. Core's implementation of the port puts it in
+ * front of every method.
+ */
+export function requireRetentionStrings(method: RetentionMethod, args: readonly unknown[]): void {
+  requireArguments(RETENTION_STRINGS[method], method, args)
 }
 
 /** Every method the table names, which is every method of the port. */

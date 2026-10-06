@@ -4,6 +4,7 @@ import { Client } from 'pg'
 import { expect, it } from 'vitest'
 import { operatorReads } from '../src/operator-reads.js'
 import { compilePostgresPlaceholders } from '../src/placeholders.js'
+import { retention } from '../src/retention.js'
 import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
@@ -229,20 +230,33 @@ async function cloneRunning(
     ],
   ]
   for (const [table, key, id, replaced] of copies) {
-    const columns = await client.query(
-      `SELECT column_name FROM information_schema.columns
-       WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
-      [schema, table],
-    )
-    const names = columns.rows.map((row) => String((row as { column_name: string }).column_name))
-    const copied = await client.query(
-      `INSERT INTO ${table} (${names.join(', ')})
-       SELECT ${names.map((name) => replaced[name] ?? `src.${name}`).join(', ')}
-       FROM ${table} src, generate_series(1, ${count}) AS seq(n) WHERE src.${key} = $1`,
-      [id],
-    )
-    expect(copied.rowCount).toBe(count)
+    await cloneRow(client, schema, table, key, id, replaced, count)
   }
+}
+
+/** Copy the row of `table` whose `key` is `id`, `count` times, each copy with the columns `replaced` names. */
+async function cloneRow(
+  client: Client,
+  schema: string,
+  table: string,
+  key: string,
+  id: string,
+  replaced: Readonly<Record<string, string>>,
+  count: number,
+) {
+  const columns = await client.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
+    [schema, table],
+  )
+  const names = columns.rows.map((row) => String((row as { column_name: string }).column_name))
+  const copied = await client.query(
+    `INSERT INTO ${table} (${names.join(', ')})
+     SELECT ${names.map((name) => replaced[name] ?? `src.${name}`).join(', ')}
+     FROM ${table} src, generate_series(1, ${count}) AS seq(n) WHERE src.${key} = $1`,
+    [id],
+  )
+  expect(copied.rowCount).toBe(count)
 }
 
 /**
@@ -891,6 +905,176 @@ it('plans no statement the engine sends through the index of live tasks, and a r
     }
     expect(planned).toEqual([])
     expect(seen.size).toBeGreaterThan(40)
+  } finally {
+    await client.end()
+    await db.close()
+  }
+})
+
+/**
+ * Retention's two batches (DESIGN.md §3.12), beside a history of units that ended. The
+ * read of what a purge may take reaches each state's ended tasks through the index that
+ * hands them out in the order they ended. The purge reaches its task by the primary key,
+ * reads what the barrier asks of the task's runs, of the runs and the waits that name its
+ * completion event, and of its parent, each through an index, and every delete reaches
+ * its rows through a key the unit's task names.
+ *
+ * The history is what makes the pin of the purge's task mean something. The barrier names
+ * the task's queue, an ended state and a stamp in range, which together are the predicate
+ * of `tasks_terminal`, and over empty tables PostgreSQL priced that index below the
+ * primary key and reached the one task by a walk of its queue's ended tasks. Beside rows
+ * it has counted, it reaches the task by its key. Planned as the cases above plan, and
+ * with `meta` left out for their reason. This needs a server.
+ */
+it('reaches every row a purge reads or deletes through an index, beside a history of ended units, and scans no table', async () => {
+  const db = await openPostgresTestDb({ idNamespace: 'plan-retention' })
+  const client = new Client({ connectionString: process.env.DURABLERUN_POSTGRES_URL })
+  await client.connect()
+  try {
+    await client.query(`SET search_path TO "${db.schemaName}"`)
+    await db.admin.setFakeNowEpochMs(1_000_000)
+    const recorder = new RecordingExecutor(db.raw)
+    const store = new PostgresSchedulerStore(db.raw, db.ids)
+    const task = await store.spawn('q', 'job', '{}', { idempotencyKey: 'order-7' })
+    const [run] = await store.claim('q', 'worker', { leaseSeconds: 60, limit: 1 })
+    if (run?.taskId !== task.taskId) throw new Error('expected to claim the keyed task')
+    await store.activate('q', run.runId, run.claimToken, run.claimGen)
+    await store.setCheckpoint('q', run.taskId, run.runId, run.claimToken, 'step', '1', 60)
+    await store.complete('q', run.runId, run.claimToken, '{}')
+    // A run parked on an event, for the wait it registered: an ended unit holds none.
+    const waiting = await store.spawn('q', 'waits', '{}')
+    const [parked] = await store.claim('q', 'waiter', { leaseSeconds: 60, limit: 1 })
+    if (parked?.taskId !== waiting.taskId) throw new Error('expected to claim the waiting task')
+    await store.activate('q', parked.runId, parked.claimToken, parked.claimGen)
+    await store.awaitEvent('q', parked.taskId, parked.runId, parked.claimToken, 's', 'e', null)
+    // The history: other units that ended at the same instant, each with its run, its
+    // checkpoint and its completion event, under a key and stamps of its own, and a wait
+    // of each of those runs on an event of its own.
+    const history = 2_000
+    const copies: [string, string, string, Record<string, string>][] = [
+      [
+        'tasks',
+        'task_id',
+        task.taskId,
+        {
+          task_id: "'old-task-' || seq.n",
+          idempotency_key: "'old-key-' || seq.n",
+          last_attempt_run: "'old-run-' || seq.n",
+          fence_stamp: "'old-stamp-' || seq.n || ':task'",
+        },
+      ],
+      [
+        'runs',
+        'run_id',
+        run.runId,
+        {
+          run_id: "'old-run-' || seq.n",
+          task_id: "'old-task-' || seq.n",
+          fence_stamp: "'old-stamp-' || seq.n || ':complete'",
+        },
+      ],
+      [
+        'checkpoints',
+        'task_id',
+        task.taskId,
+        { task_id: "'old-task-' || seq.n", owner_run_id: "'old-run-' || seq.n" },
+      ],
+      [
+        'events',
+        'event_name',
+        `$task-done:${task.taskId}`,
+        { event_name: "'$task-done:old-task-' || seq.n" },
+      ],
+      [
+        'waits',
+        'run_id',
+        parked.runId,
+        // Each wait is given to a run of the history, so the waits and the runs hold the
+        // same ids. Under ids of their own the two ranges never met, and PostgreSQL priced
+        // a merge of them, which reads a table from its first row, at nothing.
+        {
+          run_id: "'old-run-' || seq.n",
+          task_id: "'old-task-' || seq.n",
+          event_name: "'other-event-' || seq.n",
+        },
+      ],
+    ]
+    for (const [table, key, id, replaced] of copies) {
+      await cloneRow(client, db.schemaName, table, key, id, replaced, history)
+    }
+    await client.query('ANALYZE tasks, runs, checkpoints, events, waits')
+
+    await db.admin.setFakeNowEpochMs(1_000_000 + 3_600_000)
+    const purges = retention(recorder, db.ids)
+    const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
+    const listed = await purges.purgeCandidates('q', policy, { limit: 10 })
+    const purged = await purges.purgeUnit(
+      'q',
+      { taskId: task.taskId, idempotencyKey: 'order-7' },
+      policy,
+    )
+    expect({
+      listed: listed.candidates.length,
+      more: listed.next !== null,
+      purged: purged?.rows,
+    }).toEqual({
+      listed: 10,
+      more: true,
+      purged: { tasks: 1, runs: 1, checkpoints: 1, waits: 0, events: 1 },
+    })
+
+    const { reached, scans } = await indexesAndScans(client, recorder)
+    expect(scans).toEqual([])
+    expect(reached).toEqual({
+      'purge-candidates#0': [
+        "tasks_terminal on tasks t: ((queue = $1) AND (state = 'completed'::text) AND (fence_at_ms >= 0) AND (fence_at_ms <= '253402300799000'::bigint) AND (fence_at_ms <= (COALESCE((InitPlan 1).col1, (floor((EXTRACT(epoch FROM statement_timestamp()) * '1000'::numeric)))::bigint) - $2)) AND (fence_at_ms >= $3))",
+      ],
+      'purge-candidates#1': [
+        "tasks_terminal on tasks t: ((queue = $1) AND (state = 'failed'::text) AND (fence_at_ms >= 0) AND (fence_at_ms <= '253402300799000'::bigint) AND (fence_at_ms <= (COALESCE((InitPlan 1).col1, (floor((EXTRACT(epoch FROM statement_timestamp()) * '1000'::numeric)))::bigint) - $2)) AND (fence_at_ms >= $3))",
+      ],
+      'purge-candidates#2': [
+        "tasks_terminal on tasks t: ((queue = $1) AND (state = 'cancelled'::text) AND (fence_at_ms >= 0) AND (fence_at_ms <= '253402300799000'::bigint) AND (fence_at_ms <= (COALESCE((InitPlan 1).col1, (floor((EXTRACT(epoch FROM statement_timestamp()) * '1000'::numeric)))::bigint) - $2)) AND (fence_at_ms >= $3))",
+      ],
+      'purge-unit#0': [
+        'runs_task_attempt on runs live: (task_id = $7)',
+        'runs_wake_holders on runs holder: ((queue = $11) AND (wake_event = $12))',
+        'waits_event on waits waiter: ((queue = $14) AND (event_name = $15))',
+        'tasks_pkey on tasks p: (task_id = $16)',
+        'runs_task_attempt on runs stray: (task_id = $21)',
+        'checkpoints_pkey on checkpoints c: (task_id = $23)',
+        'tasks_pkey on tasks: (task_id = $2)',
+      ],
+      'purge-unit#1': [
+        'tasks_pkey on tasks f: (task_id = $8)',
+        'runs_task_attempt on runs r: (task_id = $1)',
+        'checkpoints_pkey on checkpoints c: (task_id = $3)',
+        'runs_task_attempt on runs wr: (task_id = $4)',
+        'waits_pkey on waits w: (run_id = wr.run_id)',
+        'events_pkey on events e: ((queue = $6) AND (event_name = $7))',
+      ],
+      'purge-unit#2': [
+        'checkpoints_pkey on checkpoints: (task_id = ($1)::text)',
+        'tasks_pkey on tasks f: (task_id = ($1)::text)',
+      ],
+      'purge-unit#3': [
+        'tasks_pkey on tasks f_1: (task_id = $2)',
+        'runs_task_attempt on runs: (task_id = ($5)::text)',
+        'tasks_pkey on tasks f: (task_id = ($5)::text)',
+      ],
+      'purge-unit#4': [
+        'runs_task_attempt on runs f: (task_id = $1)',
+        'waits_pkey on waits: (run_id = f.run_id)',
+      ],
+      'purge-unit#5': [
+        'runs_task_attempt on runs: (task_id = ($1)::text)',
+        'tasks_pkey on tasks f: (task_id = ($1)::text)',
+      ],
+      'purge-unit#6': [
+        'tasks_pkey on tasks f: (task_id = $1)',
+        'events_pkey on events: ((queue = f.queue) AND (event_name = $3))',
+      ],
+      'purge-unit#7': ['tasks_pkey on tasks: (task_id = $1)'],
+    })
   } finally {
     await client.end()
     await db.close()

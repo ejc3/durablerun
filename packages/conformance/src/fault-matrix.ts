@@ -3,6 +3,7 @@ import {
   REASON_INFRA_CAP,
   REASON_RELAUNCH_CAP,
   RELAUNCH_CAP,
+  type RetentionPolicy,
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
@@ -60,7 +61,17 @@ export const MATRIX_WRITE_LABELS = [
   'sweep:cancel',
   'sweep:lost-launch',
   'sweep:claim-timeout',
+  'purge-unit',
 ] as const
+
+/**
+ * The policy every purge of the generated surfaces names: the shortest windows core takes,
+ * and failed tasks kept (DESIGN.md §3.12).
+ */
+export const MATRIX_RETENTION_POLICY: RetentionPolicy = {
+  completedSeconds: 3_600,
+  cancelledSeconds: 3_600,
+}
 
 /** One write label of the matrix. */
 export type MatrixWriteLabel = (typeof MATRIX_WRITE_LABELS)[number]
@@ -102,6 +113,7 @@ export const MATRIX_READ_LABELS = [
   'aged-tasks',
   'event-payload',
   'task-admission',
+  'purge-candidates',
 ] as const
 
 /** Fixture plumbing that runs outside any simulated actor. */
@@ -905,6 +917,20 @@ export async function runFaultMatrixCase(
       // payload, and what the engine's own guards say of a task.
       await go(() => operator.eventPayload(Q, 'go'))
       if (t2) await go(() => operator.taskAdmission(Q, t2.taskId))
+
+      // Retention (DESIGN.md §3.12), last, because it removes what the reads above name. An
+      // hour on, every task above that completed or was cancelled is a window old: the
+      // candidates are read, and each unit is purged. A fault at the purge leaves each
+      // unit whole or gone, which the row checks below hold.
+      now += 3_600_000
+      await go(() => admin.setFakeNowEpochMs(now))
+      const retention = f.retentionOver(simDb)
+      const listed = await go(() =>
+        retention.purgeCandidates(Q, MATRIX_RETENTION_POLICY, { limit: 50 }),
+      )
+      for (const candidate of listed?.candidates ?? []) {
+        await go(() => retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
+      }
     })
     await world.run()
 
