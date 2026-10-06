@@ -2,6 +2,7 @@ import {
   ChildAwaitRefusedError,
   InvalidDurableStringError,
   PortRefusalError,
+  type PurgeUnitTarget,
   RETENTION_METHODS,
   RETENTION_STRINGS,
   type RetentionMethod,
@@ -32,6 +33,7 @@ import {
   sizeCells,
   startOf,
 } from './retention-grid.js'
+import { type KeptBy, dumpDifferences, purgeOracle } from './retention-oracle.js'
 import {
   awaitTaskOwned,
   describeFailure,
@@ -89,6 +91,46 @@ const keptByItsParent = (parent: ParentState, parentQueue: GridCell['parentQueue
   holder: 'none',
   age: 1,
 })
+
+/** A unit a window past its ending that nothing keeps, in the state the engine left it. */
+const nothingInItsWay = (unitState: UnitState): GridCell => ({
+  unit: unitState,
+  parent: 'none',
+  parentQueue: "the child's",
+  holder: 'none',
+  age: 1,
+})
+
+/**
+ * One purge of a unit the engine ended and a case then bent, held to the oracle: what
+ * keeps the unit by the model's reading of the rows, what the purge answered, and how
+ * every table afterwards differs from what the oracle says it must hold. `bend` writes
+ * the rows the case is about, and may name the unit another way than its builder did.
+ */
+async function bentPurge(
+  makeFixture: StoreFixtureFactory,
+  name: string,
+  cell: GridCell,
+  policy: RetentionPolicy,
+  bend: (f: StoreFixture, built: BuiltCell) => Promise<PurgeUnitTarget | undefined>,
+): Promise<{ keptBy: readonly KeptBy[]; purged: boolean; differences: readonly string[] }> {
+  return withFixture(makeFixture, `bent ${name}`, async (f) => {
+    const built = await buildCell(f, cell, 'c')
+    await f.admin.setFakeNowEpochMs(built.purgeAtMs)
+    const target = (await bend(f, built)) ?? built.target
+    const before = await snapshot(f.raw)
+    const oracle = purgeOracle(before, built.purgeAtMs, built.queue, target, policy)
+    const answer = await f.retentionOver(f.raw).purgeUnit(built.queue, target, policy)
+    return {
+      keptBy: oracle.keptBy,
+      purged: answer !== null,
+      differences: dumpDifferences(oracle.after, await snapshot(f.raw)),
+    }
+  })
+}
+
+const write = (f: StoreFixture, sql: string, args: (string | null)[]) =>
+  f.raw.batch('bent-rows', [{ sql, args }], 'write')
 
 /** Build one cell alone, move the clock to its purge, and send the purge. */
 async function purgedCell(f: StoreFixture, cell: GridCell) {
@@ -236,6 +278,129 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           violations: [],
         })
       })
+    })
+  })
+
+  describe(`what keeps a unit that no engine path leaves [${dialect}]`, () => {
+    const kept = (...keptBy: KeptBy[]) => ({ keptBy, purged: false, differences: [] })
+
+    it('a failed unit is kept under a policy that names no window for failed tasks', async () => {
+      expect(
+        await bentPurge(
+          makeFixture,
+          'policy',
+          nothingInItsWay('failed'),
+          CONTEST_POLICY,
+          async () => undefined,
+        ),
+      ).toEqual(kept('state'))
+    })
+
+    it('a unit whose stamp is NULL is kept, however old its rows are', async () => {
+      expect(
+        await bentPurge(
+          makeFixture,
+          'stamp',
+          nothingInItsWay('completed'),
+          GRID_POLICY,
+          async (f, built) => {
+            await write(f, 'UPDATE tasks SET fence_at_ms = NULL WHERE task_id = ?', [
+              built.target.taskId,
+            ])
+            return undefined
+          },
+        ),
+      ).toEqual(kept('stamp'))
+    })
+
+    it('a unit one of whose runs is live is kept, though its task has ended', async () => {
+      expect(
+        await bentPurge(
+          makeFixture,
+          'live run',
+          nothingInItsWay('completed'),
+          GRID_POLICY,
+          async (f, built) => {
+            await write(f, "UPDATE runs SET state = 'pending' WHERE task_id = ?", [
+              built.target.taskId,
+            ])
+            return undefined
+          },
+        ),
+      ).toEqual(kept('live-run'))
+    })
+
+    it('a unit one of whose runs is in another queue is kept whole', async () => {
+      expect(
+        await bentPurge(
+          makeFixture,
+          'foreign run',
+          nothingInItsWay('completed'),
+          GRID_POLICY,
+          async (f, built) => {
+            await write(f, "UPDATE runs SET queue = 'elsewhere' WHERE task_id = ?", [
+              built.target.taskId,
+            ])
+            return undefined
+          },
+        ),
+      ).toEqual(kept('foreign-run'))
+    })
+
+    it('a unit whose key is in the reserved namespace and names no parent is kept', async () => {
+      const key = '$spawn:names-nobody'
+      expect(
+        await bentPurge(
+          makeFixture,
+          'unparsed key',
+          nothingInItsWay('completed'),
+          GRID_POLICY,
+          async (f, built) => {
+            await write(f, 'UPDATE tasks SET idempotency_key = ? WHERE task_id = ?', [
+              key,
+              built.target.taskId,
+            ])
+            return { taskId: built.target.taskId, idempotencyKey: key }
+          },
+        ),
+      ).toEqual(kept('parent'))
+    })
+
+    it('a unit named under a key it was not spawned under is kept, and so is one named under none', async () => {
+      const named = (target: (built: BuiltCell) => PurgeUnitTarget) =>
+        bentPurge(
+          makeFixture,
+          'another key',
+          nothingInItsWay('cancelled'),
+          GRID_POLICY,
+          async (_f, built) => target(built),
+        )
+      expect({
+        underAnotherKey: await named(({ target }) => ({
+          taskId: target.taskId,
+          idempotencyKey: 'another-key',
+        })),
+        underNoKey: await named(({ target }) => ({ taskId: target.taskId })),
+      }).toEqual({ underAnotherKey: kept('key'), underNoKey: kept('key') })
+    })
+
+    it("a run of the unit itself that holds the unit's own outcome does not keep it", async () => {
+      expect(
+        await bentPurge(
+          makeFixture,
+          'own carry',
+          nothingInItsWay('completed'),
+          GRID_POLICY,
+          async (f, built) => {
+            await write(
+              f,
+              "UPDATE runs SET wake_event = ?, wake_step = 'await-self', event_payload = '{}' WHERE task_id = ?",
+              [taskDoneEventName(built.target.taskId), built.target.taskId],
+            )
+            return undefined
+          },
+        ),
+      ).toEqual({ keptBy: [], purged: true, differences: [] })
     })
   })
 
