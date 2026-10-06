@@ -722,11 +722,25 @@ export function parseInvocation(argv: readonly string[]): Invocation {
       ),
       allowPositionals: true,
       strict: true,
+      tokens: true,
     })
   } catch (error) {
     throw new UsageError(
       `${error instanceof Error ? error.message : String(error)}\nusage: ${usage(spec)}`,
     )
+  }
+  // A flag given twice is refused, whatever its values: the parser would keep the last, and
+  // a command line that names a window as a hundred years and then as an hour is not one
+  // anybody meant. Every spelling of a flag is one token here, so each is counted once.
+  const given = new Set<string>()
+  for (const token of parsed.tokens ?? []) {
+    if (token.kind !== 'option') continue
+    if (given.has(token.name)) {
+      throw new UsageError(
+        `--${token.name} is given twice: a command line names each flag once\nusage: ${usage(spec)}`,
+      )
+    }
+    given.add(token.name)
   }
   // An argument a flag stands in for is not taken when the flag is given.
   const instead = alternativeOf(spec)
