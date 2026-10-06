@@ -155,7 +155,10 @@ describe('one walk is one pass', () => {
     const first = await purgeWalk(queue.port, Q, POLICY, { limit: 10, execute: true })
     const calls = { ...queue.calls }
     const again = await purgeWalk(queue.port, Q, POLICY, { limit: 10, execute: true })
-    expect({ first: said(first), calls, again: said(again) }).toEqual({
+    expect(
+      { first: said(first), calls, again: said(again) },
+      'mutation-verdict:behavior:purge-walk-tries-again-a-unit-its-take-frees',
+    ).toEqual({
       // Four first looks, then the child, then the grandchild. The unit a purge cannot
       // free is looked at once.
       first: {
@@ -222,7 +225,10 @@ describe('one walk is one pass', () => {
     }
     const queue = queueOf([held, young, underALiveParent, free('holder', 4), free('parent', 5)])
     const walked = await purgeWalk(queue.port, Q, POLICY, { limit: 10, execute: true })
-    expect({ ...said(walked), tried: Object.fromEntries(queue.tried) }).toEqual({
+    expect(
+      { ...said(walked), tried: Object.fromEntries(queue.tried) },
+      'mutation-verdict:behavior:purge-walk-tries-again-what-a-held-outcome-kept',
+    ).toEqual({
       taken: ['holder', 'parent', 'held'],
       kept: [
         ['young-child', ['endedAWindowAgo', 'parentCannotRunAgain']],
@@ -280,12 +286,15 @@ describe('what bounds a walk', () => {
       if (walked.resumeAfter === null) break
       after = walked.resumeAfter
     }
-    expect({
-      walks,
-      listings: queue.calls.purgeCandidates,
-      mostLooksAtOneUnit: Math.max(...queue.tried.values()),
-      left: queue.there.size,
-    }).toEqual({
+    expect(
+      {
+        walks,
+        listings: queue.calls.purgeCandidates,
+        mostLooksAtOneUnit: Math.max(...queue.tried.values()),
+        left: queue.there.size,
+      },
+      'mutation-verdict:behavior:purge-walk-holds-the-candidates-it-examines',
+    ).toEqual({
       walks: [
         [120, 120, 0, true],
         [120, 120, 0, true],
@@ -310,11 +319,14 @@ describe('what bounds a walk', () => {
       execute: true,
       ...(first.resumeAfter === null ? {} : { after: first.resumeAfter }),
     })
-    expect({
-      first: [first.examined, first.taken.length, first.more, first.resumeAfter?.taskId],
-      listings,
-      next: [next.examined, said(next).taken, next.more, next.resumeAfter],
-    }).toEqual({
+    expect(
+      {
+        first: [first.examined, first.taken.length, first.more, first.resumeAfter?.taskId],
+        listings,
+        next: [next.examined, said(next).taken, next.more, next.resumeAfter],
+      },
+      'mutation-verdict:behavior:purge-walk-answers-where-it-stopped',
+    ).toEqual({
       first: [
         PURGE_WALK_EXAMINED,
         0,
@@ -335,11 +347,14 @@ describe('what bounds a walk', () => {
     const all = await purgeWalk(exact.port, Q, POLICY, { limit: PURGE_WALK_PAGE, execute: true })
     const page = await purgeWalk(over.port, Q, POLICY, { limit: PURGE_WALK_PAGE, execute: true })
     const two = await purgeWalk(inside.port, Q, POLICY, { limit: 2, execute: true })
-    expect({
-      all: [all.taken.length, all.more, all.resumeAfter, exact.calls.purgeCandidates],
-      page: [page.taken.length, page.more, page.resumeAfter?.taskId, over.calls.purgeCandidates],
-      two: [said(two).taken, two.more, two.resumeAfter?.taskId, inside.calls.purgeCandidates],
-    }).toEqual({
+    expect(
+      {
+        all: [all.taken.length, all.more, all.resumeAfter, exact.calls.purgeCandidates],
+        page: [page.taken.length, page.more, page.resumeAfter?.taskId, over.calls.purgeCandidates],
+        two: [said(two).taken, two.more, two.resumeAfter?.taskId, inside.calls.purgeCandidates],
+      },
+      'mutation-verdict:behavior:purge-walk-sends-no-listing-to-learn-more',
+    ).toEqual({
       // The limit is exactly what there was: nothing follows the page, so no more remain.
       all: [PURGE_WALK_PAGE, false, null, 1],
       // One unit follows the page, which the page itself says.
@@ -352,7 +367,10 @@ describe('what bounds a walk', () => {
     const queue = queueOf([childOf('parent', 'child', 1), free('parent', 2)])
     const walked = await purgeWalk(queue.port, Q, POLICY, { limit: 1, execute: true })
     const again = await purgeWalk(queue.port, Q, POLICY, { limit: 1, execute: true })
-    expect([said(walked), said(again)]).toEqual([
+    expect(
+      [said(walked), said(again)],
+      'mutation-verdict:behavior:purge-walk-says-more-when-a-try-is-owed',
+    ).toEqual([
       {
         taken: ['parent'],
         kept: [['child', ['parentCannotRunAgain']]],
@@ -400,12 +418,15 @@ describe('a call of the port that fails', () => {
       }
     }
     const stopped = { gone: [], more: true, resumeAfter: null }
-    expect({
-      listing: await shown({ call: 'purgeCandidates', occurrence: 1 }),
-      purgeNotCommitted: await shown({ call: 'purgeUnit', occurrence: 3 }),
-      purgeCommitted: await shown({ call: 'purgeUnit', occurrence: 3, committed: true }),
-      barrier: await shown({ call: 'purgeAdmission', occurrence: 1 }),
-    }).toEqual({
+    expect(
+      {
+        listing: await shown({ call: 'purgeCandidates', occurrence: 1 }),
+        purgeNotCommitted: await shown({ call: 'purgeUnit', occurrence: 3 }),
+        purgeCommitted: await shown({ call: 'purgeUnit', occurrence: 3, committed: true }),
+        barrier: await shown({ call: 'purgeAdmission', occurrence: 1 }),
+      },
+      'mutation-verdict:behavior:purge-walk-reports-a-purge-in-doubt',
+    ).toEqual({
       listing: {
         ...stopped,
         taken: [],

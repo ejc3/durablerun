@@ -362,12 +362,15 @@ jobs:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           if digest == 'a7f559430184d0340832c828546dc8bce7740ed9bd99dc7f6e0ff95f6da451f1':
-              # The purge verb and the simulated week register twenty mutations: three caught by
-              # cases of the simulated week, one by the case of the read of what each condition of
-              # the barrier says of a unit, fifteen by cases of the purge verb, and one by the case
-              # of a read by key whose task a purge takes between its two reads. Their cases carry
-              # twenty verdict markers. Each is newer than the base registry, so each is exempted
-              # there.
+              # The purge verb and the simulated week register thirty-six mutations: three caught by
+              # cases of the simulated week, one by the case of the read of what each condition of the
+              # barrier says of a unit, fifteen by cases of the purge verb, one by the case of a read by
+              # key whose task a purge takes between its two reads, and sixteen for the one walk of a
+              # purge and what came with it: seven by core's cases of the walk, four by cases of the
+              # verb, and one each by the cases of a flag given twice, of the frozen lists, of a control
+              # that holds nothing, of what a dry run lists, and of a week's turns of the event loop.
+              # Their cases carry thirty-six verdict markers. Each is newer than the base registry, so
+              # each is exempted there.
               # Four base entries are re-aimed. Two conditions of the purge barrier now write the
               # live states into the statement's text, where they bound them, so the two mutations
               # that find those lines and the one whose replacement repeats one name them as they
@@ -382,18 +385,34 @@ jobs:
                   "mutation-verdict:behavior:cli-purge-names-its-store",
                   "mutation-verdict:behavior:cli-purge-names-the-condition-that-keeps-a-unit",
                   "mutation-verdict:behavior:cli-purge-prints-a-key-only-as-its-digest",
+                  "mutation-verdict:behavior:cli-purge-prints-a-unit-whose-answer-was-lost",
+                  "mutation-verdict:behavior:cli-purge-prints-an-empty-outage-as-a-failure",
                   "mutation-verdict:behavior:cli-purge-prints-exactly-the-units-that-went",
+                  "mutation-verdict:behavior:cli-purge-refuses-a-cursor-it-cannot-read",
                   "mutation-verdict:behavior:cli-purge-refuses-a-schema-that-is-not-the-builds",
                   "mutation-verdict:behavior:cli-purge-refuses-a-window-under-the-floor",
                   "mutation-verdict:behavior:cli-purge-refuses-under-a-test-clock",
                   "mutation-verdict:behavior:cli-purge-reports-what-went-before-an-outage",
+                  "mutation-verdict:behavior:cli-purge-resumes-after-its-cursor",
                   "mutation-verdict:behavior:cli-purge-stops-at-its-limit-inside-a-page",
                   "mutation-verdict:behavior:cli-purge-walks-past-the-units-the-barrier-keeps",
+                  "mutation-verdict:behavior:cli-purge-would-purge-is-what-the-port-lets-go",
+                  "mutation-verdict:behavior:cli-refuses-a-flag-given-twice",
                   "mutation-verdict:behavior:cli-retry-says-a-task-may-have-been-retained-out",
                   "mutation-verdict:behavior:purge-admission-reads-each-condition-as-its-own-flag",
+                  "mutation-verdict:behavior:purge-barrier-conditions-are-frozen",
+                  "mutation-verdict:behavior:purge-walk-answers-where-it-stopped",
+                  "mutation-verdict:behavior:purge-walk-holds-the-candidates-it-examines",
+                  "mutation-verdict:behavior:purge-walk-reports-a-purge-in-doubt",
+                  "mutation-verdict:behavior:purge-walk-says-more-when-a-try-is-owed",
+                  "mutation-verdict:behavior:purge-walk-sends-no-listing-to-learn-more",
+                  "mutation-verdict:behavior:purge-walk-tries-again-a-unit-its-take-frees",
+                  "mutation-verdict:behavior:purge-walk-tries-again-what-a-held-outcome-kept",
+                  "mutation-verdict:behavior:retention-soak-fails-a-control-that-holds-nothing",
                   "mutation-verdict:behavior:retention-soak-fails-as-vacuous-when-nothing-is-purged",
                   "mutation-verdict:behavior:retention-soak-holds-each-pass-to-the-age-of-its-units",
                   "mutation-verdict:behavior:retention-soak-holds-the-rows-of-a-queue-to-the-bound",
+                  "mutation-verdict:behavior:retention-soak-turns-the-event-loop-each-day",
               ))
               for name in (
                   "cli-retry-changes-nothing-without-yes",

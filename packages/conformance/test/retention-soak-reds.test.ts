@@ -81,12 +81,15 @@ describe('a week whose control holds nothing', () => {
       ({
         boundaries: [{ hour: SOAK_HOURS, retained: bound, bound, control }],
       }) as unknown as SoakReport
-    expect({
-      // Nothing over nothing is no ratio at all: every table is named.
-      nothing: vacuous(day7(none)),
-      // A control that holds tasks alone, five times its bound: the other tables are named.
-      tasksAlone: vacuous(day7({ ...none, tasks: 10 }, { ...none, tasks: 2 })),
-    }).toEqual({
+    expect(
+      {
+        // Nothing over nothing is no ratio at all: every table is named.
+        nothing: vacuous(day7(none)),
+        // A control that holds tasks alone, five times its bound: the other tables are named.
+        tasksAlone: vacuous(day7({ ...none, tasks: 10 }, { ...none, tasks: 2 })),
+      },
+      'mutation-verdict:behavior:retention-soak-fails-a-control-that-holds-nothing',
+    ).toEqual({
       nothing: ENDED_UNIT_TABLES.map((table) => `the control holds no rows of ${table}`),
       tasksAlone: ['runs', 'checkpoints', 'events'].map(
         (table) => `the control holds no rows of ${table}`,

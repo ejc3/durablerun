@@ -101,7 +101,10 @@ describe('a flag given twice', () => {
         }
       }
     }
-    expect({ notRefused, refusedOnce }).toEqual({ notRefused: [], refusedOnce: [] })
+    expect(
+      { notRefused, refusedOnce },
+      'mutation-verdict:behavior:cli-refuses-a-flag-given-twice',
+    ).toEqual({ notRefused: [], refusedOnce: [] })
     expect(flags).toBeGreaterThan(VERBS.length)
   })
 

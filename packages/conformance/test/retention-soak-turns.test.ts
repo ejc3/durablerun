@@ -28,7 +28,10 @@ for (const { dialect, makeFixture } of SELECTED_DIALECT_FIXTURES) {
         } finally {
           clearInterval(timer)
         }
-        expect(turns).toBeGreaterThanOrEqual(SOAK_LAST_HOUR / 24)
+        expect(
+          turns,
+          'mutation-verdict:behavior:retention-soak-turns-the-event-loop-each-day',
+        ).toBeGreaterThanOrEqual(SOAK_LAST_HOUR / 24)
       },
       SOAK_TIMEOUT_MS,
     )

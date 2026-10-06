@@ -656,7 +656,10 @@ describe('what purge refuses, each beside the command that is not refused', () =
           asked.message.includes(place),
         ])
       }
-      expect(answered).toEqual(places.map(() => [2, 'usage', true, 0, false]))
+      expect(
+        answered,
+        'mutation-verdict:behavior:cli-purge-refuses-a-cursor-it-cannot-read',
+      ).toEqual(places.map(() => [2, 'usage', true, 0, false]))
       // The control: a place before every task is taken, and the purge begins there.
       expect(await control(db, [...PURGE_WINDOWS, '--execute', '--after', '0:a-task'])).toEqual({
         exit: 0,
@@ -1361,7 +1364,7 @@ describe('one invocation is one pass, within its bounds', () => {
       first: { purged: string[] }
       resumed: { purged?: string[] }
     }[]
-    expect(reached).toEqual([
+    expect(reached, 'mutation-verdict:behavior:cli-purge-resumes-after-its-cursor').toEqual([
       {
         limit: 1,
         behind: 2,
@@ -1423,21 +1426,24 @@ describe('a purge whose answer was lost', () => {
         const { exit, answer } = await purge(db, [...PURGE_EVERY_STATE, '--execute'], lost)
         const there = (await tasksLeft(db)).includes(seeded.completed)
         const again = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
-        expect({
-          fault,
-          exit,
-          purged: idsOf(answer.purged),
-          notKnown: (answer.outcomeNotKnown ?? []).map((unit) => [
-            unit.taskId,
-            unit.state,
-            unit.idempotencyKeySha256,
-          ]),
-          finished: answer.finished,
-          stoppedAt: answer.stoppedAt,
-          there,
-          // A repeat lists the unit again if it stands, and does not if it went.
-          againPurgedIt: idsOf(again.answer.purged).includes(seeded.completed),
-        }).toEqual({
+        expect(
+          {
+            fault,
+            exit,
+            purged: idsOf(answer.purged),
+            notKnown: (answer.outcomeNotKnown ?? []).map((unit) => [
+              unit.taskId,
+              unit.state,
+              unit.idempotencyKeySha256,
+            ]),
+            finished: answer.finished,
+            stoppedAt: answer.stoppedAt,
+            there,
+            // A repeat lists the unit again if it stands, and does not if it went.
+            againPurgedIt: idsOf(again.answer.purged).includes(seeded.completed),
+          },
+          'mutation-verdict:behavior:cli-purge-prints-a-unit-whose-answer-was-lost',
+        ).toEqual({
           fault,
           exit: exitCode('unavailable'),
           purged: [],
@@ -1475,10 +1481,13 @@ describe('an outage with no unit in the report', () => {
       await aged(db)
       const text = await purgeText(db, [...PURGE_EVERY_STATE, '--execute'], atTheFirstListing())
       const json = await purge(db, [...PURGE_EVERY_STATE, '--execute'], atTheFirstListing())
-      expect({
-        text: [text.exit, text.stdout, text.stderr.includes('store-unavailable')],
-        json: [json.exit, Object.keys(json.answer).sort(), json.answer.error?.kind],
-      }).toEqual({
+      expect(
+        {
+          text: [text.exit, text.stdout, text.stderr.includes('store-unavailable')],
+          json: [json.exit, Object.keys(json.answer).sort(), json.answer.error?.kind],
+        },
+        'mutation-verdict:behavior:cli-purge-prints-an-empty-outage-as-a-failure',
+      ).toEqual({
         text: [exitCode('unavailable'), '', true],
         json: [
           exitCode('unavailable'),

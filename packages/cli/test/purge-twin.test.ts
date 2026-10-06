@@ -192,11 +192,14 @@ describe('purge is the retention port and nothing else', () => {
           // A dry run lists as ones a purge would take the units the port says every
           // condition holds of, and as kept the ones it says one does not.
           if (said !== null) {
-            expect({
-              where,
-              wouldPurge: idsOf(answer.wouldPurge),
-              kept: idsOf(answer.kept),
-            }).toEqual({ where, wouldPurge: said.wouldGo, kept: said.keeps })
+            expect(
+              {
+                where,
+                wouldPurge: idsOf(answer.wouldPurge),
+                kept: idsOf(answer.kept),
+              },
+              'mutation-verdict:behavior:cli-purge-would-purge-is-what-the-port-lets-go',
+            ).toEqual({ where, wouldPurge: said.wouldGo, kept: said.keeps })
           }
           const purges = recorded.sent().filter((batch) => batch.label === 'purge-unit').length
           expect({
