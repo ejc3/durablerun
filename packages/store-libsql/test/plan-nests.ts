@@ -86,8 +86,19 @@ export const ENTITY_COLUMNS = [
  * live tasks reads the index of live tasks in the order they were enqueued, under a limit,
  * and no statement the engine sends ranges over it. Every statement that reads such a range
  * is named in the plan test's tables with what bounds it, as the others are.
+ *
+ * `fence_at_ms` is the instant a task's row was last stamped, which for a task that has
+ * ended is the instant it ended. Retention's read of the tasks a purge may take reads the
+ * index of ended tasks in that order, under a limit (DESIGN.md §3.12), and nothing else
+ * ranges over it.
  */
-const DUE_COLUMNS = ['available_at_ms', 'claim_expires_at_ms', 'cancel_at_ms', 'enqueue_at_ms']
+const DUE_COLUMNS = [
+  'available_at_ms',
+  'claim_expires_at_ms',
+  'cancel_at_ms',
+  'enqueue_at_ms',
+  'fence_at_ms',
+]
 
 /** `keyed` reads one entity's rows, `due` reads what is due in index order, `walk` a backlog. */
 const REACHES = ['keyed', 'due', 'walk'] as const
