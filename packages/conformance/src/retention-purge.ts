@@ -628,6 +628,103 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
     })
   })
 
+  describe(`a spawn under a key whose task a purge takes [${dialect}]`, () => {
+    /**
+     * A store whose spawn batch finds its key held, and whose read of the holder then
+     * finds nothing: what a spawn meets when a purge commits between the batch's insert
+     * and its read, which a server lets happen. The batch is sent as it is, so the insert
+     * loses to the task that holds the key. `between` then runs, and the read's rows are
+     * handed back empty, as they are when the task is gone by then.
+     */
+    const losingTheHolder = (f: StoreFixture, between: (sent: number) => Promise<void>) => {
+      let sent = 0
+      const store = f.storeOver({
+        batch: async (label, statements, control) => {
+          const results = await f.raw.batch(label, statements, control)
+          if (label !== 'spawn') return results
+          sent += 1
+          await between(sent)
+          return results.map((result, index) =>
+            index === results.length - 1 ? { ...result, rows: [] } : result,
+          )
+        },
+      })
+      return { store, sent: () => sent }
+    }
+    const aWindowOld: GridCell = {
+      unit: 'completed',
+      parent: 'none',
+      parentQueue: "the child's",
+      holder: 'none',
+      age: 1,
+    }
+
+    it('creates the task on a second insert when the first lost to a task that is gone by its read', async () => {
+      await withFixture(makeFixture, 'spawn-after-a-purge', async (f) => {
+        const built = await buildCell(f, aWindowOld, 'c')
+        await f.admin.setFakeNowEpochMs(built.purgeAtMs)
+        const key = String(built.target.idempotencyKey)
+        const retention = f.retentionOver(f.raw)
+        const purged: unknown[] = []
+        // The purge takes the holder after the first send alone, and the second send's
+        // read is left as the store sent it.
+        let first = true
+        const store = f.storeOver({
+          batch: async (label, statements, control) => {
+            const results = await f.raw.batch(label, statements, control)
+            if (label !== 'spawn' || !first) return results
+            first = false
+            purged.push(await retention.purgeUnit(built.queue, built.target, GRID_POLICY))
+            return results.map((result, index) =>
+              index === results.length - 1 ? { ...result, rows: [] } : result,
+            )
+          },
+        })
+        const spawned = await store
+          .spawn(built.queue, 'child', '{}', { idempotencyKey: key })
+          .then(
+            (answer) => ({
+              created: answer.created,
+              another: answer.taskId !== built.target.taskId,
+            }),
+            describeFailure,
+          )
+        const holders = (await snapshot(f.raw)).tasks.filter(
+          (task) => task.queue === built.queue && task.idempotency_key === key,
+        )
+        expect({
+          purgedBetween: purged.map((unit) => unit !== null),
+          spawned,
+          holdersOfTheKey: holders.map((task) => task.task_id === built.target.taskId),
+          violations: await engineHistoryViolations(f.raw),
+        }).toEqual({
+          purgedBetween: [true],
+          spawned: { created: true, another: true },
+          holdersOfTheKey: [false],
+          violations: [],
+        })
+      })
+    })
+
+    it('says so when the insert loses twice and no task explains it', async () => {
+      await withFixture(makeFixture, 'spawn-loses-twice', async (f) => {
+        const built = await buildCell(f, aWindowOld, 'c')
+        const key = String(built.target.idempotencyKey)
+        // The holder stays, and both reads are handed back empty: a loss no task explains,
+        // which one more send does not cure.
+        const { store, sent } = losingTheHolder(f, async () => undefined)
+        const spawned = await store.spawn(built.queue, 'child', '{}', { idempotencyKey: key }).then(
+          () => 'answered',
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        )
+        expect({ spawned, sent: sent() }).toEqual({
+          spawned: 'spawn: the task insert lost but no existing task explains it',
+          sent: 2,
+        })
+      })
+    })
+  })
+
   describe(`the purge beside the rest of the engine [${dialect}]`, () => {
     it(
       `${CONTEST_ROUNDS} rounds of four purgers beside a claimer, a sweeper and a spawner that reuses the keys being purged: every unit is whole or gone, one purge answers for each that went, nothing the policy lets go is left, every reused key answers, and the server chooses no deadlock victim`,
