@@ -3,9 +3,10 @@ import type { StoreFixtureFactory } from '../src/index.js'
 import { NAMING_FAILED } from '../src/retention-policies.js'
 import {
   ENDED_UNIT_TABLES,
-  SOAK_LAST_HOUR,
+  SOAK_HOURS,
   SOAK_TIMEOUT_MS,
   type SoakControl,
+  type SoakReport,
   overTheBound,
   soakControl,
   soakWeek,
@@ -66,36 +67,32 @@ const leavingAWaitBehind = bent('complete', {
   args: [],
 })
 
-/** How often a timer armed to fire again and again fired while the control week ran. */
-let turns = 0
 let made: Promise<SoakControl> | undefined
-/** The clean week with no purge, run once, under that timer. */
+/** The clean week with no purge, run once. */
 const control = () => {
-  if (made === undefined) {
-    const timer = setInterval(() => {
-      turns += 1
-    }, 0)
-    made = soakControl(makeLibsqlFixture).finally(() => clearInterval(timer))
-  }
+  made = made ?? soakControl(makeLibsqlFixture)
   return made
 }
 
-// A week on libSQL is thousands of batches inside one fixture, and a libSQL batch on a
-// local file gives the event loop no turn. Measured before the week yielded: a week ran
-// for 8 to 13 seconds and a pending timer fired once in it, when its fixture was built. A
-// test worker whose loop does not turn for a minute fails its run with every test passing
-// (fixture-libsql.ts says how), and a week on a loaded machine is not far from a minute.
-// So the week gives the loop a turn at each simulated day, through the fixture, and the
-// timer is the subject here: it fires at least once in each of the days the passes run for.
-describe('the simulated week on libSQL', () => {
-  it(
-    'lets a pending timer fire in each of its simulated days',
-    async () => {
-      await control()
-      expect(turns).toBeGreaterThanOrEqual(SOAK_LAST_HOUR / 24)
-    },
-    SOAK_TIMEOUT_MS,
-  )
+describe('a week whose control holds nothing', () => {
+  it('is vacuous, and says which table the control holds no rows of', () => {
+    const none = { tasks: 0, runs: 0, checkpoints: 0, waits: 0, events: 0 }
+    const day7 = (control: typeof none, bound = none) =>
+      ({
+        boundaries: [{ hour: SOAK_HOURS, retained: bound, bound, control }],
+      }) as unknown as SoakReport
+    expect({
+      // Nothing over nothing is no ratio at all: every table is named.
+      nothing: vacuous(day7(none)),
+      // A control that holds tasks alone, five times its bound: the other tables are named.
+      tasksAlone: vacuous(day7({ ...none, tasks: 10 }, { ...none, tasks: 2 })),
+    }).toEqual({
+      nothing: ENDED_UNIT_TABLES.map((table) => `the control holds no rows of ${table}`),
+      tasksAlone: ['runs', 'checkpoints', 'events'].map(
+        (table) => `the control holds no rows of ${table}`,
+      ),
+    })
+  })
 })
 
 describe('each hold of the simulated week can fail', () => {

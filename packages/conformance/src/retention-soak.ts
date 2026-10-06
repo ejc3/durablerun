@@ -456,9 +456,10 @@ async function hours(
     const now = instantOf(hour)
     await f.admin.setFakeNowEpochMs(now)
     if (hour > 0 && hour % 24 === 0) {
-      // A week is thousands of batches inside one fixture. Where none of them lets the
-      // event loop turn, the fixture gives it a turn here, once a simulated day.
-      await f.turn?.()
+      // A week is thousands of batches inside one fixture, and on a store whose batches
+      // never leave the process none of them lets the event loop turn. Every fixture gives
+      // it a turn here, once a simulated day.
+      await f.turn()
       for (const found of await engineHistoryViolations(f.raw)) {
         week.violations.push(`day ${hour / 24}: ${found}`)
       }
@@ -816,8 +817,10 @@ export function vacuityRatios(report: SoakReport): {
   controlOverThePurgedWeek: Record<string, number>
 } {
   const day7 = report.boundaries.find(({ hour }) => hour === SOAK_HOURS)
+  // A ratio is asked only of a control above zero. A control that holds no rows of a table
+  // exceeds nothing, whatever it is read beside, so its ratio is 0 and not without bound.
   const ratio = (over: number, under: number): number =>
-    under === 0 ? Number.POSITIVE_INFINITY : Math.floor((over / under) * 10) / 10
+    over === 0 ? 0 : under === 0 ? Number.POSITIVE_INFINITY : Math.floor((over / under) * 10) / 10
   const ratios = (under: Rows | undefined) =>
     Object.fromEntries(
       ENDED_UNIT_TABLES.map((table) => [
@@ -831,13 +834,22 @@ export function vacuityRatios(report: SoakReport): {
   }
 }
 
-/** The ratios of `vacuityRatios` that are under three, each named. */
+/**
+ * Why a week says nothing, each reason named: a table of which the control holds no rows
+ * at the end of day 7, and each ratio of `vacuityRatios` that is under three for a table
+ * the control does hold rows of.
+ */
 export function vacuous(report: SoakReport): string[] {
-  return Object.entries(vacuityRatios(report)).flatMap(([which, byTable]) =>
-    Object.entries(byTable)
-      .filter(([, ratio]) => ratio < 3)
-      .map(([table, ratio]) => `${which} is ${ratio} for ${table}`),
-  )
+  const day7 = report.boundaries.find(({ hour }) => hour === SOAK_HOURS)
+  const empty = ENDED_UNIT_TABLES.filter((table) => (day7?.control[table] ?? 0) === 0)
+  return [
+    ...empty.map((table) => `the control holds no rows of ${table}`),
+    ...Object.entries(vacuityRatios(report)).flatMap(([which, byTable]) =>
+      Object.entries(byTable)
+        .filter(([table, ratio]) => ratio < 3 && !(empty as readonly string[]).includes(table))
+        .map(([table, ratio]) => `${which} is ${ratio} for ${table}`),
+    ),
+  ]
 }
 
 /**

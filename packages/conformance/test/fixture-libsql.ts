@@ -144,7 +144,7 @@ export async function makeLibsqlFixture(
     deadlocks: () => 0,
     // A case that runs long inside one fixture asks for this, because nothing it sends
     // lets the loop turn. It is a timer for the reason given where this fixture is built.
-    // retention-soak-reds.test.ts holds the week's use of it.
+    // retention-soak-turns.test.ts holds the week's use of it.
     turn: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
     lockWait: async () => {
       const dir = mkdtempSync(join(tmpdir(), 'durablerun-lock-wait-'))

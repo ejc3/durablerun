@@ -369,10 +369,12 @@ export interface StoreFixture {
   /**
    * Give the process's event loop a turn, for a case that runs long inside one fixture. A
    * fixture whose batches never leave the process, as an in-process libSQL file's do not,
-   * resumes from a timer here. A fixture whose every batch crosses a socket gives the loop
-   * its turns already, and leaves this out.
+   * gives the loop no turn of its own, and a test worker whose loop does not turn for a
+   * minute fails its run with every test passing. Every fixture implements this, as a real
+   * turn that lets a pending timer fire, and a shared case calls it without asking which
+   * dialect it runs on.
    */
-  turn?(): Promise<void>
+  turn(): Promise<void>
   /** The surface of the lock-wait case, which the case closes. */
   lockWait(): Promise<LockWaitSurface>
   /** Fully release every fixture-owned resource before resolving. */

@@ -137,6 +137,10 @@ export async function makeMysqlFixture(
     operatorReadsOver: operatorReads,
     retentionOver: (db: SqlExecutor) => retention(db, ids),
     deadlocks: () => raw.deadlocks,
+    // A turn of the event loop, from a timer, as the libSQL fixture's is. Every batch here
+    // crosses a socket and gives the loop its turns already, so a case that asks for one
+    // is not saved by it on this dialect: the member is the contract's, and is real.
+    turn: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
     lockWait: async () => ({
       store,
       raw,
