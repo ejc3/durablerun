@@ -7115,7 +7115,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     `purge-admission`. The read is built from the functions the compare-and-set is built
     from, and on every dialect the barrier grid holds it in each of its 780 cells against
     the oracle's own reading of each condition.
-  - What the branch's own checks found, each before the code it was about was committed.
+  - What the branch's own checks found, each before any reader of the branch did.
     The first run of the new read was refused by the statement grammar: a read may not
     compare a state with a bound value, and two conditions of the barrier bound the live
     states. Both now write those states into the statement's text, in the compare-and-set
@@ -7126,7 +7126,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     main's: the handler repeated a line of `stuck` that a registered mutation finds by its
     text, and the change to what `retry` says of a task that is not there moved the lines
     another finds. A purge's limit is now read beside its windows, and that second
-    mutation is re-aimed.
+    mutation is re-aimed. The first whole mutation audit of the branch then caught 1466 of
+    1468 mutations by their own verdicts, and two of the branch's new mutants failed on
+    another path: one did not build, and one also stopped the count a purge holds its
+    limit by. Both are rewritten, and each was seen failing by its own marker. Last, a
+    measurement that issue 105 asked for found that a week on libSQL gives the event
+    loop no turn, a pending timer firing once in 8 to 13 seconds. The week now asks its
+    fixture for a turn at each simulated day, through an optional member of the fixture
+    contract that the libSQL fixture alone implements, and a case that was seen failing
+    first holds it.
   - Corrections of the plan, each as built. Line 43 asked for purged rows above zero in
     every counted table, and for the control to exceed the bound three times in each. Every
     batch that ends or parks a run deletes that run's waits, so an ended unit holds none

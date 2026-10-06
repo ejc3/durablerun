@@ -7168,7 +7168,17 @@ names its tasks by the hour they arrived in. Each hold is shown failing, on libS
 week that does what the hold forbids (`conformance/test/retention-soak-reds.test.ts`): a
 purge that deletes nothing, a policy that lets nothing go, a purge that reads a shorter
 age than the policy names, a driver stopped for a simulated day, and a store that leaves a
-wait behind when it ends a run.
+wait behind when it ends a run. The week under a policy that lets nothing go keeps no unit
+by its parent and none by a held outcome, so it is the control of those two counts as well.
+
+A week runs inside one fixture, and on libSQL none of its batches lets the event loop
+turn: measured, a pending timer fired once in a week that ran for 8 to 13 seconds. A test
+worker whose loop does not turn for a minute fails its run with every test passing. So the
+week asks its fixture for a turn at each simulated day. The member of the fixture contract
+it asks through, `turn`, is optional: the libSQL fixture resumes from a zero-delay timer,
+and the two server fixtures leave it out, because every batch of theirs crosses a socket.
+A case on libSQL holds that a timer armed to fire again and again fires at least once in
+each of the nine days the passes run for.
 
 The bound is over the units the policy lets go. It excludes what no purge takes: a live
 task, whatever its age; a caller's event, which no purge deletes; a failed task under a

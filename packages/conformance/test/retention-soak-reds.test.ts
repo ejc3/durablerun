@@ -136,6 +136,9 @@ describe('each hold of the simulated week can fail', () => {
         outcomeMismatches: report.outcomeMismatches,
         notAsAssigned: report.notAsAssigned,
         purgedUnits: report.purgedUnits,
+        keptByAParent: report.keptByParent,
+        keptByAHeldOutcome: report.keptByCarry,
+        keptByAge: report.keptByAge,
       }).toEqual({
         vacuous: ['controlOverTheBound', 'controlOverThePurgedWeek'].flatMap((which) =>
           ENDED_UNIT_TABLES.map((table) => `${which} is 1 for ${table}`),
@@ -145,6 +148,12 @@ describe('each hold of the simulated week can fail', () => {
         outcomeMismatches: [],
         notAsAssigned: [],
         purgedUnits: 0,
+        // No unit is ever a window old, so a parent or a held outcome is never what keeps
+        // one: the clean week's counts of 62 and 33 are both nothing here, and every unit
+        // is kept by its age, as in the clean week.
+        keptByAParent: 0,
+        keptByAHeldOutcome: 0,
+        keptByAge: 253,
       })
     },
     SOAK_TIMEOUT_MS,
