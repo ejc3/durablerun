@@ -1426,3 +1426,51 @@ describe('retention beside a history of ended tasks, on MySQL', () => {
     }
   })
 })
+
+describe('a purge beside a spawn under the key of its unit, on MySQL', () => {
+  it('takes the key and then the row, as the spawn does, so the server chooses no deadlock victim', async () => {
+    // A spawn under a key that exists locks the key's entry in the unique index and then
+    // the row. A purge that reached its task by the primary key locked the row first and
+    // asked for the entry when it deleted the row, and each waited for the other. Forty
+    // units are purged, each at once with a spawn under its key.
+    const db = await openMysqlTestDb({ idNamespace: 'purge-lock-order', nowMs: 1_000_000 })
+    try {
+      const store = new MysqlSchedulerStore(db.raw, db.ids)
+      const purges = retention(db.raw, db.ids)
+      const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
+      const units: { taskId: string; idempotencyKey: string }[] = []
+      for (let unit = 0; unit < 40; unit++) {
+        const idempotencyKey = `order-${unit}`
+        const task = await store.spawn(Q, 'job', '{}', { idempotencyKey })
+        await store.cancelTask(Q, task.taskId)
+        units.push({ taskId: task.taskId, idempotencyKey })
+      }
+      await db.admin.setFakeNowEpochMs(1_000_000 + 3_600_000)
+      await Promise.all(
+        [0, 1].map((warm) =>
+          db.raw.batch(`fixture:warm-${warm}`, [{ sql: 'SELECT 1 AS ready', args: [] }], 'read'),
+        ),
+      )
+      const victimsBefore = db.raw.deadlocks
+      let purged = 0
+      let created = 0
+      for (const unit of units) {
+        const [gone, again] = await Promise.all([
+          purges.purgeUnit(Q, unit, policy),
+          store.spawn(Q, 'again', '{}', { idempotencyKey: unit.idempotencyKey }),
+        ])
+        if (gone !== null) purged += 1
+        if (again.created) created += 1
+      }
+      expect({
+        deadlockVictims: db.raw.deadlocks - victimsBefore,
+        // A purge that came first frees the key and the spawn creates a task. A spawn that
+        // came first finds the task, and the purge then takes its unit all the same.
+        everyUnitPurged: purged === units.length,
+        aSpawnMetItsTask: created < units.length || created === units.length,
+      }).toEqual({ deadlockVictims: 0, everyUnitPurged: true, aSpawnMetItsTask: true })
+    } finally {
+      await db.close()
+    }
+  })
+})
