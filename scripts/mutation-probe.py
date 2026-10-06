@@ -21857,8 +21857,8 @@ MUTATION_SPECS.extend(
             "purge-admission-reads-each-condition-as-its-own-flag",
             "packages/core/src/statements/purge.ts",
             "          .when(holds(ofTheTask, binds))\n",
-            "          .when(PURGE_BARRIER.endedAWindowAgo(ofTheTask, binds))\n",
-            "the read of the barrier answers every condition by the flag of the age, so a unit its parent keeps reads as one nothing keeps",
+            "          .when(ofTheTask.and([holds(ofTheTask, binds), PURGE_BARRIER.endedAWindowAgo(ofTheTask, binds)]))\n",
+            "the read of the barrier answers each condition only where the age holds too, so a unit under a longer window reads as kept by every condition",
         ),
     )
 )
@@ -21970,8 +21970,8 @@ MUTATION_SPECS.extend(
             "cli-purge-prints-exactly-the-units-that-went",
             "packages/cli/src/main.ts",
             "            taken.push({ ...unitView(candidate), rows: purged.rows })\n",
-            "",
-            "purge deletes a unit and prints nothing of it",
+            "            taken.push(unitView(candidate))\n",
+            "purge deletes a unit and prints it without the rows that went",
         ),
         (
             "cli-purge-is-the-retention-port-over-a-walk",
