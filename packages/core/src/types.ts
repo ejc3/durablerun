@@ -746,9 +746,10 @@ export interface PurgeCandidates {
  * The conditions of the barrier (DESIGN.md §3.12), by name, in the order the purge's
  * compare-and-set holds them. A purge takes a unit only when every one holds. The first
  * five are the model's B1 to B5, B1 as two, and the last three hold the unit to what the
- * batch then deletes.
+ * batch then deletes. The list is frozen: the port's read of the barrier and its callers
+ * iterate it at call time, and a list an importer could empty would say nothing keeps a unit.
  */
-export const PURGE_BARRIER_CONDITIONS = [
+export const PURGE_BARRIER_CONDITIONS = Object.freeze([
   'endedAWindowAgo',
   'stampInRange',
   'noLiveRun',
@@ -758,7 +759,7 @@ export const PURGE_BARRIER_CONDITIONS = [
   'spawnedUnderThisKey',
   'ownsEveryRun',
   'withinTheCheckpointCap',
-] as const
+] as const)
 export type PurgeBarrierCondition = (typeof PURGE_BARRIER_CONDITIONS)[number]
 
 /**
