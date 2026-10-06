@@ -72,7 +72,7 @@ describe('the entry of core, asked for a purge the port refuses', () => {
         won = (await batch.run(raw)).won
       }
 
-      const one = async (sql: string, args: unknown[]) =>
+      const one = async (sql: string, args: string[]) =>
         (await raw.batch('what-is-left', [{ sql, args }], 'read'))[0]?.rows[0]
       const replayed = await store.spawn('q', 'child', '{}', { childOf })
       expect({
