@@ -7102,6 +7102,56 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (the entry of PR5.2c1), because the new batch ends no task. The remedy for a cycle of
     runs that hold each other's outcomes (the entry of PR5.2a) stays an option: its
     trigger is a unit seen kept that way, and no purge has run over a live history.
+- **PR5.2d the purge verb and the simulated week**: DONE. Exit test line 43 of the
+  operable alpha milestone, and the first command by which an operator deletes durable
+  state. `pnpm cli purge` is the retention port's calls and nothing else: a dry run unless
+  `--execute`, with two required windows and no default, the store named again with
+  `--target`, and refusals of a schema version that is not the build's and of a database
+  whose test clock is set. The `retention-soak` surface runs a simulated week of 168 hourly
+  arrivals under an hourly purge, beside the same week with none, on the three dialects.
+  DESIGN.md sections 3.11 and 3.12 hold both, with what each test holds.
+  - The retention port gained a third method, `purgeAdmission`, for the reasons a dry run
+    gives: what each of the barrier's nine conditions says of one unit, in the read batch
+    `purge-admission`. The read is built from the functions the compare-and-set is built
+    from, and on every dialect the barrier grid holds it in each of its 780 cells against
+    the oracle's own reading of each condition.
+  - What the branch's own checks found, each before the code it was about was committed.
+    The first run of the new read was refused by the statement grammar: a read may not
+    compare a state with a bound value, and two conditions of the barrier bound the live
+    states. Both now write those states into the statement's text, in the compare-and-set
+    as in the read, so the SQL of `purge-unit` changed, its corpus entries were
+    regenerated, PostgreSQL reaches the same rows through the same indexes with fewer
+    binds, and the three registered mutations that quote those lines were re-aimed. The
+    registry's self-test then refused the verb as it was first written, for two entries of
+    main's: the handler repeated a line of `stuck` that a registered mutation finds by its
+    text, and the change to what `retry` says of a task that is not there moved the lines
+    another finds. A purge's limit is now read beside its windows, and that second
+    mutation is re-aimed.
+  - Corrections of the plan, each as built. Line 43 asked for purged rows above zero in
+    every counted table, and for the control to exceed the bound three times in each. Every
+    batch that ends or parks a run deletes that run's waits, so an ended unit holds none
+    and the control's waits do not grow with the week: the floor and the vacuity check
+    range over tasks, runs, checkpoints and completion events, and for waits the week
+    holds that none outlives its run. The vacuity check is two ratios, the control over the
+    bound and the control over what the purged week holds, because a bound built from the
+    model does not move when the purge deletes nothing. `purge` takes no `--yes`:
+    `--execute` is its one confirmation, and the receipt paragraph writes the command so.
+    Line 44's bound named the failed units a dry-run purge reports kept, and a dry run
+    lists a failed unit only under a failed window, so that clause is reworded. The option
+    for `inspect --key` in one batch is settled where it stands, in the entry of PR5.3b1.
+  - Option for a cursor an operator hands back, not built, with its trigger: `purge --after
+    <cursor>`, with the place a walk stopped printed in its answer. One invocation walks
+    every candidate from the oldest, and a candidate the barrier keeps costs a purge batch
+    and a read on every invocation for as long as it is kept. Trigger: a queue on which
+    `purge` reports more kept units than purged ones on two runs in a row, or a run an
+    operator reports as slow for that reason.
+  - Option for a read of the test clock's flag alone, not built, with its trigger: `purge`
+    reads `queueStatus` for one fact, whether the test clock is set, and that read counts a
+    queue's runs and tasks up to its caps. Trigger: a second command that needs the flag
+    and nothing else of the queue, or a `purge` whose time is measured to be that read's.
+  - The registry holds 1468 mutations where main held 1448: three caught by cases of the
+    simulated week, one by the case of the barrier read, fifteen by cases of the verb, and
+    one by the case of a read by key whose task is gone between its two reads.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
