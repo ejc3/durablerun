@@ -265,12 +265,15 @@ export function refuseReservedIdempotencyKey(operation: string, key: string): vo
 
 /**
  * Send a spawn's batch, and once more when its insert lost and no task explains it
- * (DESIGN.md §3.12). `send` is one send of the batch, under ids of its own, and answers
- * null for that loss. A purge can take the task that holds a key between the batch's
- * insert and its read of the holder: the insert loses to a task that is gone by the read,
- * which then finds nothing. The key is free by then, so the batch is sent once more. A
- * second loss that no task explains is real, and is thrown. Every dialect sends through
- * here, so none sends a third time and none gives up after one.
+ * (DESIGN.md §3.12). `send` is one send of the batch and answers null for that loss. A
+ * purge can take the task that holds a key between the batch's insert and its read of the
+ * holder: the insert loses to a task that is gone by the read, which then finds nothing.
+ * The key is free by then, so the batch is sent once more. A second loss that no task
+ * explains is real, and is thrown. Both sends are one spawn: a store mints the task's id
+ * and the run's once, and the second send takes the ids the first left unused. So a loss
+ * that is no purge's doing, an id that something else already holds, loses again and is
+ * thrown, as it was before anything deleted a task. Every dialect sends through here, so
+ * none sends a third time and none gives up after one.
  */
 export async function spawnSendingOnceMore(
   send: () => Promise<SpawnResult | null>,
