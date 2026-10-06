@@ -792,33 +792,70 @@ accepts it.
     port, the batch, the cap's measurement and each property's twin.
 43. PR5.2d: table size stays bounded over a simulated week, and can fail. A
     `retention-soak` surface runs on the three dialects through the one
-    enrollment door. It takes 168 hourly arrivals of a seeded mix: plain tasks;
-    a parent with an awaited child that completes; a parent that fails after its
-    child's completion woke it, which blocks the child's unit by parent and by
-    carry until the parent's own 48-hour window; a parent that sleeps past its
-    child's window, which blocks by parent; a failed task later retried; and a
-    cancelled task. A purge pass runs every simulated hour under windows of 12
-    hours completed, 12 cancelled and 48 failed, with fake now moved to
-    `nextWakeAtEpochMs`. A control run of the same seed with retention off gives
-    exact rows per unit. At each day boundary after hour 48, every counted table
-    (tasks, runs, checkpoints, waits, and events named `$task-done:`, read by
-    `sizes --queue`) is at most the bound built from the control's rows for the
-    units the policy still holds, plus one pass of lag. The control must exceed
-    that bound by at least three times by day 7, or the line fails as vacuous.
-    Outcomes sampled before each purge equal the control's, each pass's purged
-    set equals the oracle's set, and `engineHistoryViolations` is empty each
-    simulated day. Floors, measured and recorded in the PR: purged units above
-    zero for every table class; blocked-by-parent, blocked-by-carry and
-    blocked-by-age each above zero, reached by the cells named above; and all
-    168 arrivals at the terminal state their seed assigns, by the database
-    clock. The `purge` verb is a dry run unless `--execute`, refuses under an
-    active fake clock, refuses windows under 3,600 seconds, and for each unit
-    removed prints the task id, name, state, terminal instant, the idempotency
-    key's sha256, and rows per table. After a purge, `retry` of a purged failed
-    task answers `not-found` and says the task may have been retained out. Red:
-    a purge that deletes nothing fails the bound and the vacuity check, one that
-    drops the age conjunct fails set equality, and a driver stopped for a
-    simulated day fails the completion floor. NOT MET.
+    enrollment door. It takes 168 hourly arrivals of a seeded mix: plain tasks
+    of the shape of one period of a recurring workflow; a parent with an awaited
+    child that completes; a parent that fails after its child's completion woke
+    it, which blocks the child's unit by parent and by carry until the parent's
+    own 48-hour window; a parent that sleeps past its child's window, which
+    blocks by parent; a failed task later retried; and a cancelled task. A purge
+    pass runs every simulated hour under windows of 12 hours completed, 12
+    cancelled and 48 failed, with fake now moved to `nextWakeAtEpochMs`. A
+    control run of the same seed with retention off gives exact rows per unit.
+    At each day boundary after hour 48, every counted table (tasks, runs,
+    checkpoints, waits, and events named `$task-done:`, read through the read
+    `sizes --queue` prints) is at most the bound built from the control's rows
+    for the units the model still holds, plus one pass of lag. The bound must be
+    no empty claim, or the line fails as vacuous: at the end of day 7 the
+    control exceeds the bound by at least three times, and exceeds what the
+    purged week holds by at least three times, in each of the four tables an
+    ended unit holds rows in, which are tasks, runs, checkpoints and completion
+    events. Waits are not among them. Every batch that ends or parks a run
+    deletes that run's waits, so an ended unit holds none, the control's waits
+    do not grow with the week, and no purge of a correct store takes one. For
+    waits the surface holds what is true and can fail: every wait read belongs
+    to a live run, and no purged unit held one. Outcomes sampled before each
+    purge equal the control's, each pass's purged set equals the oracle's set,
+    applied until it lets nothing more go, and `engineHistoryViolations` is
+    empty each simulated day. Floors, measured and recorded in the PR: purged
+    rows above zero for each of those four tables; blocked-by-parent,
+    blocked-by-carry and blocked-by-age each above zero, reached by the cells
+    named above; and all 168 arrivals at the terminal state their seed assigns,
+    at the instant it assigns, by the database clock. The `purge` verb is a dry
+    run unless `--execute`, refuses under an active fake clock, refuses windows
+    under 3,600 seconds, and for each unit removed prints the task id, name,
+    state, terminal instant, the idempotency key's sha256, and rows per table,
+    waits included. After a purge, `retry` of a purged failed task answers
+    `not-found` and says the task may have been retained out. Red: a purge that
+    deletes nothing fails the bound and the vacuity check, one that drops the
+    age conjunct fails set equality, and a driver stopped for a simulated day
+    fails the completion floor. This is met. `retentionSoakConformance`
+    (`conformance/src/retention-soak.ts`) runs as the `retention-soak` surface
+    on the three dialects, eleven cases under `the simulated week`, with the
+    same numbers on each: the seed draws 23, 23, 33, 29, 26 and 34 arrivals of
+    the six kinds, which make 253 tasks; 131 passes purge 253 units, and after
+    the last window the queue holds nothing; the purges take 253 task rows, 279
+    runs, 447 checkpoints, 253 completion events and no wait; 62 units are kept
+    by their parent, 29 of them by their parent alone and 33 by a held outcome
+    as well, and all 253 by their age; at the end of day 7 the purged week holds
+    43 tasks, 44 runs, 74 checkpoints and 39 completion events, which is the
+    bound, where the control holds 253, 278, 443 and 249, so both ratios are
+    5.8, 6.3, 5.9 and 6.3; 5,790 sampled outcomes equal the control's; and a
+    unit of the first kind holds one task, one run, two checkpoints, no wait and
+    one completion event, the rows per unit line 44 uses. Both weeks together
+    took 22 seconds on libSQL, 39 on PostgreSQL and 22 on MySQL on a loaded
+    machine, under a limit of 600. Seen failing by name on libSQL, each as a
+    case of `each hold of the simulated week can fail`
+    (`conformance/test/retention-soak-reds.test.ts`): a purge that deletes
+    nothing is over the bound in every table at every day boundary and fails
+    the vacuity check by its second ratio, a policy that lets nothing go fails
+    the vacuity check alone, a purge that reads a shorter age takes units the
+    model keeps, a driver stopped from hour 96 to hour 120 leaves 40 of the 253
+    tasks ending otherwise than assigned, and a store that leaves a wait behind
+    at an ending is named. With the age conjunct dropped in core, six of the
+    eleven cases fail, the case of the passes among them, and that mutation and
+    two that delete nothing are registered against three of the cases. The verb
+    is held by `cli/test/purge.test.ts` and `cli/test/purge-twin.test.ts`:
+    DESIGN.md section 3.11 says what each holds.
 44. PR5.4: the recurring workflow, alpha.1 in the loop, and the receipt checker.
     A `periodic-digest` task registered in examples/vercel-turso/src/tasks.ts
     runs one task per period under the idempotency key `digest-<period>`, makes
@@ -856,7 +893,9 @@ accepts it.
     a receipt with no selftest record. The bound for each counted table is the
     start sample's count, plus (the completed window in hours plus 25) times the
     rows per digest unit that line 43's soak measured for this task's shape,
-    plus the rows of the failed units the dry-run purge reports kept. A period
+    plus the rows of the failed units, which a policy with no failed window
+    keeps: a dry-run purge lists a failed unit only under a failed window, so
+    the receipt's dry run names one, and it writes nothing. A period
     counts as found from the union of the per-day `purge --execute` reports,
     which carry each removed unit's key sha256, and live `taskIdByKey` lookups,
     and a fixture that drops one day's purge report fails the period count. Red:
@@ -869,7 +908,7 @@ branch or snapshot of the production database, and its output goes in the
 receipt. An external cron runs `pnpm cli enqueue periodic-digest --key
 digest-<period> --queue digest --target <host>` hourly, on a queue of its own
 that the redeployed host drives, and `pnpm cli purge --queue digest --target
-<host> --completed-after <window> --cancelled-after <window> --execute --yes`
+<host> --completed-after <window> --cancelled-after <window> --execute`
 runs at least daily with the windows of the maintainer's policy. `stats --json
 --queue digest` and `sizes --json --queue digest` are recorded at the start,
 once a day and at the end, each at or below line 44's bound. A second person

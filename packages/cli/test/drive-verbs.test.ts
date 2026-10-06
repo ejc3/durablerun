@@ -129,9 +129,15 @@ const CAUSE_NAMED: Readonly<Record<RetryGuardConjunct, string>> = {
 
 describe('the drive verbs on libSQL', () => {
   it('are the commands of the table that write through a store, and each requires --target and --queue', () => {
+    // `migrate` writes the schema and `purge` deletes through the retention port. Each has
+    // cases of its own, and every other command that writes is a drive verb.
     expect(
       VERBS.filter(
-        (verb) => COMMANDS[verb].opensStore && COMMANDS[verb].writes && verb !== 'migrate',
+        (verb) =>
+          COMMANDS[verb].opensStore &&
+          COMMANDS[verb].writes &&
+          verb !== 'migrate' &&
+          verb !== 'purge',
       ),
     ).toEqual(WRITE_VERBS)
     for (const verb of WRITE_VERBS) {

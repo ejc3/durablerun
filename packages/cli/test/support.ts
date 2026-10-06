@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import {
   type Clock,
   type IdSource,
+  type Retention,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   type SchedulerStore,
@@ -19,14 +20,23 @@ import {
   LibsqlExecutor,
   LibsqlSchedulerStore,
   LibsqlStoreAdmin,
+  READABLE_SCHEMA_WINDOW,
+  SCHEMA_VERSION_NOTES,
+  operatorReads,
+  retention,
 } from '@durablerun/store-libsql'
 import {
   META_BOOTSTRAP_SQL,
   MIGRATIONS as MYSQL_MIGRATIONS,
   MysqlSchedulerStore,
+  retention as mysqlRetention,
 } from '@durablerun/store-mysql'
 import { openMysqlTestDb } from '@durablerun/store-mysql/testing'
-import { PostgresSchedulerStore, PostgresStoreAdmin } from '@durablerun/store-postgres'
+import {
+  PostgresSchedulerStore,
+  PostgresStoreAdmin,
+  retention as postgresRetention,
+} from '@durablerun/store-postgres'
 import { openPostgresTestDb } from '@durablerun/store-postgres/testing'
 import {
   type EnrolledDialect,
@@ -111,6 +121,8 @@ export interface CliDb {
   readonly store: SchedulerStore
   /** The current store over `raw` with the ids handed in, for a port call a test makes beside the CLI's. */
   storeWith(ids: IdSource): SchedulerStore
+  /** The store's retention port over `raw` with the ids handed in, for a purge a test makes beside the CLI's. */
+  retentionWith(ids: IdSource): Retention
   /** Every table and schema object, as one comparable text. */
   dump(): Promise<string>
   /** Record a schema version as a newer build that migrated would, after seeding. */
@@ -190,6 +202,7 @@ export async function openCliDb(
       admin: make(raw),
       store: new LibsqlSchedulerStore(raw, ids),
       storeWith: (other) => new LibsqlSchedulerStore(raw, other),
+      retentionWith: (other) => retention(raw, other),
       dump: () => dumpOf(dialect, raw),
       recordNewer: () => recordNewer(dialect, raw),
       close: async () => {
@@ -214,6 +227,7 @@ export async function openCliDb(
         admin: db.admin,
         store: new PostgresSchedulerStore(db.raw, ids),
         storeWith: (other) => new PostgresSchedulerStore(db.raw, other),
+        retentionWith: (other) => postgresRetention(db.raw, other),
         dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
         close: db.close,
@@ -237,6 +251,7 @@ export async function openCliDb(
       admin: db.admin,
       store: new MysqlSchedulerStore(db.raw, ids),
       storeWith: (other) => new MysqlSchedulerStore(db.raw, other),
+      retentionWith: (other) => mysqlRetention(db.raw, other),
       dump: () => dumpOf(dialect, db.raw),
       recordNewer: () => recordNewer('mysql', db.raw),
       close: db.close,
@@ -411,6 +426,23 @@ export function openerWrapping(wrap: (executor: SqlExecutor) => SqlExecutor): St
   return (url, token, ids, options = {}) =>
     openStore(url, token, ids, { ...options, wrapExecutor: wrap })
 }
+
+/**
+ * A store opener over a libSQL database a test already holds, so `main` drives the state
+ * another harness left there: every port is the store package's own, over that executor.
+ */
+export const openerOver =
+  (db: { readonly raw: SqlExecutor; readonly admin: StoreAdmin }): StoreOpener =>
+  async (_url, _token, ids: IdSource) => ({
+    scheme: 'file:',
+    window: READABLE_SCHEMA_WINDOW,
+    notes: SCHEMA_VERSION_NOTES,
+    admin: db.admin,
+    scheduler: new LibsqlSchedulerStore(db.raw, ids),
+    operator: operatorReads(db.raw),
+    retention: retention(db.raw, ids),
+    close: async () => undefined,
+  })
 
 /** Where a fault meets a batch: the label, and which of its sendings, counted from one. */
 export interface FaultSite {
@@ -650,6 +682,7 @@ export function commandLine(
     if (name === 'queue') line.push('--queue', QUEUE)
     else if (name === 'target') line.push('--target', db.target)
     else if (name === 'key') line.push('--key', TABLE_KEY)
+    else if (name === 'completed-after' || name === 'cancelled-after') line.push(`--${name}`, '1h')
     else throw new Error(`no test value for the flag --${name} of ${spec.verb}`)
   }
   if (Object.hasOwn(spec.flags, 'yes')) line.push('--yes')

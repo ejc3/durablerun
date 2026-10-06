@@ -5,6 +5,7 @@ import {
   MAX_RUN_ORDINAL,
   OPERATOR_LIST_CAP,
   PermanentStoreError,
+  type PurgeCursor,
   SchemaMismatchError,
   SchemaNotInitializedError,
   type SpawnResult,
@@ -74,6 +75,7 @@ import {
   openStore,
   storeTarget,
 } from './open-store.js'
+import { keptView, letsGo, limitOf, policyOf, policyView, unitOf, unitView } from './purge.js'
 import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 import { userValue } from './render.js'
@@ -302,6 +304,7 @@ function help(json: boolean): Answer {
       'The store is DURABLERUN_STORE_URL, with DURABLERUN_STORE_TOKEN for a libSQL server.',
       'tick opens no store: it posts to the origin of DURABLERUN_BASE_URL, with DURABLERUN_TICK_TOKEN.',
       'A write names its store again with --target, and emit, cancel and retry change nothing without --yes.',
+      'purge deletes nothing without --execute.',
       'Values users wrote print as their length and sha256 unless --reveal.',
       '',
       'exit codes:',
@@ -540,6 +543,18 @@ function notFound(view: Record<string, unknown>, message: string): Answer {
 /** The answer for a task id the queue holds no task under. A task id prints. */
 function noSuchTask(queue: string, taskId: string): Answer {
   return notFound({ queue, taskId }, `no task ${taskId} in queue ${queue}`)
+}
+
+/**
+ * The same answer from `retry`, which names a task that failed: a failed task that is not
+ * there may have been purged, and the answer says so. No row says which, because a purge
+ * leaves nothing of a unit behind.
+ */
+function noTaskToRevive(queue: string, taskId: string): Answer {
+  return notFound(
+    { queue, taskId },
+    `no task ${taskId} in queue ${queue}: it was never there, or it ended and a purge retained it out`,
+  )
 }
 
 /**
@@ -1059,7 +1074,7 @@ const retry: Handler = async (context) => {
     stateBefore: before === null ? null : stateView(before.state, reveal),
   }
   if (invocation.booleans.yes !== true) {
-    if (before === null) return noSuchTask(queue, taskId)
+    if (before === null) return noTaskToRevive(queue, taskId)
     const forecast = retryForecast(taskId, before)
     return notConfirmed({ ...named, ...forecast.view }, forecast.message)
   }
@@ -1071,7 +1086,7 @@ const retry: Handler = async (context) => {
     }
   }
   const admission = await store.operator.taskAdmission(queue, taskId)
-  if (admission === null) return noSuchTask(queue, taskId)
+  if (admission === null) return noTaskToRevive(queue, taskId)
   const liveRun = liveRunOf(admission)
   if (liveRun !== undefined) {
     return {
@@ -1128,6 +1143,136 @@ const sweep: Handler = async (context) => {
       // Each transition is a kind and the ids it names. None is a value a user wrote.
       transitions: swept,
       nextWakeAtEpochMs: await scheduler.nextWakeAtEpochMs(queue),
+    },
+  }
+}
+
+/**
+ * Purge the units of a queue's ended tasks that are older than the windows named. It is
+ * the store's retention port and nothing else: the candidates are listed by
+ * `purgeCandidates`, each unit goes by `purgeUnit`, whose compare-and-set holds the whole
+ * barrier at the instant of deletion, and the command builds no statement of its own.
+ *
+ * Without `--execute` it is a dry run that sends only reads: each candidate is listed with
+ * what the barrier says of it as of that read (`purgeAdmission`), and nothing is deleted.
+ * With it, each candidate's purge is sent. A unit the port answers kept is not a failure:
+ * what keeps it is then read, and it is listed as kept, or as gone when no task is there at
+ * that read, which is a unit another purge took or this call delivered twice.
+ *
+ * The walk follows the port's cursor past the units the barrier keeps, so a queue whose
+ * oldest candidates are all kept still purges what stands behind them, and it ends once
+ * `--limit` units went, or would go. `more` says candidates were left unread.
+ *
+ * It refuses, before any candidate is read, a schema version that is not the build's, whose
+ * indexes the purge's statements read, and a database whose test clock is set, because a
+ * unit's age is read against database time. When the store fails partway, the units that
+ * went are printed all the same, on stdout, and the exit is the failure's: the answers
+ * already given stand, and running the command again purges what is left.
+ */
+const purge: Handler = async (context) => {
+  const { invocation, store, reveal } = context
+  const { strings, booleans } = invocation
+  const asked = policyOf(strings)
+  if ('refused' in asked) return flagRefused(asked.refused)
+  const { policy } = asked
+  const bound = limitOf(strings.limit)
+  if ('refused' in bound) return flagRefused(bound.refused)
+  const { limit } = bound
+  const queue = strings.queue ?? ''
+  const execute = booleans.execute === true
+  const named = { queue, execute, policy: policyView(policy), limit }
+  const recorded = await store.admin.schemaVersion()
+  if (recorded !== store.window.newest) {
+    const message =
+      windowProblem(recorded, store.window) ??
+      `the schema is recorded at version ${recorded}, and a purge needs version ${store.window.newest}, the build's, whose indexes its statements read: migrate it first`
+    return {
+      exit: 'schema',
+      view: { ...named, recordedSchemaVersion: recorded, error: { kind: 'schema', message } },
+    }
+  }
+  const status = await store.operator.queueStatus(queue)
+  if (status.fakeClock) {
+    return {
+      exit: 'usage',
+      view: {
+        ...named,
+        error: {
+          kind: 'fake-clock',
+          message:
+            "the database's test clock is set, and a purge reads every unit's age against database time: nothing is purged under a test clock. Nothing was changed",
+        },
+      },
+    }
+  }
+  const taken: Record<string, unknown>[] = []
+  const kept: Record<string, unknown>[] = []
+  const gone: Record<string, unknown>[] = []
+  let more = false
+  /** The call the walk is in, and the task it is for, so a failure says where it stopped. */
+  let asking: { readonly call: string; readonly taskId?: string } = { call: 'purge-candidates' }
+  const report = () => ({
+    ...named,
+    [execute ? 'purged' : 'wouldPurge']: taken,
+    kept,
+    gone,
+    more,
+  })
+  try {
+    let after: PurgeCursor | null = null
+    walk: for (;;) {
+      asking = { call: 'purge-candidates' }
+      const page = await store.retention.purgeCandidates(queue, policy, {
+        limit,
+        ...(after === null ? {} : { after }),
+      })
+      for (const candidate of page.candidates) {
+        if (taken.length === limit) {
+          more = true
+          break walk
+        }
+        const unit = unitOf(candidate)
+        if (execute) {
+          asking = { call: 'purge-unit', taskId: candidate.taskId }
+          const purged = await store.retention.purgeUnit(queue, unit, policy)
+          if (purged !== null) {
+            taken.push({ ...unitView(candidate), rows: purged.rows })
+            continue
+          }
+        }
+        asking = { call: 'purge-admission', taskId: candidate.taskId }
+        const admission = await store.retention.purgeAdmission(queue, unit, policy)
+        if (admission === null) gone.push(unitView(candidate))
+        else if (!execute && letsGo(admission)) taken.push(unitView(candidate))
+        else kept.push(keptView(candidate, admission))
+      }
+      if (page.next === null) break
+      after = page.next
+    }
+  } catch (error) {
+    const failed = failure(error, reveal)
+    return {
+      exit: failed.exit,
+      holdsFacts: true,
+      view: {
+        ...report(),
+        finished: false,
+        stoppedAt: asking,
+        ...failed.view,
+      },
+    }
+  }
+  return {
+    exit: 'done',
+    view: {
+      ...report(),
+      finished: true,
+      ...(execute
+        ? {}
+        : {
+            dryRun:
+              'nothing was deleted. Each verdict is as of this read: a purge reads every condition again, inside the statement that deletes',
+          }),
     },
   }
 }
@@ -1243,4 +1388,5 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help' | 'tick'>, Handler>> = Obje
   cancel,
   retry,
   sweep,
+  purge,
 })

@@ -20392,8 +20392,8 @@ MUTATION_SPECS.extend(
         (
             "cli-retry-changes-nothing-without-yes",
             "packages/cli/src/main.ts",
-            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noSuchTask(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
-            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noSuchTask(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
+            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noTaskToRevive(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
+            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noTaskToRevive(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
             "retry revives a failed task with no confirmation",
         ),
         (
@@ -21870,6 +21870,213 @@ VERDICTS["purge-admission-reads-each-condition-as-its-own-flag"] = ExpectedVerdi
     "packages/conformance/src/retention-purge.ts",
 )
 
+# The purge verb of the operator CLI (DESIGN.md §3.11, BUILD.md exit test line 43): what it
+# must not do, each refusal and the dry run, and that it is the retention port's calls and
+# nothing else.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-purge-deletes-nothing-without-execute",
+            "packages/cli/src/main.ts",
+            "        if (execute) {\n",
+            "        if (!execute) {\n",
+            "a dry run sends the purge of every candidate, and a purge with --execute sends none",
+        ),
+        (
+            "cli-purge-prints-a-key-only-as-its-digest",
+            "packages/cli/src/purge.ts",
+            "        : userValue(candidate.idempotencyKey, false).sha256,\n",
+            "        : candidate.idempotencyKey,\n",
+            "a purge prints the idempotency key of a unit as it is, in a report that is kept",
+        ),
+        (
+            "cli-purge-refuses-under-a-test-clock",
+            "packages/cli/src/main.ts",
+            "  if (status.fakeClock) {\n",
+            "  if (status.fakeClock && queue === undefined) {\n",
+            "purge does not refuse under a test clock, and takes every unit that is a window old by that clock",
+        ),
+        (
+            "cli-purge-refuses-a-schema-that-is-not-the-builds",
+            "packages/cli/src/main.ts",
+            "  if (recorded !== store.window.newest) {\n",
+            "  if (windowProblem(recorded, store.window) !== null) {\n",
+            "purge takes a database at any version its store's reads accept, and deletes on a schema that lacks the indexes its statements read",
+        ),
+        (
+            "cli-purge-names-its-store",
+            "packages/cli/src/commands.ts",
+            "    writes: true,\n    repeat: 'settles',\n    // The queue's status is read for one fact",
+            "    writes: false,\n    repeat: 'settles',\n    // The queue's status is read for one fact",
+            "purge is not held to name its store again, and a --target that names another store purges this one",
+        ),
+        (
+            "cli-purge-refuses-a-window-under-the-floor",
+            "packages/cli/src/purge.ts",
+            "    if (seconds < MIN_RETENTION_SECONDS) {\n",
+            "    if (seconds < 0) {\n",
+            "the command hands a window under an hour to the port, and the refusal comes after its reads were sent, as the engine's and not as a usage error",
+        ),
+        (
+            "cli-purge-holds-its-limit",
+            "packages/cli/src/purge.ts",
+            "  if (text === undefined) return { limit: PURGE_DEFAULT_LIMIT }\n",
+            "  if (text !== undefined) return { limit: PURGE_DEFAULT_LIMIT }\n",
+            "purge ignores --limit and takes up to its default",
+        ),
+        (
+            "cli-purge-walks-past-the-units-the-barrier-keeps",
+            "packages/cli/src/main.ts",
+            "      if (page.next === null) break\n",
+            "      break\n",
+            "purge reads one page of candidates and stops, so a queue whose oldest candidates are all kept is never purged",
+        ),
+        (
+            "cli-purge-stops-at-its-limit-inside-a-page",
+            "packages/cli/src/main.ts",
+            "        if (taken.length === limit) {\n          more = true\n          break walk\n        }\n",
+            "",
+            "purge takes every candidate of the page it is in after its limit is reached",
+        ),
+        (
+            "cli-purge-names-the-condition-that-keeps-a-unit",
+            "packages/cli/src/purge.ts",
+            "  parentCannotRunAgain: 'parent-can-run-again',\n",
+            "  parentCannotRunAgain: 'outcome-held',\n",
+            "a unit its parent keeps is reported as kept by a held outcome",
+        ),
+        (
+            "cli-purge-reports-what-went-before-an-outage",
+            "packages/cli/src/main.ts",
+            "        ...report(),\n        finished: false,\n",
+            "        finished: false,\n",
+            "a purge that meets an outage prints nothing of the units that went",
+        ),
+        (
+            "cli-retry-says-a-task-may-have-been-retained-out",
+            "packages/cli/src/main.ts",
+            "  if (admission === null) return noTaskToRevive(queue, taskId)\n",
+            "  if (admission === null) return noSuchTask(queue, taskId)\n",
+            "a confirmed retry of a task that is not there does not say that a purge may have retained it out",
+        ),
+        (
+            "cli-purge-is-the-retention-port-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "        if (execute) {\n          asking = { call: 'purge-unit', taskId: candidate.taskId }\n",
+            "        if (execute && candidate === null) {\n          asking = { call: 'purge-unit', taskId: candidate.taskId }\n",
+            "purge with --execute sends no purge, and leaves every unit the port takes",
+        ),
+        (
+            "cli-purge-prints-exactly-the-units-that-went",
+            "packages/cli/src/main.ts",
+            "            taken.push({ ...unitView(candidate), rows: purged.rows })\n",
+            "",
+            "purge deletes a unit and prints nothing of it",
+        ),
+        (
+            "cli-purge-is-the-retention-port-over-a-walk",
+            "packages/cli/src/purge.ts",
+            "    : { taskId: candidate.taskId, idempotencyKey: candidate.idempotencyKey }\n",
+            "    : { taskId: candidate.taskId }\n",
+            "purge names a unit without the key it was listed under, and the barrier keeps every task that has one",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-purge-deletes-nothing-without-execute": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "purge on libSQL without --execute it lists each candidate with what the barrier says of it, sends only read batches, and leaves every table as it was",
+            "mutation-verdict:behavior:cli-purge-deletes-nothing-without-execute",
+        ),
+        "cli-purge-prints-a-key-only-as-its-digest": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "purge on libSQL prints an idempotency key as its sha256 and never as itself, with --reveal or without, in a dry run and in a purge",
+            "mutation-verdict:behavior:cli-purge-prints-a-key-only-as-its-digest",
+        ),
+        "cli-purge-refuses-under-a-test-clock": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses under a test clock, though every unit is a window old by that clock, and purges once the clock is cleared",
+            "mutation-verdict:behavior:cli-purge-refuses-under-a-test-clock",
+        ),
+        "cli-purge-refuses-a-schema-that-is-not-the-builds": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses a database that is not at the build's schema version, at every older version its store's reads accept, and names both versions",
+            "mutation-verdict:behavior:cli-purge-refuses-a-schema-that-is-not-the-builds",
+        ),
+        "cli-purge-names-its-store": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses a --target that is not its store, or none, before anything opens",
+            "mutation-verdict:behavior:cli-purge-names-its-store",
+        ),
+        "cli-purge-refuses-a-window-under-the-floor": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses a window under an hour, a window it cannot read and a missing window, and sends nothing",
+            "mutation-verdict:behavior:cli-purge-refuses-a-window-under-the-floor",
+        ),
+        "cli-purge-holds-its-limit": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "how far one purge goes takes at most --limit units, oldest first, and says whether more remain",
+            "mutation-verdict:behavior:cli-purge-holds-its-limit",
+        ),
+        "cli-purge-walks-past-the-units-the-barrier-keeps": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "how far one purge goes goes past the units the barrier keeps: a queue whose oldest candidates are all kept still purges what stands behind them",
+            "mutation-verdict:behavior:cli-purge-walks-past-the-units-the-barrier-keeps",
+        ),
+        "cli-purge-stops-at-its-limit-inside-a-page": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "how far one purge goes goes past the units the barrier keeps: a queue whose oldest candidates are all kept still purges what stands behind them",
+            "mutation-verdict:behavior:cli-purge-stops-at-its-limit-inside-a-page",
+        ),
+        "cli-purge-names-the-condition-that-keeps-a-unit": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "a unit the barrier keeps is named by the condition that is false, as of the read names each planted unit by the one condition that keeps it, in a dry run and in a purge, for every condition of the barrier",
+            "mutation-verdict:behavior:cli-purge-names-the-condition-that-keeps-a-unit",
+        ),
+        "cli-purge-reports-what-went-before-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "a purge whose store answers otherwise than a clean run prints the units that went before an outage, exits 6 and says where it stopped, and run again purges what is left",
+            "mutation-verdict:behavior:cli-purge-reports-what-went-before-an-outage",
+        ),
+        "cli-retry-says-a-task-may-have-been-retained-out": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "after a purge retry of a purged failed task answers not-found, and says the task may have been retained out",
+            "mutation-verdict:behavior:cli-retry-says-a-task-may-have-been-retained-out",
+        ),
+        "cli-purge-is-the-retention-port-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge-twin.test.ts",
+            "purge is the retention port and nothing else [libsql] after each command a dump of every table equals the dump the port's calls leave on a twin, and the units it printed are the units that went",
+            "mutation-verdict:behavior:cli-purge-is-the-retention-port-and-nothing-else",
+        ),
+        "cli-purge-prints-exactly-the-units-that-went": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge-twin.test.ts",
+            "purge is the retention port and nothing else [libsql] after each command a dump of every table equals the dump the port's calls leave on a twin, and the units it printed are the units that went",
+            "mutation-verdict:behavior:cli-purge-prints-exactly-the-units-that-went",
+        ),
+        "cli-purge-is-the-retention-port-over-a-walk": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge-twin.test.ts",
+            "purge over the states a walk of the engine leaves, on libSQL leaves the dump the port leaves on a twin the same walk built, after every command, and prints the units that went",
+            "mutation-verdict:behavior:cli-purge-is-the-retention-port-over-a-walk",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -23203,6 +23410,12 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "cli-purge-is-the-retention-port-and-nothing-else": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
+    "cli-purge-prints-exactly-the-units-that-went": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
     "cli-retry-names-the-conjunct-that-refuses": (
         "the case runs once for each conjunct of the retry guard, and its title carries the conjunct and the state planted for it"
     ),
@@ -25799,7 +26012,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1452:
+        if len(MUTATIONS) != 1467:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
