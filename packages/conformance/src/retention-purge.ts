@@ -9,6 +9,7 @@ import {
   RETENTION_STRINGS,
   type RetentionMethod,
   type RetentionPolicy,
+  type SqlExecutor,
   taskDoneEventName,
 } from '@durablerun/core'
 import { RecordingExecutor } from '@durablerun/core/testing'
@@ -600,6 +601,100 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
               ? Object.values(place).reduce((count: number, inner) => count + named(inner), 0)
               : 0
         expect({ places, named: named(RETENTION_STRINGS) }).toEqual({ places: 5, named: 5 })
+      })
+    })
+
+    it('reads each member of an object argument once, so what the check read is what is bound', async () => {
+      await withFixture(makeFixture, 'retention-read-once', async (f) => {
+        // What a second reading answers at a place the table names: a string no store
+        // keeps, which the port refuses when it is passed as it is.
+        const second = `a-second-reading-\u0000${'x'.repeat(3_000)}`
+        const bound: unknown[] = []
+        const recording: SqlExecutor = {
+          batch: (label, statements, control) => {
+            for (const statement of statements) bound.push(...statement.args)
+            return f.raw.batch(label, statements, control)
+          },
+        }
+        const retention = f.retentionOver(recording)
+        // One well-formed call of each method, holding every member an argument may hold.
+        const everyState = {
+          completedSeconds: 3_600,
+          cancelledSeconds: 3_600,
+          failedSeconds: 3_600,
+        }
+        const wellFormed: Readonly<Record<RetentionMethod, () => unknown[]>> = {
+          purgeCandidates: () => [
+            'q',
+            { ...everyState },
+            { limit: 1, after: { endedAtMs: 0, taskId: 't' } },
+          ],
+          purgeUnit: () => ['q', { taskId: 't', idempotencyKey: 'k' }, { ...everyState }],
+        }
+        /** Every member of an argument, and of an object a member holds, by its path. */
+        const membersOf = (value: unknown, path: readonly string[]): string[][] =>
+          value !== null && typeof value === 'object'
+            ? Object.entries(value).flatMap(([key, inner]) => [
+                [...path, key],
+                ...membersOf(inner, [...path, key]),
+              ])
+            : []
+        /** Whether the table of the port's strings names the place a path leads to. */
+        const namedAt = (method: RetentionMethod, path: readonly string[]): boolean => {
+          const passed = (spec: unknown): unknown =>
+            spec !== null && typeof spec === 'object' && '?' in spec
+              ? (spec as { '?': unknown })['?']
+              : spec
+          let spec: unknown = RETENTION_STRINGS[method]
+          for (const key of path) {
+            const inner = passed(spec)
+            spec =
+              inner !== null && typeof inner === 'object'
+                ? (inner as Record<string, unknown>)[key]
+                : undefined
+          }
+          return typeof passed(spec) === 'string'
+        }
+        const readAgain: string[] = []
+        const secondBound: string[] = []
+        let named = 0
+        for (const method of RETENTION_METHODS) {
+          const call = retention[method] as (...made: unknown[]) => Promise<unknown>
+          const paths = wellFormed[method]().flatMap((argument, index) =>
+            membersOf(argument, [String(index)]),
+          )
+          for (const path of paths) {
+            const args = wellFormed[method]()
+            let holder = args as unknown as Record<string, unknown>
+            for (const step of path.slice(0, -1)) holder = holder[step] as Record<string, unknown>
+            const key = String(path[path.length - 1])
+            const first = holder[key]
+            const isNamed = namedAt(method, path)
+            if (isNamed) named += 1
+            // The member answers what was passed to its first reader. To any later reader a
+            // named string answers the second value, and every other member the same value.
+            let reads = 0
+            Object.defineProperty(holder, key, {
+              enumerable: true,
+              get: () => {
+                reads += 1
+                return reads === 1 || !isNamed ? first : second
+              },
+            })
+            bound.length = 0
+            await call(...args).catch(() => undefined)
+            const where = `${method}[${path.join('.')}]`
+            if (reads !== 1) readAgain.push(`${where}: ${reads} reads`)
+            if (bound.includes(second)) secondBound.push(where)
+          }
+        }
+        // Three members are strings the table names: the task and the key of a unit, and
+        // the task of a cursor.
+        expect({ readAgain, secondBound, named }).toEqual({
+          readAgain: [],
+          secondBound: [],
+          named: 3,
+        })
       })
     })
 
