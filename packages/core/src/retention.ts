@@ -1,6 +1,6 @@
 import { spawningParent } from './child-tasks.js'
 import { MIN_RETENTION_SECONDS } from './contract.js'
-import { PortRefusalError } from './errors.js'
+import { InvalidDurableStringError, PortRefusalError } from './errors.js'
 import { type FencedBatch, type FencedResult, readRows } from './fenced-batch.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { byCodePoints, requireListLimit } from './operator-reads.js'
@@ -197,8 +197,11 @@ async function purgeCandidates(
   options: PurgeCandidatesOptions,
 ): Promise<PurgeCandidates> {
   const windowsMs = retentionWindowsMs(policy)
-  if (typeof options !== 'object' || options === null) {
-    throw new PortRefusalError('purgeCandidates options must be an object that names a limit')
+  // Options that were passed and are no object were refused by the port's check of its
+  // arguments. Options that were left out are refused here, as the same kind and in the
+  // same words, so a caller meets one refusal for options that are no object.
+  if (options === undefined) {
+    throw new InvalidDurableStringError('purgeCandidates[2] must be an object')
   }
   const limit = requireListLimit(options.limit)
   const after = startAfter(options.after)

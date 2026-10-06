@@ -3,6 +3,7 @@ import {
   InvalidDurableStringError,
   MAX_EPOCH_MS,
   PortRefusalError,
+  type PurgeCandidatesOptions,
   type PurgeCursor,
   type PurgeUnitTarget,
   RETENTION_METHODS,
@@ -695,6 +696,62 @@ export function purgeConformance(dialect: string, makeFixture: StoreFixtureFacto
           secondBound: [],
           named: 3,
         })
+      })
+    })
+
+    it('refuses a limit that is no whole number from 1 to 1000 and options that are no object, and sends nothing', async () => {
+      await withFixture(makeFixture, 'retention-limit', async (f) => {
+        const recorder = new RecordingExecutor(f.raw)
+        const retention = f.retentionOver(recorder)
+        const kindOf = (call: Promise<unknown>): Promise<string> =>
+          call.then(
+            () => 'taken',
+            (error: unknown) =>
+              error instanceof InvalidDurableStringError
+                ? 'an invalid argument'
+                : error instanceof PortRefusalError
+                  ? 'a port refusal'
+                  : error instanceof RangeError
+                    ? 'a number out of range'
+                    : String(error),
+          )
+        const limits: Readonly<Record<string, unknown>> = {
+          'a limit of nothing': 0,
+          'a negative limit': -1,
+          'a limit one past the cap': 1_001,
+          'a limit of a million': 1_000_000,
+          'a limit that is no whole number': 1.5,
+          'a limit written as text': '10',
+          'no limit': undefined,
+        }
+        const options: Readonly<Record<string, unknown>> = {
+          'options that are null': null,
+          'options left out': undefined,
+          'options that are a list': [],
+          'options that are text': 'limit',
+        }
+        const answered: Record<string, string> = {}
+        for (const [what, limit] of Object.entries(limits)) {
+          answered[what] = await kindOf(
+            retention.purgeCandidates('q', CONTEST_POLICY, { limit } as PurgeCandidatesOptions),
+          )
+        }
+        for (const [what, passed] of Object.entries(options)) {
+          answered[what] = await kindOf(
+            retention.purgeCandidates('q', CONTEST_POLICY, passed as PurgeCandidatesOptions),
+          )
+        }
+        const expected = Object.fromEntries([
+          ...Object.keys(limits).map((what) => [what, 'a number out of range']),
+          ...Object.keys(options).map((what) => [what, 'an invalid argument']),
+        ])
+        expect({ answered, sent: recorder.batches.map((batch) => batch.label) }).toEqual({
+          answered: expected,
+          sent: [],
+        })
+        // The cap itself is taken, in one batch.
+        await retention.purgeCandidates('q', CONTEST_POLICY, { limit: 1_000 })
+        expect(recorder.batches.map((batch) => batch.label)).toEqual(['purge-candidates'])
       })
     })
 
