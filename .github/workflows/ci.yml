@@ -242,8 +242,8 @@ jobs:
         # changes the file to anything but the pinned head file is refused, so a later
         # edit to that file must re-pin it in the same reviewed change. A row is dead
         # once its pull request is the base, and is deleted then. One row is live: the
-        # released-surface snapshot, two entries of whose changed table this pull request
-        # rewrites.
+        # released-surface snapshot, to whose changed table this pull request adds an entry
+        # and in which it rewrites one.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -253,9 +253,9 @@ jobs:
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
               (
                   'scripts/published-surface-v0.1.0-alpha.1.json',
-                  '0d45318203826fa3ef5c7e9dd3fc3d061b359dad2413ef43cb7a62b97902bc9d',
                   'dad0f5ca4450cf395c5c161d9626c2a85d43afb577eee573b952beb3cdbfeb4f',
-                  'SchedulerStore and LibsqlSchedulerStore are recorded with the optional argument cancelTask gains',
+                  '224dd070b486711207ac36e8e7c5947c67f3681314985fab495b200756903825',
+                  'FENCE_RELATIONS is recorded with the two relations a purge follows, and FencedBatch with the generated statements that take no set',
               ),
           )
           def sha(data):
@@ -361,95 +361,78 @@ jobs:
               if repaired[start:named] != candidate[new_start:new_named]:
                   raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
               return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == 'dd72d14946a4b10201953dd231401d20f86c3410303efb363d2f2bff2286eba1':
-              # The drive verbs register sixty-eight mutations: thirty-two for what `enqueue`,
-              # `emit`, `cancel`, `retry` and `sweep` require, send and answer, twelve for where
-              # `tick` sends its token, how long it waits and how it reads the answer, three for
-              # the operator drill, seven for what `explain` says of a move the engine does not
-              # take and of an instant that passes between its two reads, and what it suggests,
-              # four for how core decodes the two reads the verbs ask, eight for what those reads
-              # answer on libSQL against the engine, one for the store's cancel that spares a
-              # saga, and one for the port's check of that cancel's options. Their cases carry
-              # sixty-one verdict markers. Each is newer than the
-              # base registry, so each is exempted there.
-              # Nine base entries are re-aimed: the lines of the libSQL retry guard that they
-              # mutate moved out of `retryTask` into `RETRY_ADMITS`, the record of the guard's
-              # conjuncts that the guard and the operator's read of it are both built from.
+          def list_conditions(repaired, candidate, file, lines):
+              # List condition lines of a tree rule whose mutations this tree registers and the
+              # base predates, so the base's derived coverage check reads them as held.
+              table = 'TREE_CONDITIONS_WITHOUT_A_MUTATION: dict[str, dict[str, str]] = {\n'
+              opening = f'    "{file}": {{\n'
+              if repaired.count(table) != 1 or repaired.count(opening, repaired.index(table)) != 1:
+                  raise SystemExit(f'{file}: the bridge requires one listed-conditions section.')
+              at = repaired.index(opening, repaired.index(table)) + len(opening)
+              for line in lines:
+                  if f'"{line}": (' in repaired or line not in candidate:
+                      raise SystemExit(f'{line}: the bridge lists only a line this tree mutates and the base does not list.')
+              entries = ''.join(
+                  f'        "{line}": (\n            "held by mutations the head registry registers, which the base predates"\n        ),\n'
+                  for line in lines
+              )
+              return repaired[:at] + entries + repaired[at:]
+          if digest == 'c0ab173f979858262d512a6d91b097dec10d0ec08f5a5cbb03f0b8acc379d90a':
+              # The retention purge registers thirty-five mutations: eight for the tree rule
+              # that lets only the purge of a unit delete a row of it, one for the row check
+              # that names a completion event whose task is gone, nine caught by a block of
+              # the barrier grid, nine by a case of a condition no engine path reaches, three
+              # by core's own cases of the purge's batch, three for the spawn that sends once
+              # more, one in each store, and two for MySQL's index rules. Their cases carry
+              # thirty-one verdict markers. Each is newer than the base registry, so each is
+              # exempted there. The four lines of the tree rule hold conditions, and the base's
+              # coverage check asks a mutation of each, so they are listed for it.
+              # One base entry is re-aimed: the MySQL compiler's table of stamp indexes gained
+              # an entry and is written a line to a table, so the mutation that reads a
+              # delete's keys through another index of runs names the line that holds runs.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:cancel-spares-a-saga-that-began",
-                  "mutation-verdict:behavior:cli-a-confirmed-verb-always-makes-its-call",
-                  "mutation-verdict:behavior:cli-a-confirmed-write-changes-nothing-without-yes",
-                  "mutation-verdict:behavior:cli-a-drive-verb-creates-no-database",
-                  "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call",
-                  "mutation-verdict:behavior:cli-a-drive-verb-is-its-port-call-over-a-walk",
-                  "mutation-verdict:behavior:cli-a-drive-verb-names-its-store",
-                  "mutation-verdict:behavior:cli-a-drive-verb-refuses-a-schema-below-the-window",
-                  "mutation-verdict:behavior:cli-cancel-halts-a-rollback-only-when-told",
-                  "mutation-verdict:behavior:cli-cancel-names-a-saga-the-store-spared",
-                  "mutation-verdict:behavior:cli-cancel-names-why-the-port-answered-false",
-                  "mutation-verdict:behavior:cli-cancel-says-whether-it-halted-a-rollback",
-                  "mutation-verdict:behavior:cli-drill-clears-what-is-stuck",
-                  "mutation-verdict:behavior:cli-drill-finds-each-planted-cause-without-an-id",
-                  "mutation-verdict:behavior:cli-drill-runs-each-suggestion-as-it-is-printed",
-                  "mutation-verdict:behavior:cli-emit-never-prints-the-stored-payload",
-                  "mutation-verdict:behavior:cli-emit-refuses-a-reserved-name",
-                  "mutation-verdict:behavior:cli-emit-says-already-emitted-with-the-stored-digest",
-                  "mutation-verdict:behavior:cli-enqueue-answers-a-repeat-it-cannot-read-back",
-                  "mutation-verdict:behavior:cli-enqueue-hides-a-refusal-it-cannot-name",
-                  "mutation-verdict:behavior:cli-enqueue-hides-only-a-refusal-of-the-key",
-                  "mutation-verdict:behavior:cli-enqueue-refuses-an-empty-task-name",
-                  "mutation-verdict:behavior:cli-enqueue-says-whether-the-stored-name-matches",
-                  "mutation-verdict:behavior:cli-enqueue-spawns-under-its-key",
-                  "mutation-verdict:behavior:cli-explain-arm-deadline-no-sweep-cancels",
-                  "mutation-verdict:behavior:cli-explain-arm-due-run-no-claim-admits",
-                  "mutation-verdict:behavior:cli-explain-arm-lapsed-lease-no-sweep-reclaims",
-                  "mutation-verdict:behavior:cli-explain-fills-a-drive-verb-from-what-it-was-given",
-                  "mutation-verdict:behavior:cli-explain-names-a-move-the-engine-does-not-take",
-                  "mutation-verdict:behavior:cli-explain-reads-a-row-that-moved-as-it-stood",
-                  "mutation-verdict:behavior:cli-explain-reads-again-when-an-instant-passes-between-its-reads",
-                  "mutation-verdict:behavior:cli-refuses-a-number-a-double-cannot-hold",
-                  "mutation-verdict:behavior:cli-refuses-a-number-by-its-value",
-                  "mutation-verdict:behavior:cli-retry-names-the-conjunct-that-refuses",
-                  "mutation-verdict:behavior:cli-retry-reports-the-live-run-a-repeat-finds",
-                  "mutation-verdict:behavior:cli-retry-says-what-yes-would-do",
-                  "mutation-verdict:behavior:cli-store-url-has-no-fallback",
-                  "mutation-verdict:behavior:cli-tick-ends-its-wait-through-the-clock",
-                  "mutation-verdict:behavior:cli-tick-exits-4-for-a-refused-token",
-                  "mutation-verdict:behavior:cli-tick-exits-6-for-an-answer-that-says-try-later",
-                  "mutation-verdict:behavior:cli-tick-exits-7-for-a-500-of-the-route-itself",
-                  "mutation-verdict:behavior:cli-tick-follows-no-redirect",
-                  "mutation-verdict:behavior:cli-tick-reads-no-more-of-an-answer-than-its-cap",
-                  "mutation-verdict:behavior:cli-tick-refuses-a-credential-in-a-url",
-                  "mutation-verdict:behavior:cli-tick-refuses-a-wait-a-timer-cannot-hold",
-                  "mutation-verdict:behavior:cli-tick-returns-the-routers-body",
-                  "mutation-verdict:behavior:cli-tick-sends-its-token-in-the-authorization-header-alone",
-                  "mutation-verdict:behavior:cli-tick-sends-only-to-the-origin-the-environment-names",
-                  "mutation-verdict:behavior:cli-tick-sends-over-https-or-to-loopback-alone",
-                  "mutation-verdict:behavior:operator-admission-agrees-with-the-finder-on-a-walk",
-                  "mutation-verdict:behavior:operator-admission-agrees-with-the-guard-on-a-walk",
-                  "mutation-verdict:behavior:operator-admission-asks-a-charge-only-where-its-counters-are-in-range",
-                  "mutation-verdict:behavior:operator-admission-flags-are-what-the-engine-does",
-                  "mutation-verdict:behavior:operator-admission-names-the-conjunct-that-refuses",
-                  "mutation-verdict:behavior:operator-admission-reads-every-conjunct-of-the-guard",
-                  "mutation-verdict:behavior:operator-event-payload-is-what-the-first-emit-stored",
-                  "mutation-verdict:behavior:operator-reads-a-claim-takes-a-run-of-either-state",
-                  "mutation-verdict:behavior:operator-reads-answer-a-payload-only-as-text",
-                  "mutation-verdict:behavior:operator-reads-read-a-conjunct-that-was-not-asked",
-                  "mutation-verdict:behavior:operator-reads-read-each-conjunct-as-its-own-flag",
-                  "mutation-verdict:behavior:port-cancel-options-are-held-to-a-boolean",
+                  "mutation-verdict:behavior:history-names-a-completion-event-without-its-task",
+                  "mutation-verdict:behavior:mysql-purge-reads-its-keys-by-the-stamp-of-tasks",
+                  "mutation-verdict:behavior:mysql-purge-takes-the-key-before-the-row",
+                  "mutation-verdict:behavior:purge-deletes-the-task-row-last",
+                  "mutation-verdict:behavior:purge-finds-a-parent-in-any-queue",
+                  "mutation-verdict:behavior:purge-holds-the-key-the-unit-was-spawned-under",
+                  "mutation-verdict:behavior:purge-is-not-kept-by-a-run-that-holds-no-payload",
+                  "mutation-verdict:behavior:purge-is-not-kept-by-its-own-run",
+                  "mutation-verdict:behavior:purge-keeps-a-state-the-policy-does-not-name",
+                  "mutation-verdict:behavior:purge-keeps-a-unit-past-the-checkpoint-cap",
+                  "mutation-verdict:behavior:purge-keeps-a-unit-whose-event-a-wait-names",
+                  "mutation-verdict:behavior:purge-keeps-a-unit-whose-key-names-no-parent",
+                  "mutation-verdict:behavior:purge-keeps-a-unit-whose-outcome-a-run-holds",
+                  "mutation-verdict:behavior:purge-keeps-a-unit-with-a-live-run",
+                  "mutation-verdict:behavior:purge-keeps-a-unit-with-a-run-in-another-queue",
+                  "mutation-verdict:behavior:purge-keeps-the-child-of-a-failed-parent",
+                  "mutation-verdict:behavior:purge-keeps-the-child-of-a-live-parent",
+                  "mutation-verdict:behavior:purge-reads-an-age-only-from-a-stamp-in-range",
+                  "mutation-verdict:behavior:purge-takes-a-unit-at-the-checkpoint-cap",
+                  "mutation-verdict:behavior:purge-takes-a-unit-exactly-a-window-old",
+                  "mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone",
+                  "mutation-verdict:construction:purge-alone-deletes-checkpoints",
+                  "mutation-verdict:construction:purge-alone-deletes-events",
+                  "mutation-verdict:construction:purge-alone-deletes-runs",
+                  "mutation-verdict:construction:purge-alone-deletes-tasks",
+                  "mutation-verdict:construction:purge-delete-skips-no-locked-row",
+                  "mutation-verdict:construction:purge-holds-the-lock-of-its-completion-event",
+                  "mutation-verdict:construction:purge-rule-asks-for-the-purge",
+                  "mutation-verdict:construction:purge-rule-reads-deletes",
+                  "mutation-verdict:construction:purge-rule-reads-the-gating-statement",
+                  "mutation-verdict:construction:purge-rule-spares-other-tables",
               ))
               for name in (
-                  "retry-task-requires-well-formed-failure",
-                  "retry-task-charges-unaccounted-top-run",
-                  "retry-task-requires-counters-in-range",
-                  "retry-task-requires-incrementable-budget",
-                  "retry-task-requires-accounting-band",
-                  "retry-task-requires-charge-within-budget",
-                  "retry-task-charges-net-of-infra-retries",
-                  "saga-revival-refused-once-a-saga-began",
-                  "poison-target-retry-task-holds-infra-retries-bound",
+                  "mysql-keyed-delete-reads-its-keys-by-their-stamp",
               ):
                   repaired = reaim_entry(repaired, candidate, name)
+              repaired = list_conditions(repaired, candidate, 'packages/core/src/fenced-batch.ts', (
+                  "tree.kind === 'DeleteQueryNode' &&",
+                  "DELETED_BY_A_PURGE_ALONE.some((table) => table === written)",
+                  "const gate = this.statements.find((earlier) => earlier.name === gateName)",
+                  "if (gate?.purges !== true) {",
+              ))
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
