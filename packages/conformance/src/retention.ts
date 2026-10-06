@@ -575,6 +575,27 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           ])
         })
       })
+
+      it('names a completion event whose task is gone', async () => {
+        await withFixture(makeFixture, 'retention-rows-event', async (f) => {
+          const outcome = { state: 'completed', completedPayloadJson: '{"out":1}' } as const
+          await f.raw.batch(
+            'hand-written-rows',
+            [
+              {
+                sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                      VALUES (?, ?, ?, ?)`,
+                args: [Q, taskDoneEventName('purged-child'), encodeTaskOutcome(outcome), START_MS],
+              },
+            ],
+            'write',
+          )
+          expect(
+            await engineHistoryViolations(f.raw),
+            'mutation-verdict:behavior:history-names-a-completion-event-without-its-task',
+          ).toEqual([`completion-event-without-task: ${taskDoneEventName('purged-child')}`])
+        })
+      })
     })
 
     describe('the purge of a unit', () => {

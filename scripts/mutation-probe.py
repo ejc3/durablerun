@@ -21390,6 +21390,26 @@ VERDICTS.update(
     }
 )
 
+# The child-task row checker has named a completion event whose task is not in its queue
+# since child tasks landed, and until a purge nothing could leave one, so nothing showed
+# that the condition can fail. Retention's surface writes the rows.
+MUTATION_SPECS.append(
+    (
+        "history-names-a-completion-event-without-its-task",
+        "packages/conformance/src/child-task-rows.ts",
+        "    violations.push(`completion-event-without-task: ${eventName}`)\n",
+        "",
+        "a purge that deleted a task and left its completion event, or an await that recorded an outcome after the purge, passes every row check",
+    )
+)
+VERDICTS["history-names-a-completion-event-without-its-task"] = ExpectedVerdict(
+    "behavior",
+    "packages/conformance/test/libsql.test.ts",
+    "retention conformance [libsql] the rows a wrong purge would leave names a completion event whose task is gone",
+    "mutation-verdict:behavior:history-names-a-completion-event-without-its-task",
+    "packages/conformance/src/retention.ts",
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -25319,7 +25339,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1420:
+        if len(MUTATIONS) != 1421:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
