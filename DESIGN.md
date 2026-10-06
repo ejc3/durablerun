@@ -1672,10 +1672,12 @@ One invocation executes one claimed run to its next suspension point:
     bounded as the claim was. `key` is the primary key of `meta`, whose rows are
     the clock and the schema's versions. It is a due range when it has a range
     on a column an index hands work out in the order of (`available_at_ms`,
-    `claim_expires_at_ms`, `cancel_at_ms`, and `enqueue_at_ms`, which an
+    `claim_expires_at_ms`, `cancel_at_ms`, `enqueue_at_ms`, which an
     operator's read of a queue's oldest live tasks reads in order and no
     statement of the engine ranges over: the maintainer approved that fourth
-    column on 2026-10-04, section 3.11). It is a walk otherwise: a SCAN of a
+    column on 2026-10-04, section 3.11; and `fence_at_ms`, which retention's
+    read of a queue's ended tasks reads in order and no statement of the engine
+    ranges over, section 3.12). It is a walk otherwise: a SCAN of a
     table, with an index or without one, a SEARCH through an automatic index,
     and a SEARCH whose constraint list holds neither. The rows of a VALUES are
     no table's, and a SCAN of them is no walk. The rule is three lines. Over
@@ -4502,12 +4504,13 @@ realized in the store's compiler, executor, fragments, or schema:
   and writes. In that mix the older build's executor counted 119 and 131
   deadlock victims in about half a minute, and the newer build's counted none.
 - **A keyed delete's keys are one plain table that declares an index of its
-  stamp, which today is `runs`.** That is a limit of this dialect on a shared
+  stamp, which today is `runs` or `tasks`.** That is a limit of this dialect on a shared
   primitive, and core does not know it. Core's generator can build two deletes
   that the MySQL compiler refuses and the other two dialects accept: one over
   a self relation, whose keys core reads through a derived table, and one
-  whose keys come from `tasks`, `waits` or `events`, which declare no index of
-  their stamp. Nothing sends either. The first statement that does fails when
+  whose keys come from `waits` or `events`, which declare no index of
+  their stamp. Nothing sends either. Schema version 12 gave `tasks` its index,
+  `tasks_stamp`, for the deletes of a purge (section 3.12). The first statement that does fails when
   its batch is built in the MySQL conformance leg, so it cannot ship silently.
   BUILD.md records the option and its trigger.
 - **The keyed write rule assumes the server's default `optimizer_switch`.** The
@@ -5804,8 +5807,8 @@ statement tree holds the clock only as its token and is refused when it names th
 clock's row, so that one read is the store's own text. It is reported because a database
 whose test clock was left set never sees a run come due. `inspect --key` reads twice:
 `task-id-by-key` finds the task, and `task-facts` then reads it. A task that is gone between
-the two answers exit 8 for a key that found it a moment before. Nothing deletes a task
-today, and the retention purge of section 3.12 will.
+the two answers exit 8 for a key that found it a moment before. Only the retention purge
+of section 3.12 deletes a task, and no command runs one yet.
 
 The events of a snapshot are those of the task's own queue, and the reads name an event by
 its name alone. A run takes its queue from its task's row or from the run it succeeds, a
@@ -6730,15 +6733,19 @@ that run printed. A read also leaves every table as it found it, and `migrate` l
 recorded version between the one it started from and the build's; across several
 versions that can be neither the state it started from nor the one it would finish at.
 
-### 3.12 Retention: the purge of terminal task units (modeled, not built)
+### 3.12 Retention: the purge of terminal task units
 
-Tasks, runs, checkpoints, and events grow without bound today: no store
-deletes one. This section is the protocol that bounds them by deleting whole
-terminal task units. `specs/Retention.tla` models it ahead of its
-SQL, and TLC checks it. No store sends a purge batch yet, so the model's ledger
-lists the purge as having no batch. The maintainer approved the two contract
-changes at the end of this section on 2026-10-03, so the pull requests that
-depend on them can be built.
+Tasks, runs, checkpoints, and events grow without bound unless a purge deletes
+them: no other statement of a store deletes one. This section is the protocol
+that bounds them by deleting whole terminal task units. `specs/Retention.tla`
+models it, TLC checks it, and the model was written and checked before the SQL.
+Each store sends the purge as one fenced batch, `purge-unit`, which the model's
+ledger maps onto its two purge actions, `PurgeChild` and `PurgeHolder`. The
+purge is reached through a port of its own, `Retention`. No engine actor calls
+it, and no command of the CLI, no hosted route and no driver reaches it yet:
+until the `purge` verb of BUILD.md exit test line 43 exists, only a test
+purges. The maintainer approved the two contract changes at the end of this
+section on 2026-10-03.
 
 - **The unit.** One terminal task and what only it owns: its task row, its
   runs, its checkpoints, the waits naming its runs, and its completion event
@@ -6814,20 +6821,26 @@ depend on them can be built.
     and a rule that waited for a completed or cancelled parent's own purge
     would only delay the child's under any policy the type can express. The
     barrier grid's completed, cancelled, saga-failed, and rolling-back parent
-    cells hold those parts (PR5.2c2, BUILD.md exit test line 42). The lookup
+    cells hold those parts (BUILD.md exit test line 42). The lookup
     assumes that one database holds every task, so a parent it cannot find by
     `task_id` reads as absent. That holds while `ctx.spawn` writes to the store
     the parent runs on. Once tasks are sharded across databases (§3.7), a spawn
     routed to another shard would leave a live parent that reads as absent, and
     B5 must then keep a unit whose parent it cannot find.
-- **The batch.** The compare-and-set stamps the task row, then deletes keyed on
-  that stamp remove the checkpoints, the waits, the runs, and the completion
-  event, and the task row goes last. The batch is atomic, so no reader sees it
-  half done, and the order follows the delete key paths: a wait is reached
-  through the run it names (`runs-to-waits`), so the waits go before the runs;
-  the checkpoints and the completion event are keyed by the task's id, through
-  the relations `tasks-to-checkpoints` and `tasks-to-events` that PR5.2c2 adds;
-  and every delete is keyed on the task row's stamp, so the row goes last. B3
+- **The batch.** `purge-unit` is one fenced batch of eight statements. Its
+  compare-and-set, `purge`, stamps the task row when the whole barrier holds. A
+  read, `unit`, then counts the rows the unit holds in each table. The
+  statements after it are keyed on that stamp: a delete of the checkpoints
+  (`tasks-to-checkpoints`), an update that stamps the unit's runs, a delete of
+  the waits that follows the runs' stamp (`runs-to-waits`), a delete of the runs
+  (`tasks-to-runs`), a delete of the completion event (`tasks-to-events`), and
+  the delete of the task row. The batch is atomic, so no reader sees it half
+  done, and the order follows the delete key paths: a wait is reached through
+  the run it names and a generated delete follows a stamp, so the runs are
+  stamped first, then their waits go, then the runs; the checkpoints and the
+  completion event are keyed by the task's id, through the two relations
+  `FENCE_RELATIONS` gained for them; and every delete is keyed on the task
+  row's stamp, so the row goes last. B3
   reads the runs of a queue by `wake_event` in any state. MySQL's `runs_woken
   (queue, wake_event, state)` covers every state, but libSQL's and PostgreSQL's
   `runs_woken` is partial to pending runs, so schema version 12 adds
@@ -6840,13 +6853,76 @@ depend on them can be built.
   untouched because a completion event leaves no row there. A task ended by a
   build older than child tasks has no completion event, and that delete matches
   nothing (`RetentionProbeLegacyNoEvent`). No purge statement uses SKIP LOCKED:
-  InnoDB's SKIP LOCKED has skipped a row the batch had stamped itself. Each
-  delete carries a row-count check against the unit the compare-and-set read.
+  InnoDB's SKIP LOCKED has skipped a row the batch had stamped itself. The
+  statement grammar refuses the modifier when a batch is built, so no purge
+  statement that holds it can be sent. Once the batch has committed, core
+  compares what each delete removed with the count the `unit` read took, and
+  throws when one differs: the batch cannot be undone by then, and a purge that
+  deleted anything but the unit it read must not be taken for a purge. A
+  generated delete binds its queue on the side of the stamped task alone. A run
+  of the unit that stood in another queue would therefore go with the unit, and
+  the count would differ. The compare-and-set keeps such a unit before that, and
+  the count is the second detector.
   The `record-task-done` batch stays fenced on the stamp of the row it read, or
   a purge between its read and its write would leave a completion event with no
   task (`RetentionProbeUnfencedMaterialize`).
+- **Only a purge deletes.** A statement tree that deletes from `tasks`, `runs`,
+  `checkpoints` or `events` is refused when its batch is built, unless the stamp
+  that gates it is the compare-and-set of a purge. So no other batch can delete
+  a row of a unit, today or after a later change. A generated delete may bind a
+  queue only under that same stamp, and every other generated delete that binds
+  one is refused as before.
+- **The port.** `Retention` has two methods and is apart from `SchedulerStore`.
+  Core holds the one implementation (`createRetention`), and each store package
+  exports a factory that reaches it with that store's batches and fragments.
+  `purgeCandidates(queue, policy, { limit, after? })` reads one page of the
+  ended tasks of a queue that are at least their state's window old, oldest
+  first, in the read batch `purge-candidates`: one leg to an ended state through
+  `tasks_terminal`, each under a LIMIT, of at most 1,000 candidates a page. The
+  leg of a state the policy keeps is sent with a limit of no rows. The page
+  carries `next`, a cursor of its last task's ending instant and id, so a
+  caller that walks the pages gets past a page of units the barrier keeps. A
+  candidate decides nothing. `purgeUnit(queue, { taskId, idempotencyKey? },
+  policy)` sends the batch for one unit. It answers the task's id with the rows
+  that went from each table, or null, having written nothing, when the barrier
+  keeps the unit. The caller passes the key the task was spawned under, which a
+  candidate carries, and the compare-and-set holds the row to it: B5's parent is
+  parsed from that key before the batch is built, so a key that is not the
+  row's would name another parent, and the unit is kept. Both methods check
+  their strings at the port as every store method does, and core refuses a
+  policy whose window is under 3,600 seconds, is no whole number, or is missing,
+  before anything is sent.
+- **The cap.** A unit with more than `MAX_PURGE_UNIT_CHECKPOINTS` checkpoints,
+  200,000, is kept: a purge deletes a unit whole in one batch, and a batch holds
+  the database's writer for as long as it runs. The cap is the largest unit
+  libSQL was measured to purge without holding its writer past one second.
+  Beside 200,000 checkpoints of a task that is kept, five units of each size
+  were purged through the port. The median, with the lowest and the highest, in
+  milliseconds: 20,000 checkpoints 28.2 (21.8 to 35.9); 50,000, 78.6 (65.3 to
+  95.8); 100,000, 134.2 (133.1 to 148.4); 200,000, 268.5 (263.0 to 283.6);
+  400,000, 636.2 (531.8 to 1,016.3); 800,000, 1,174.9 (1,051.0 to 1,626.3). The
+  numbers are from a loaded shared machine, with a load average of 52 to 66
+  while they were taken. On every dialect the grid's size cells purge a unit one
+  under the cap and one at it, and keep one past it.
+- **MySQL's lock order.** On MySQL the purge's compare-and-set reaches a task
+  that has an idempotency key through the unique index of that key, and not
+  through the primary key its WHERE also names. A spawn under a key that exists
+  locks the key's entry in that index and then the row. A purge that found its
+  task by the primary key locked the row first, and its last statement, which
+  deletes the row, then asked for the key's entry. A spawn that reused the key
+  of a unit being purged held the one and waited for the other, and the server
+  rolled one of them back: 40 deadlock victims in 20 rounds of the contest.
+  Read through the key's index, the purge takes the two in the order the spawn
+  does, and three runs of 20 rounds counted no victim. The last statement is a
+  delete of one row by its primary key and its stamp, which the MySQL compiler
+  admits for `tasks` alone: every other delete of the batch has found its rows
+  through that row, so no table is left to key it from.
 - **After a purge,** `getTaskResult` and `retryTask` answer as for a task that
-  never existed, and an await of the task is refused.
+  never existed, an await of the task is refused with
+  `ChildAwaitRefusedError('no-such-task')`, and a spawn under the unit's key
+  creates a fresh task. The case `a unit that is gone` holds each on every
+  dialect. The CLI's `inspect`, by id and by key, and its `explain` exit 8 for
+  the task, as for one that never existed, which a CLI case holds on libSQL.
 - **What keeps a unit forever,** by design: a failed spawning parent the policy
   keeps; a run that failed or was cancelled while holding the child's outcome,
   while the run's own unit is kept, because its task is in a state the policy
@@ -6854,8 +6930,8 @@ depend on them can be built.
   stranded. The model's liveness property, `AgedUnblockedIsPurged`, says the
   barrier keeps a unit forever for no other reason the model can express.
   Outside the model, four more things keep a unit: a NULL stamp, which is never
-  selected; a key that starts with `$spawn:` and does not parse; once PR5.2c2
-  adds the cap, a unit with more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`;
+  selected; a key that starts with `$spawn:` and does not parse; a unit with
+  more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`;
   and a cycle of runs that hold each other's outcomes, which keeps every unit
   in it even under a policy that names every state. Such a cycle needs a
   `retryTask` revival. A run holds the outcome of a task that ended while the
@@ -6865,7 +6941,12 @@ depend on them can be built.
   its outcome, `retryTask` revives A, A parks on B, B is cancelled before its
   claim, which wakes A with B's outcome, and A is cancelled before its claim.
   Each cancelled run then holds the other task's outcome. BUILD.md records the
-  remedy as an option with its trigger.
+  remedy as an option with its trigger. Three more conditions of the
+  compare-and-set keep a unit in a state no engine path leaves, and are
+  defences: a stamp that is no integer in range, a run of the unit that is live
+  though its task has ended, and a run of the unit that stands in another queue.
+  The cases of `what keeps a unit that no engine path leaves` hold each on rows
+  written by hand.
 
 **Schema version 12.** Two of retention's reads had no index to go by, and on MySQL its
 deletes had none to find their keys by. The version adds indexes and nothing else.
@@ -6928,6 +7009,21 @@ A build that predates the version runs against the schema unchanged, and the rel
 alpha.1 runs its cycle on a libSQL database the CLI migrated to it
 (`scripts/alpha1-compat.sh`).
 
+**A released declaration and a gate that changed.** Two things outside
+retention's own files changed for it. `FENCE_RELATIONS`, which the release
+alpha.1 published, gained `tasks-to-checkpoints` and `tasks-to-events`, the
+relations the generated deletes of a purge follow. The change is recorded under
+`changed` in `scripts/published-surface-v0.1.0-alpha.1.json`, beside
+`FencedBatch`, whose generated statements take no set for a target that carries
+no provenance. A consumer that names one of the five older relations is
+unchanged. And the libSQL plan reader counts a range over `fence_at_ms` as a
+due range (section 3.2). The three legs of `purge-candidates` need it: each
+ranges over `tasks_terminal` under a LIMIT, and before, the reader refused each
+as a walk of `tasks`. What the gate protects still holds: the plan test names
+each of the three legs with the LIMIT that bounds it, as it names every
+statement that holds a due range, and each store's plan test pins the
+statements of `purge-unit` beside a history of ended units.
+
 **Two contract changes, which the maintainer approved on 2026-10-03.** Both
 follow from bounding rows by deleting task rows.
 
@@ -6937,14 +7033,17 @@ follow from bounding rows by deleting task rows.
    the key still dedupes, because no unit is purged before its window ends
    (`PurgeOnlyDeadAndOld`). The completed and cancelled windows must therefore
    exceed the producer's redelivery horizon. A spawn that reuses a key while
-   its unit is being purged must create a fresh task and must not throw. That
-   is a requirement on PR5.2c2, not a property of today's stores: every store's
-   spawn throws when its insert loses and its read of the key then finds no
-   task (`the task insert lost but no existing task explains it`). Nothing
-   deletes a task row today, so no store can reach that throw, and a purge
-   makes it reachable. PR5.2c2's contest drives the race on every dialect, and
-   when the insert loses and no task explains it, the store retries the insert
-   once, because the key is then free and a second loss is real.
+   its unit is being purged creates a fresh task and does not throw. Before
+   anything deleted a task row, every store's spawn threw when its insert lost
+   and its read of the key then found no task (`the task insert lost but no
+   existing task explains it`), and no store could reach that throw. A purge
+   makes it reachable: the insert loses to the task that holds the key, and the
+   purge takes that task before the spawn reads it. So when the insert loses
+   and no task explains it, the store sends the spawn's batch once more,
+   because the key is then free. A second loss that no task explains is real,
+   and is thrown. The cases of `a spawn under a key whose task a purge takes`
+   hold both on every dialect, and the contest spawns under the keys of units
+   being purged with no spawn throwing.
 2. **A child handle is valid until its unit is purged, and an await after that
    fails loudly.** The spawning parent's handle stays valid for as long as the
    parent can run, by B5. A handle given to any other task cannot be found
@@ -6966,18 +7065,19 @@ and wake, the three awaits, the woken claim and the timed wait, sagas,
 properties under weak fairness on every configuration. Each names its
 executable twin: the ones the invariant library has, the three conditions of
 `retentionViolations`, which `engineHistoryViolations` runs behind every
-surface that judges a history, and the ones PR5.2c2 and PR5.2d add, which the
-table names by the PR that builds them.
+surface that judges a history, the cases of the purge in the `retention`
+surface (`conformance/src/retention-purge.ts`), which the table names by their
+titles, and the one PR5.2d adds.
 
 | Property | What it says | Executable twin |
 |---|---|---|
-| `WholeUnit` | a unit is whole or gone | for rows that outlive their task: `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and the contest's rule that every completion event names a task (PR5.2c2); for a task row with no run: `task-without-a-run` |
-| `PurgeOnlyDeadAndOld` | only a task in a policy state, a window old, is purged | the barrier grid's state and age legs (PR5.2c2) |
-| `ReplayableParentKeepsChild` | a parent that can still run finds its child | `spawn-memo-without-its-task`: a live task, or a failed one whose saga never began, holds no spawn memo whose child is gone; and the consequence oracle (PR5.2c2) |
+| `WholeUnit` | a unit is whole or gone | for rows that outlive their task: `run-owner-missing`, `checkpoint-owner-run-missing`, `wait-run-missing`, and `completion-event-without-task`, each read after every round of the contest `the purge beside the rest of the engine`, beside its own list of rows whose task is gone; for a task row with no run: `task-without-a-run` |
+| `PurgeOnlyDeadAndOld` | only a task in a policy state, a window old, is purged | the state and age legs of `the barrier grid`, at the window and one millisecond either side of it |
+| `ReplayableParentKeepsChild` | a parent that can still run finds its child | `spawn-memo-without-its-task`: a live task, or a failed one whose saga never began, holds no spawn memo whose child is gone; and the cases of `what a kept unit's parent and holder find` |
 | `NoStrandedWaiter` | a wait on a completion event has its task | `completion-wait-without-its-task-or-event`: a wait on a completion event has that task in its queue, or the event |
 | `CarrierKeepsEvent` | a run that carries an outcome has its event | `payload/event-missing` |
-| `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the purge label's crash and duplicate cells (PR5.2c2) |
-| `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the native purge-versus-await race in the `retention` surface (PR5.2c2) |
+| `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the crash and duplicate cells of `purge-unit` in the fault matrix, and the case `takes a child and its parent, each whole, and the same purge sent again takes nothing` |
+| `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the race `a purge beside an await of the same child`, and the case `a unit that is gone` |
 | `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |
 | `TypeOK` | the variables keep their types | none needed |
 
@@ -7004,7 +7104,7 @@ saga are not held either: B5 keeps them, and the model's property, which this
 condition is the twin of, does not. A wait is held to its own queue, because a
 completion event lives in its task's queue, so only a task or an event of the
 wait's queue can wake it. Every surface that judges a history passes all three
-conditions today, since nothing deletes a task. Each is seen failing on rows
+conditions, the ones that purge among them. Each is seen failing on rows
 written by hand, on every dialect.
 
 Each mutant in `specs/Retention.mutants.json` deletes or bends one guard of the

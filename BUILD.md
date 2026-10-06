@@ -645,7 +645,7 @@ accepts it.
     completion event. The model's actions are ledgered in the no-batch form
     (`Purge -- the purge batch lands in PR5.2c2`), because the spec ledger
     refuses a quoted label that no store sends. PR5.2c2 turns them into
-    mappings, and each invariant names its executable twin. Red: deleting any
+    mappings, as it since has, and each invariant names its executable twin. Red: deleting any
     conjunct of Purge's guard while TLC stays green fails the mutant check. This
     is met. The maintainer approved the two contract changes of DESIGN.md
     section 3.12 on 2026-10-03, which that pull request waited for. `pnpm verify:tla` finds no error on four
@@ -660,8 +660,9 @@ accepts it.
     halves from `PurgeHolder`'s, and change what the batch deletes and what an
     await registers. The 14 probe configurations find their witnesses,
     `RetentionProbeLateHandle` and `RetentionProbeLegacyNoEvent` among them. The
-    ledger lists `PurgeChild` and `PurgeHolder` as `-- the purge batch lands in
-    PR5.2c2`, and section 3.12's table names each property's executable twin. No
+    ledger listed `PurgeChild` and `PurgeHolder` as `-- the purge batch lands in
+    PR5.2c2` until that pull request mapped them onto `purge-unit`, and section
+    3.12's table names each property's executable twin. No
     property holds two parts of B5, the block of a parent that is rolling back
     or failed with a saga and the admission of a completed or cancelled parent,
     so no mutant names them: the model's header and section 3.12 say why, and
@@ -766,7 +767,29 @@ accepts it.
     alpha.1 harness runs at schema version 12. Red: deleting the parent conjunct
     fails its grid cell and the consequence oracle by name, deleting the carry
     conjunct fails the wake-payload-mismatch invariant, and adding SKIP LOCKED
-    fails the contest's whole-unit check. NOT MET.
+    to a purge delete fails the contest by name, because the statement grammar
+    refuses the batch when it is built. This is met. `purgeConformance`
+    (`conformance/src/retention-purge.ts`) runs in the shared `retention`
+    surface on the three dialects. `the barrier grid` holds the 780 cells, of
+    which the oracle lets 136 units go: each purge is compared with
+    `purgeOracle` over a dump of every table, and every table is compared with
+    the oracle's afterwards. `what a kept unit's parent and holder find` is the
+    consequence oracle, `a purge beside an await of the same child` is the
+    race, 12 at once, and `the purge beside the rest of the engine` is the
+    contest, 8 rounds, with `deadlocks() == 0`. The cases of `a unit that is
+    gone`, `what keeps a unit that no engine path leaves`, `what the retention
+    port refuses` and `a spawn under a key whose task a purge takes` hold the
+    rest. `purge-unit` is enrolled in the fault matrix, the poison matrix and
+    the stale-token column, and the fuzz walk purges under fake time with every
+    purge held to the oracle. Seen failing by name on libSQL: with the parent
+    conjunct deleted, 16 blocks of the grid and the 4 consequence cases of a
+    parent; with the carry conjunct deleted, 16 blocks of the grid and the case
+    of the woken run, whose history then holds `wake-payload-mismatch`. On
+    PostgreSQL, with SKIP LOCKED added to the key selection of a generated
+    delete, the contest and the case of `a unit that is gone` fail by name with
+    the grammar's refusal. The checkpoint cap is 200,000, measured, and the
+    alpha.1 harness runs at versions 5 to 12. DESIGN.md section 3.12 holds the
+    port, the batch, the cap's measurement and each property's twin.
 43. PR5.2d: table size stays bounded over a simulated week, and can fail. A
     `retention-soak` surface runs on the three dialects through the one
     enrollment door. It takes 168 hourly arrivals of a seeded mix: plain tasks;
@@ -944,8 +967,9 @@ above 5; if the harness fails at some version, the deployed database stays at 5
 and retention there needs an alpha.2 release. Retention numbers: the completed and
 cancelled windows, whether failed tasks are ever
 purged (the plan keeps them, so a failed parent keeps its children), the
-producer's redelivery horizon, the 3,600 second floor and the 5,000 checkpoint
-unit cap. No longer held: the maintainer approved on 2026-10-03 the two contract
+producer's redelivery horizon, the 3,600 second floor and the checkpoint
+unit cap, which PR5.2c2 measured and set at 200,000 where the plan proposed
+5,000. No longer held: the maintainer approved on 2026-10-03 the two contract
 changes PR5.2a writes into DESIGN.md section 3.12, that an idempotency key
 dedupes for the window of its task's terminal state and that a child handle is
 valid until its unit is purged, after which an await is refused loudly. And on
@@ -6178,9 +6202,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
   party holding the child's handle, beside every engine action the purge can
   race. TLC checks nine properties under weak fairness on four configurations,
   18 mutants are each caught by the property they name, and fourteen probes
-  find their witnesses, all in `pnpm verify:tla`. The model is PR5.2c2's
-  precondition: its ledger block lists `PurgeChild` and `PurgeHolder` as having
-  no batch, and PR5.2c2's purge batch turns that line into a mapping. The two
+  find their witnesses, all in `pnpm verify:tla`. The model was PR5.2c2's
+  precondition: its ledger block listed `PurgeChild` and `PurgeHolder` as having
+  no batch, and PR5.2c2's purge batch turned that line into a mapping. The two
   contract changes of §3.12, an idempotency key that dedupes for its task's
   window and a child handle valid until its unit is purged, were approved by
   the maintainer on 2026-10-03. The design recorded an alternative for the parent
@@ -6337,9 +6361,11 @@ these three things; nothing else in the system does I/O, time, or randomness.
     follows it then. PR5.3c did not build it, and its entry says why and names the trigger
     now.
   - Option for `inspect --key`, not built, with its trigger: find the task by its key and
-    read its facts in one batch. Today they are two reads, and nothing deletes a task
-    between them. Trigger: PR5.2c2, whose purge can, and then a key that found a task
-    answers exit 8.
+    read its facts in one batch. Today they are two reads. Only a purge deletes a task
+    between them, and then a key that found a task answers exit 8, as a CLI case holds
+    for a task purged before either read. PR5.2c2 did not build it, because nothing an
+    operator runs calls a purge yet. Trigger: PR5.2d, whose `purge` verb can run beside
+    an `inspect --key`.
   - Option for the event's instant, not built, with its trigger: a schema version that sets
     `events.emitted_at_ms` NOT NULL on the three dialects, as version 10 did for `payload`.
     `PERSISTED_TEMPORAL_FIELDS` and `STORE_TABLE_COLUMNS` record the column as nullable
@@ -6897,13 +6923,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     statement of a batch (`writesTerminalTaskState`) and keeps it private. Exported as the
     mark of a tree-built statement is, and recorded beside each statement of
     `corpus/<dialect>.json`, it would let the surface ask a case of every such statement and
-    not only of every shape. It changes core and the corpus's format. Trigger: PR5.2c2,
-    which adds a batch to core and to the corpus, or a batch shape that holds two statements
-    that can end a task.
-  - Option for the cells, not built, with its trigger: a fourth pre-state, a task that
-    failed with a saga, which `retry-task` refuses. The three cells of `retry-task` hold a
-    completed and a cancelled task still and a failed one revived. Trigger: PR5.2c2, whose
-    barrier grid builds a saga-failed task.
+    not only of every shape. It changes core and the corpus's format. PR5.2c2 added a
+    batch to core and to the corpus and did not build it: no statement of `purge-unit`
+    ends a task, so the surface gained no statement to ask a case of. Trigger: a batch
+    shape that holds two statements that can end a task.
+  - The option for the cells, built by PR5.2c2, whose barrier grid builds a saga-failed
+    task: a fourth pre-state, a task that failed with a saga, which `retry-task` refuses.
+    Every write label is held over it, and the cells of `retry-task` hold a completed, a
+    cancelled and a saga-failed task still and a failed one revived.
   - Option for the helper's reads, not built, with its trigger: one read for the four
     checkers. Today each checker reads its own rows, so a call of `engineHistoryViolations`
     sends five read batches where it sent four, and the retention checker's five statements
@@ -6912,6 +6939,76 @@ these three things; nothing else in the system does I/O, time, or randomness.
     nine entries of main's registry name, so the base gate's arm would have to re-aim them.
     Trigger: a fifth checker, or an ownership test of the fault matrix that nears its 300
     second limit.
+- **PR5.2c2 schema version 12 and the retention purge port**: DONE. Exit test line 42 of
+  the operable alpha milestone, and the first code that deletes durable state. Schema
+  version 12 adds the indexes retention reads through, on the three dialects. Core gains
+  the `Retention` port, `purgeCandidates` and `purgeUnit`, with its one implementation and
+  the purge's statements as trees, in the batches `purge-candidates` and `purge-unit`, and
+  each store package exports a factory for it. Nothing an operator runs calls the port: no
+  CLI verb, no hosted route and no driver call is added, and only a test purges until
+  PR5.2d's `purge` verb. A statement tree that deletes from `tasks`, `runs`, `checkpoints`
+  or `events` is refused unless the compare-and-set of a purge gates it. `FENCE_RELATIONS`,
+  a released declaration, gains the two relations the purge's deletes follow, recorded
+  under `changed`, and the libSQL plan reader counts a range over `fence_at_ms` as a due
+  range. `specs/Retention.tla` changes only in its comments: its ledger maps `purge-unit`
+  onto `PurgeChild` and `PurgeHolder`, and no action and no guard changed. Every store's
+  spawn sends its batch once more when its insert lost and no task explains it, which
+  landed as a failing case and then the fix. DESIGN.md section 3.12 holds the port, the
+  batch, the cap with its measurement, MySQL's lock order and each property's twin. The
+  registry holds 1447 mutations where main held 1412: eight for the rule that only a purge
+  deletes, one for the row check of a completion event whose task is gone, nine caught by
+  a block of the barrier grid, nine by a case of a condition no engine path reaches, three
+  by core's cases of the batch, three for the spawn that sends once more, and two for
+  MySQL's index rules. The base gate's arm is keyed on main's digest, exempts their
+  thirty-one markers, lists the four condition lines of the tree rule, and re-aims one
+  entry of main's registry, whose line moved when the MySQL compiler's table of stamp
+  indexes gained `tasks`.
+  - Where the build differs from the plan, and why. (1) The red for SKIP LOCKED is a
+    refusal when the batch is built. The statement grammar refuses every select modifier
+    but DISTINCT, so no purge statement that holds SKIP LOCKED can be sent, and the contest
+    fails by name with that refusal and not with a part unit. Line 42 says so now. (2)
+    `purgeCandidates` pages by a cursor, its last task's ending instant and id. Without
+    one, a page of units the barrier keeps would hide every unit behind it. (3) `purgeUnit`
+    takes the unit's idempotency key from its caller, and the compare-and-set holds the
+    row to that key, because B5's parent is parsed from the key before the batch is built.
+    (4) The batch is eight statements. The unit's runs are stamped by an update before
+    its waits are deleted, because a wait is reached through the run it names and a
+    generated delete follows a stamp. (5) On MySQL the compare-and-set reaches a task that
+    has a key through the key's unique index, so that it locks the key's entry and then
+    the row, as a spawn does. The contest found it: 40 deadlock victims in 20 rounds
+    before, and none in three runs of 20 rounds after. (6) On MySQL the last delete, of
+    the task row, is a delete of one row by its primary key and its stamp, which the
+    compiler admits for `tasks` alone. (7) The checkpoint cap is 200,000, measured, where
+    the plan proposed 5,000. (8) The oracle reads a dump of every table and every table is
+    compared afterwards, and two cases that stay in the suite show the grid failing for a
+    purge whose delete lost its key and for one whose delete lost its stamp. (9) Once the
+    batch has committed, core checks that each delete removed what the unit held when the
+    compare-and-set read it, and throws otherwise. (10) `retentionViolations` gained no
+    fourth condition for a completion event whose task is gone: the child-task row checks
+    already name it, `completion-event-without-task`, and the surface gains a case and a
+    mutation for it. (11) The saga row checker copied a task's list of checkpoints once
+    for each row, which took 194 seconds over a unit at the cap. It gathers them in place
+    now, and answers as it did. (12) PostgreSQL's plan pin is taken beside a history of
+    2,000 units, because over empty tables the planner prices every path at nothing.
+  - Seen failing, each by name. On libSQL, with the parent conjunct deleted, 16 blocks of
+    the grid and the 4 consequence cases of a parent failed, and with the carry conjunct
+    deleted, 16 blocks of the grid and the case of the woken run, by
+    `wake-payload-mismatch`. On PostgreSQL, with SKIP LOCKED added to a generated delete's
+    key selection, the contest and the case of `a unit that is gone` failed with the
+    grammar's refusal. On each dialect the two cases of the spawn that sends once more
+    failed before the fix. The two cases of a delete that lost its key and one that lost
+    its stamp fail the grid for as long as the suite runs them. The first unfiltered
+    reading of the new mutations found two caught on the wrong path, each fixed before
+    this entry was written: the rule's last condition was aimed at the stamp of another
+    statement, and a bent purge now reports what it threw, so that the case of a run in
+    another queue fails under its own marker.
+  - The options whose trigger was this pull request. Built: the saga-failed pre-state of
+    the cells (the entry of PR5.2c1). Not built, each with what is left of its trigger
+    where it stands: `inspect --key` in one batch (the entry of PR5.3b1), whose trigger
+    moves to PR5.2d, and the mark of a statement that ends a task carried in the corpus
+    (the entry of PR5.2c1), because the new batch ends no task. The remedy for a cycle of
+    runs that hold each other's outcomes (the entry of PR5.2a) stays an option: its
+    trigger is a unit seen kept that way, and no purge has run over a live history.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
