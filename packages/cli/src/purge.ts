@@ -113,26 +113,12 @@ export function unitView(candidate: PurgeCandidate): Record<string, unknown> {
   }
 }
 
-/** Why the barrier keeps a unit, as the command names it. */
-export const KEPT_REASONS = [
-  'not-ended-a-window-ago',
-  'unstamped',
-  'live-run',
-  'outcome-held',
-  'awaited',
-  'parent-can-run-again',
-  'key-changed',
-  'run-in-another-queue',
-  'oversized',
-] as const
-export type KeptReason = (typeof KEPT_REASONS)[number]
-
 /**
- * The reason each condition of the barrier gives when it is false. It is keyed by core's
- * list of the barrier's conditions, so a condition the barrier gains stops the build until
- * it has a reason here.
+ * Why the barrier keeps a unit, as the command names it: the reason each condition of the
+ * barrier gives when it is false. It is keyed by core's list of the barrier's conditions,
+ * so a condition the barrier gains stops the build until it has a reason here.
  */
-export const REASON_OF_CONDITION: Readonly<Record<PurgeBarrierCondition, KeptReason>> = {
+export const REASON_OF_CONDITION = {
   endedAWindowAgo: 'not-ended-a-window-ago',
   stampInRange: 'unstamped',
   noLiveRun: 'live-run',
@@ -142,23 +128,7 @@ export const REASON_OF_CONDITION: Readonly<Record<PurgeBarrierCondition, KeptRea
   spawnedUnderThisKey: 'key-changed',
   ownsEveryRun: 'run-in-another-queue',
   withinTheCheckpointCap: 'oversized',
-}
-
-export const REASON_SAYS: Readonly<Record<KeptReason, string>> = {
-  'not-ended-a-window-ago':
-    "the task is not in a state the policy names, ended at least that state's window ago: it was revived, or its age is under the window",
-  unstamped:
-    'the instant the task ended is not a stored instant in range, so its age cannot be read',
-  'live-run': 'a run of the task is live, though the task has ended, which no engine path writes',
-  'outcome-held':
-    "a run of another task holds the task's outcome, so a claim of that run still reads it",
-  awaited: "a wait names the task's completion event, which an older build left",
-  'parent-can-run-again':
-    'the task that spawned it is live or failed, and its replay would spawn a second child, or its key names no parent that can be read',
-  'key-changed': 'the task is not spawned under the key it was listed under',
-  'run-in-another-queue': 'a run of the task is in another queue, which no engine path writes',
-  oversized: 'the unit holds more checkpoints than one batch may delete',
-}
+} as const satisfies Readonly<Record<PurgeBarrierCondition, string>>
 
 /**
  * What the barrier says of a unit it keeps, from the read of each of its conditions: the
@@ -174,7 +144,7 @@ export function keptView(
   const conditionsNotHeld = PURGE_BARRIER_CONDITIONS.filter(
     (condition) => !admission.holds[condition],
   )
-  const reasons = [...new Set(conditionsNotHeld.map((condition) => REASON_OF_CONDITION[condition]))]
+  const reasons: string[] = conditionsNotHeld.map((condition) => REASON_OF_CONDITION[condition])
   return {
     ...unitView(candidate),
     reasons: reasons.length === 0 ? ['none-as-of-this-read'] : reasons,

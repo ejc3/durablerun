@@ -58,7 +58,12 @@ export const SOAK_POLICY: RetentionPolicy = Object.freeze({
 })
 
 /** The longest window of the soak's policy, in hours. */
-const LONGEST_WINDOW_HOURS = 48
+const LONGEST_WINDOW_HOURS =
+  Math.max(
+    SOAK_POLICY.completedSeconds,
+    SOAK_POLICY.cancelledSeconds,
+    SOAK_POLICY.failedSeconds ?? 0,
+  ) / 3_600
 
 /**
  * The last hour a pass runs at. No arrival comes after the week, and the passes go on for
@@ -109,6 +114,8 @@ const CANCELLED_SLEEP_HOURS = 3
 
 type Role = 'main' | 'child'
 type Rows = Record<UnitTable, number>
+/** How a task ended: its state, and the instant. */
+type Ending = { state: string; endedAtMs: number }
 
 const NO_ROWS: Rows = Object.freeze({ tasks: 0, runs: 0, checkpoints: 0, waits: 0, events: 0 })
 
@@ -183,6 +190,8 @@ class Week {
   swept = 0
   /** Operator acts that changed nothing: a revival or a cancellation the store refused. */
   operatorMisses = 0
+  /** What the history checkers found, at each day boundary and at the end. */
+  readonly violations: string[] = []
 
   constructor(private readonly f: StoreFixture) {
     this.store = f.storeOver(f.raw)
@@ -424,14 +433,17 @@ export interface SoakControl {
   >
   readonly violations: readonly string[]
   /** How each slot ended, read at the end. */
-  readonly ended: ReadonlyMap<string, { state: string; endedAtMs: number }>
+  readonly ended: ReadonlyMap<string, Ending>
   /** The rows of each `digest` unit at the end, as distinct shapes. */
   readonly digestUnits: readonly Rows[]
   readonly swept: number
   readonly operatorMisses: number
 }
 
-/** The hours of a week, each with what both runs do in it, in order. */
+/**
+ * The hours of a week, each with what both runs do in it, in order. The history checkers
+ * read at each day boundary, before that hour's own work, and once more at the end.
+ */
 async function hours(
   f: StoreFixture,
   mix: readonly SoakKind[],
@@ -443,6 +455,11 @@ async function hours(
   for (let hour = 0; hour <= SOAK_LAST_HOUR; hour++) {
     const now = instantOf(hour)
     await f.admin.setFakeNowEpochMs(now)
+    if (hour > 0 && hour % 24 === 0) {
+      for (const found of await engineHistoryViolations(f.raw)) {
+        week.violations.push(`day ${hour / 24}: ${found}`)
+      }
+    }
     await startOfHour(hour, now)
     const kind = mix[hour]
     if (kind !== undefined) await week.arrive(hour, kind)
@@ -451,13 +468,12 @@ async function hours(
     await week.drive(now, instantOf(hour + 1))
   }
   await f.admin.setFakeNowEpochMs(instantOf(SOAK_LAST_HOUR + 1))
+  for (const found of await engineHistoryViolations(f.raw))
+    week.violations.push(`the end: ${found}`)
   return week
 }
 
-function endedOf(
-  bySlot: ReadonlyMap<string, SqlRow>,
-  into: Map<string, { state: string; endedAtMs: number }>,
-) {
+function endedOf(bySlot: ReadonlyMap<string, SqlRow>, into: Map<string, Ending>) {
   for (const [slot, task] of bySlot) {
     if (isTerminalState(task.state)) {
       into.set(slot, { state: String(task.state), endedAtMs: Number(task.fence_at_ms) })
@@ -479,7 +495,6 @@ export async function soakControl(
       number,
       { sizes: Rows; unitRows: Map<string, Rows>; strayWaits: number }
     >()
-    const violations: string[] = []
     const unitRowsOf = (dump: ProtocolSnapshot, nowMs: number, bySlot: Map<string, SqlRow>) =>
       new Map(
         [...bySlot].map(([slot, task]) => [
@@ -498,11 +513,6 @@ export async function soakControl(
           strayWaits: waitsByRun(dump).ofEndedRuns,
         })
       }
-      if (hour > 0 && hour % 24 === 0) {
-        for (const found of await engineHistoryViolations(f.raw)) {
-          violations.push(`day ${hour / 24}: ${found}`)
-        }
-      }
     })
     const end = await snapshot(f.raw)
     const bySlot = slotsByRow(end)
@@ -511,19 +521,18 @@ export async function soakControl(
       const given = made.actors.get(String(task.task_id))?.slot
       if (given !== slot) throw new Error(`soak: ${slot} was made as ${String(given)}`)
     }
-    const ended = new Map<string, { state: string; endedAtMs: number }>()
+    const ended = new Map<string, Ending>()
     endedOf(bySlot, ended)
     const digestUnits = new Map<string, Rows>()
     for (const [slot, rows] of unitRowsOf(end, instantOf(SOAK_LAST_HOUR + 1), bySlot)) {
       const hour = Number(slot.slice(0, slot.indexOf('/')))
       if (mix[hour] === 'digest') digestUnits.set(JSON.stringify(rows), rows)
     }
-    for (const found of await engineHistoryViolations(f.raw)) violations.push(`the end: ${found}`)
     return {
       mix,
       samples,
       boundaries,
-      violations,
+      violations: made.violations,
       ended,
       digestUnits: [...digestUnits.values()],
       swept: made.swept,
@@ -579,19 +588,22 @@ function modelPass(
 ): { gone: string[]; after: ProtocolSnapshot; kept: Map<string, readonly KeptBy[]> } {
   let after = dump
   const gone: string[] = []
+  // What keeps each unit that is left. The last walk lets nothing go, so every entry it
+  // writes is read over the rows the pass leaves.
+  const kept = new Map<string, readonly KeptBy[]>()
   for (let changed = true; changed; ) {
     changed = false
+    kept.clear()
     for (const task of tasksOf(after)) {
       const oracle = purgeOracle(after, nowMs, Q, unitOf(task), policy)
-      if (oracle.keptBy.length > 0) continue
+      if (oracle.keptBy.length > 0) {
+        kept.set(String(task.task_id), oracle.keptBy)
+        continue
+      }
       after = oracle.after
       gone.push(String(task.task_id))
       changed = true
     }
-  }
-  const kept = new Map<string, readonly KeptBy[]>()
-  for (const task of tasksOf(after)) {
-    kept.set(String(task.task_id), purgeOracle(after, nowMs, Q, unitOf(task), policy).keptBy)
   }
   return { gone, after, kept }
 }
@@ -656,11 +668,10 @@ export async function soakWeek(
     const retention = f.retentionOver(f.raw)
     const passMismatches: string[] = []
     const outcomeMismatches: string[] = []
-    const violations: string[] = []
     const boundaries: { hour: number; retained: Rows; bound: Rows; control: Rows }[] = []
     /** Slots the model has let go, through the pass before this hour's. */
     const modelGone = new Set<string>()
-    const ended = new Map<string, { state: string; endedAtMs: number }>()
+    const ended = new Map<string, Ending>()
     const keptByParentAlone = new Set<string>()
     const keptByParent = new Set<string>()
     const keptByCarry = new Set<string>()
@@ -677,11 +688,9 @@ export async function soakWeek(
       const waits = waitsByRun(dump)
       strayWaits += waits.ofEndedRuns
       liveWaits += waits.ofLiveRuns
-      const slotOfTask = (taskId: string): string => {
-        const task = dump.tasks.find((row) => row.task_id === taskId)
-        return task === undefined ? `no task ${taskId}` : slotByRow(task)
-      }
       const bySlot = slotsByRow(dump)
+      const slotById = new Map([...bySlot].map(([slot, task]) => [String(task.task_id), slot]))
+      const slotOfTask = (taskId: string): string => slotById.get(taskId) ?? `no task ${taskId}`
       endedOf(bySlot, ended)
 
       // Outcomes, sampled before the pass, beside the control's of the same hour.
@@ -707,11 +716,6 @@ export async function soakWeek(
           ),
           control: boundary.sizes,
         })
-      }
-      if (hour > 0 && hour % 24 === 0) {
-        for (const found of await engineHistoryViolations(f.raw)) {
-          violations.push(`day ${hour / 24}: ${found}`)
-        }
       }
 
       // The pass, beside what the model lets it take.
@@ -747,7 +751,6 @@ export async function soakWeek(
         if (others.length > 0) keptOtherwise.add(`${slot}: ${others.join(', ')}`)
       }
     })
-    for (const found of await engineHistoryViolations(f.raw)) violations.push(`the end: ${found}`)
 
     const assigned = control.mix.flatMap((kind, hour) => assignedEndings(hour, kind))
     const notAsAssigned = assigned
@@ -767,7 +770,7 @@ export async function soakWeek(
       outcomeMismatches,
       outcomesCompared,
       boundaries,
-      violations,
+      violations: week.violations,
       purgedRows: sum(purged.map((unit) => unit.rows as Rows)),
       purgedUnits: purged.length,
       keptByParentAlone: keptByParentAlone.size,
@@ -842,7 +845,7 @@ export function vacuous(report: SoakReport): string[] {
  * the rest read what it left. Both weeks took 22 seconds on libSQL, 39 on PostgreSQL and
  * 22 on MySQL, on a loaded shared machine, so this is over fifteen times the slowest.
  */
-const SOAK_TIMEOUT_MS = 600_000
+export const SOAK_TIMEOUT_MS = 600_000
 
 /**
  * The rows one unit of the `digest` kind holds, which is the shape of one period of a

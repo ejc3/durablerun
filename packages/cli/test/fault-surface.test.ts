@@ -20,12 +20,13 @@ import {
   COMPLETED_KEY,
   type CliDb,
   type FaultSite,
+  PURGE_WINDOWS,
   QUEUE,
   SELECTED,
   SENTINEL,
   type SeededTasks,
   type StartingSchema,
-  claimActivated,
+  childrenOfARunningParent,
   faulting,
   openCliDb,
   openerWrapping,
@@ -263,10 +264,7 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
 /** The windows every `purge` scenario names, and the flags every write takes. */
 const purgeLine = (db: CliDb, ...more: string[]): string[] => [
   'purge',
-  '--completed-after',
-  '1h',
-  '--cancelled-after',
-  '1h',
+  ...PURGE_WINDOWS,
   ...more,
   ...named(db),
 ]
@@ -278,21 +276,9 @@ const purgeLine = (db: CliDb, ...more: string[]): string[] => [
  * database's own clock.
  */
 async function aKeptCandidate(db: CliDb): Promise<string> {
-  const parent = await db.store.spawn(QUEUE, 'parent', '{}')
-  const running = await claimActivated(db, 'purge-parent', parent.taskId)
-  const child = await db.store.spawn(QUEUE, 'child', '{}', {
-    childOf: {
-      parentQueue: QUEUE,
-      parentTaskId: parent.taskId,
-      runId: running.runId,
-      claimToken: running.claimToken,
-      replayKey: 'child#1',
-    },
-  })
-  const worked = await claimActivated(db, 'purge-child', child.taskId)
-  await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
+  const [child] = await childrenOfARunningParent(db, 1)
   await db.admin.setFakeNowEpochMs(null)
-  return child.taskId
+  return String(child)
 }
 
 /** The idempotency key of the task the second `enqueue` scenario finds. */

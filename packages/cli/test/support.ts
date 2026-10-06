@@ -763,3 +763,46 @@ export const writeFlags = (db: Pick<CliDb, 'target'>): string[] => [
   '--target',
   db.target,
 ]
+
+/** The two windows every purge names, each at the shortest a policy takes. */
+export const PURGE_WINDOWS: readonly string[] = [
+  '--completed-after',
+  '1h',
+  '--cancelled-after',
+  '1h',
+]
+
+/** The windows of a policy that names every ended state. */
+export const PURGE_EVERY_STATE: readonly string[] = [...PURGE_WINDOWS, '--failed-after', '1h']
+
+/** What a run changed: its answer, and whether a dump of every table is as it was before. */
+export async function changedBy<T>(db: CliDb, run: () => Promise<T>) {
+  const before = await db.dump()
+  const out = await run()
+  return { out, unchanged: (await db.dump()) === before }
+}
+
+/**
+ * Children that completed under a parent that is still running. Each is a candidate once
+ * it is a window old, and the barrier keeps it: its parent's replay would spawn it again.
+ */
+export async function childrenOfARunningParent(db: CliDb, count: number): Promise<string[]> {
+  const parent = await db.store.spawn(QUEUE, 'parent', '{}')
+  const running = await claimActivated(db, 'purge-parent', parent.taskId)
+  const children: string[] = []
+  for (let index = 0; index < count; index++) {
+    const child = await db.store.spawn(QUEUE, 'child', '{}', {
+      childOf: {
+        parentQueue: QUEUE,
+        parentTaskId: parent.taskId,
+        runId: running.runId,
+        claimToken: running.claimToken,
+        replayKey: `child#${index}`,
+      },
+    })
+    const worked = await claimActivated(db, `purge-child-${index}`, child.taskId)
+    await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
+    children.push(child.taskId)
+  }
+  return children
+}

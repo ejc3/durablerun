@@ -14,6 +14,8 @@ import {
   BIN,
   COMPLETED_KEY,
   type CliDb,
+  PURGE_EVERY_STATE,
+  PURGE_WINDOWS,
   QUEUE,
   ROOT,
   SENTINEL,
@@ -183,7 +185,7 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
   purge: {
     prepare: (db) => db.admin.setFakeNowEpochMs(null),
     lines: (db) => {
-      const windows = ['--completed-after', '1h', '--cancelled-after', '1h', '--failed-after', '1h']
+      const windows = PURGE_EVERY_STATE
       return [
         ['purge', ...windows, ...writeFlags(db)],
         ['purge', ...windows, '--execute', ...writeFlags(db)],
@@ -347,7 +349,7 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
     ['sweep', '--queue', QUEUE, '--target', 'elsewhere'],
   ],
   purge: (target) => {
-    const windows = ['--completed-after', '1h', '--cancelled-after', '1h']
+    const windows = PURGE_WINDOWS
     return [
       ['purge', ...windows, '--queue', QUEUE, '--target', target],
       ['purge', ...windows, '--queue', QUEUE, '--target', target, '--execute'],

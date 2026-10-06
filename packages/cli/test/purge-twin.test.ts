@@ -4,15 +4,18 @@ import { testIdSource } from '@durablerun/core/testing'
 import { retention } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { runFuzzScenario } from '../../conformance/src/fuzz.js'
+import { KEEPING_FAILED, NAMING_FAILED } from '../../conformance/src/retention-policies.js'
 import { makeLibsqlFixture } from '../../conformance/test/fixture-libsql.js'
 import { exitCode } from '../src/exit.js'
 import { storeTarget } from '../src/open-store.js'
 import {
   type CliDb,
   type JsonAnswer,
+  PURGE_EVERY_STATE,
+  PURGE_WINDOWS,
   QUEUE,
   SELECTED,
-  claimActivated,
+  childrenOfARunningParent,
   dumpOf,
   openCliDb,
   openerOver,
@@ -38,11 +41,6 @@ import {
  * is built under one, at instants far in the past, and the clock is then cleared on both.
  */
 
-const WINDOWS = ['--completed-after', '1h', '--cancelled-after', '1h']
-const EVERY_STATE = [...WINDOWS, '--failed-after', '1h']
-const KEEPING_FAILED: RetentionPolicy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
-const NAMING_FAILED: RetentionPolicy = { ...KEEPING_FAILED, failedSeconds: 3_600 }
-
 /** A command line without the flags every write takes, and the policy and the limit it names. */
 interface Command {
   readonly name: string
@@ -54,14 +52,14 @@ interface Command {
 
 const dryRun = (name: string): Command => ({
   name,
-  flags: EVERY_STATE,
+  flags: PURGE_EVERY_STATE,
   policy: NAMING_FAILED,
   limit: null,
 })
 const purgeOf = (name: string, limit: number | undefined, keepFailed = false): Command => ({
   name,
   flags: [
-    ...(keepFailed ? WINDOWS : EVERY_STATE),
+    ...(keepFailed ? PURGE_WINDOWS : PURGE_EVERY_STATE),
     ...(limit === undefined ? [] : ['--limit', String(limit)]),
     '--execute',
   ],
@@ -129,19 +127,7 @@ const answered = (ported: readonly PurgedUnit[]) =>
 async function seeded(db: CliDb): Promise<void> {
   await seedTasks(db)
   await seedSagas(db)
-  const parent = await db.store.spawn(QUEUE, 'parent', '{}')
-  const running = await claimActivated(db, 'twin-parent', parent.taskId)
-  const child = await db.store.spawn(QUEUE, 'child', '{}', {
-    childOf: {
-      parentQueue: QUEUE,
-      parentTaskId: parent.taskId,
-      runId: running.runId,
-      claimToken: running.claimToken,
-      replayKey: 'child#1',
-    },
-  })
-  const worked = await claimActivated(db, 'twin-child', child.taskId)
-  await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
+  await childrenOfARunningParent(db, 1)
   await db.admin.setFakeNowEpochMs(null)
 }
 

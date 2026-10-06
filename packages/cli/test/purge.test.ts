@@ -12,20 +12,26 @@ import {
 import { testIdSource } from '@durablerun/core/testing'
 import { CURRENT_SCHEMA_VERSION, READABLE_SCHEMA_WINDOW } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
+import { NAMING_FAILED } from '../../conformance/src/retention-policies.js'
 import { handWrittenRun, handWrittenTask } from '../../conformance/src/scenario.js'
 import { COMMANDS, PURGE_DEFAULT_LIMIT, VERBS } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import { type StoreOpener, openStore } from '../src/open-store.js'
-import { KEPT_REASONS, REASON_OF_CONDITION, REASON_SAYS } from '../src/purge.js'
+import { REASON_OF_CONDITION } from '../src/purge.js'
+import { runOf } from './queue-seeds.js'
 import {
   COMPLETED_KEY,
   type CliDb,
   type FaultSite,
   type JsonAnswer,
   NOW_MS,
+  PURGE_EVERY_STATE,
+  PURGE_WINDOWS,
   QUEUE,
   SENTINEL,
   type SeededTasks,
+  changedBy,
+  childrenOfARunningParent,
   claimActivated,
   faulting,
   onDb,
@@ -50,11 +56,6 @@ import {
  * then clears it: by the database's own clock every seeded ending is then far older than
  * any window a case names.
  */
-
-const WINDOWS = ['--completed-after', '1h', '--cancelled-after', '1h']
-/** The windows of a policy that names every ended state. */
-const EVERY_STATE = [...WINDOWS, '--failed-after', '1h']
-const POLICY = { completedSeconds: 3_600, cancelledSeconds: 3_600, failedSeconds: 3_600 }
 
 interface Unit {
   readonly taskId: string
@@ -99,13 +100,6 @@ const idsOf = (units: readonly Unit[] | undefined): string[] =>
 
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
 
-/** What a run changed: its answer, and whether a dump of every table is as it was before. */
-async function changedBy<T>(db: CliDb, run: () => Promise<T>) {
-  const before = await db.dump()
-  const out = await run()
-  return { out, unchanged: (await db.dump()) === before }
-}
-
 const write = (db: CliDb, ...statements: SqlStatement[]) =>
   db.raw.batch('fixture:planted', statements)
 
@@ -132,38 +126,13 @@ async function completedTasks(db: CliDb, count: number, name: string): Promise<s
   return tasks
 }
 
-/**
- * Children that completed under a parent that is still running. Each is a candidate once
- * it is a window old, and the barrier keeps it: its parent's replay would spawn it again.
- */
-async function childrenOfARunningParent(db: CliDb, count: number): Promise<string[]> {
-  const parent = await db.store.spawn(QUEUE, 'parent', '{}')
-  const running = await claimActivated(db, 'purge-parent', parent.taskId)
-  const children: string[] = []
-  for (let index = 0; index < count; index++) {
-    const child = await db.store.spawn(QUEUE, 'child', '{}', {
-      childOf: {
-        parentQueue: QUEUE,
-        parentTaskId: parent.taskId,
-        runId: running.runId,
-        claimToken: running.claimToken,
-        replayKey: `child#${index}`,
-      },
-    })
-    const worked = await claimActivated(db, `purge-child-${index}`, child.taskId)
-    await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
-    children.push(child.taskId)
-  }
-  return children
-}
-
-/** An opener whose store runs `hook` once, straight after the first listing of candidates. */
-function afterTheListing(hook: () => Promise<void>): StoreOpener {
+/** An opener whose store runs `hook` once, straight after the first batch it sends under `label`. */
+function afterFirst(label: string, hook: () => Promise<void>): StoreOpener {
   let fired = false
   return openerWrapping((real) => ({
-    batch: async (label, statements, control) => {
-      const results = await real.batch(label, statements, control)
-      if (label === 'purge-candidates' && !fired) {
+    batch: async (name, statements, control) => {
+      const results = await real.batch(name, statements, control)
+      if (name === label && !fired) {
         fired = true
         await hook()
       }
@@ -171,6 +140,9 @@ function afterTheListing(hook: () => Promise<void>): StoreOpener {
     },
   }))
 }
+
+/** The same, straight after the first listing of candidates. */
+const afterTheListing = (hook: () => Promise<void>) => afterFirst('purge-candidates', hook)
 
 const faultAt = (site: FaultSite, fault: Parameters<typeof faulting>[2]): StoreOpener =>
   openerWrapping((real) => faulting(real, site, fault))
@@ -215,7 +187,7 @@ describe('purge on libSQL', () => {
       const [child] = await childrenOfARunningParent(db, 1)
       await aged(db)
       const recorded = recordingOpener()
-      const dry = await changedBy(db, () => purge(db, EVERY_STATE, recorded.opener))
+      const dry = await changedBy(db, () => purge(db, PURGE_EVERY_STATE, recorded.opener))
       const sent = recorded.sent()
       expect(
         {
@@ -268,7 +240,7 @@ describe('purge on libSQL', () => {
         purged: undefined,
       })
       // In text the dry run prints on stdout, and says what it is.
-      const text = await purgeText(db, EVERY_STATE)
+      const text = await purgeText(db, PURGE_EVERY_STATE)
       expect({
         exit: text.exit,
         stderr: text.stderr,
@@ -276,7 +248,7 @@ describe('purge on libSQL', () => {
         namesTheReason: text.stdout.includes('reasons: parent-can-run-again'),
       }).toEqual({ exit: 0, stderr: '', saysNothingWasDeleted: true, namesTheReason: true })
       // The control: with --execute the same command line changes the database.
-      const executed = await changedBy(db, () => purge(db, [...EVERY_STATE, '--execute']))
+      const executed = await changedBy(db, () => purge(db, [...PURGE_EVERY_STATE, '--execute']))
       expect({ exit: executed.out.exit, unchanged: executed.unchanged }).toEqual({
         exit: 0,
         unchanged: false,
@@ -289,7 +261,7 @@ describe('purge on libSQL', () => {
       const [child] = await childrenOfARunningParent(db, 1)
       await aged(db)
       const recorded = recordingOpener()
-      const { exit, answer } = await purge(db, [...EVERY_STATE, '--execute'], recorded.opener)
+      const { exit, answer } = await purge(db, [...PURGE_EVERY_STATE, '--execute'], recorded.opener)
       const unit = (taskId: string, state: string, key: string | null, checkpoints: number) => ({
         taskId,
         taskName: 'report',
@@ -336,7 +308,7 @@ describe('purge on libSQL', () => {
       const gone = await runCli(['inspect', seeded.completed, '--queue', QUEUE, '--json'], db.env)
       expect(gone.exit).toBe(exitCode('not-found'))
       // Run again, it finds the kept unit alone, takes nothing, and exits 0.
-      const again = await changedBy(db, () => purge(db, [...EVERY_STATE, '--execute']))
+      const again = await changedBy(db, () => purge(db, [...PURGE_EVERY_STATE, '--execute']))
       expect({
         exit: again.out.exit,
         unchanged: again.unchanged,
@@ -349,7 +321,7 @@ describe('purge on libSQL', () => {
     onDb('purge-execute-text', async (db) => {
       const seeded = await seedTasks(db)
       await aged(db)
-      const text = await purgeText(db, [...WINDOWS, '--execute'])
+      const text = await purgeText(db, [...PURGE_WINDOWS, '--execute'])
       expect({
         exit: text.exit,
         stderr: text.stderr,
@@ -373,7 +345,14 @@ describe('purge on libSQL', () => {
       for (const more of [[], ['--execute']]) {
         for (const output of [[], ['--json']]) {
           for (const reveal of [[], ['--reveal']]) {
-            const line = ['purge', ...EVERY_STATE, ...more, ...writeFlags(db), ...output, ...reveal]
+            const line = [
+              'purge',
+              ...PURGE_EVERY_STATE,
+              ...more,
+              ...writeFlags(db),
+              ...output,
+              ...reveal,
+            ]
             const run = await runCli(line, db.env)
             expect(run.exit, line.join(' ')).toBe(0)
             printed.push(`${run.stdout}${run.stderr}`)
@@ -397,8 +376,8 @@ describe('purge on libSQL', () => {
     onDb('purge-failed-kept', async (db) => {
       const seeded = await seedTasks(db)
       await aged(db)
-      const dry = await purge(db, WINDOWS)
-      const executed = await purge(db, [...WINDOWS, '--execute'])
+      const dry = await purge(db, PURGE_WINDOWS)
+      const executed = await purge(db, [...PURGE_WINDOWS, '--execute'])
       expect({
         policy: dry.answer.policy,
         listed: [...idsOf(dry.answer.wouldPurge), ...idsOf(dry.answer.kept)].includes(
@@ -418,9 +397,7 @@ describe('purge on libSQL', () => {
     onDb('purge-waits', async (db) => {
       const seeded = await seedTasks(db)
       // A wait on a run that has ended is a row no engine path leaves: it is written by hand.
-      const [runId] = await column(db, 'SELECT run_id AS value FROM runs WHERE task_id = ?', [
-        seeded.completed,
-      ])
+      const runId = await runOf(db, seeded.completed)
       await write(db, {
         sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
                 timeout_at_ms, created_at_ms)
@@ -428,7 +405,7 @@ describe('purge on libSQL', () => {
         args: [String(runId), QUEUE, seeded.completed, NOW_MS],
       })
       await aged(db)
-      const { answer } = await purge(db, [...WINDOWS, '--execute'])
+      const { answer } = await purge(db, [...PURGE_WINDOWS, '--execute'])
       expect(
         Object.fromEntries((answer.purged ?? []).map((unit) => [unit.taskId, unit.rows?.waits])),
       ).toEqual({ [seeded.completed]: 1, [seeded.cancelled]: 0 })
@@ -462,7 +439,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
       await seedTasks(db)
       // Two hours on by the test clock: with no refusal, this purge would take every unit.
       await db.admin.setFakeNowEpochMs(NOW_MS + 7_200_000)
-      const asked = await refused(db, [...EVERY_STATE, '--execute'])
+      const asked = await refused(db, [...PURGE_EVERY_STATE, '--execute'])
       expect(
         {
           exit: asked.exit,
@@ -473,21 +450,21 @@ describe('what purge refuses, each beside the command that is not refused', () =
         'mutation-verdict:behavior:cli-purge-refuses-under-a-test-clock',
       ).toEqual({ exit: 2, kind: 'fake-clock', unchanged: true, purgeBatches: 0 })
       // A dry run is refused the same way: its verdicts would be read against the test clock.
-      const dry = await refused(db, EVERY_STATE)
+      const dry = await refused(db, PURGE_EVERY_STATE)
       expect({ exit: dry.exit, kind: dry.kind, purgeBatches: dry.purgeBatches }).toEqual({
         exit: 2,
         kind: 'fake-clock',
         purgeBatches: 0,
       })
       // In text the refusal prints on stderr.
-      const text = await purgeText(db, [...EVERY_STATE, '--execute'])
+      const text = await purgeText(db, [...PURGE_EVERY_STATE, '--execute'])
       expect({
         exit: text.exit,
         stdout: text.stdout,
         names: text.stderr.includes('kind: fake-clock'),
       }).toEqual({ exit: 2, stdout: '', names: true })
       await aged(db)
-      expect(await control(db, [...EVERY_STATE, '--execute'])).toEqual({
+      expect(await control(db, [...PURGE_EVERY_STATE, '--execute'])).toEqual({
         exit: 0,
         unchanged: false,
       })
@@ -504,7 +481,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
       try {
         await seedTasks(db)
         await aged(db)
-        const asked = await refused(db, [...EVERY_STATE, '--execute'])
+        const asked = await refused(db, [...PURGE_EVERY_STATE, '--execute'])
         expect(
           {
             version,
@@ -533,7 +510,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
     await onDb('purge-version-current', async (db) => {
       await seedTasks(db)
       await aged(db)
-      expect(await control(db, [...EVERY_STATE, '--execute'])).toEqual({
+      expect(await control(db, [...PURGE_EVERY_STATE, '--execute'])).toEqual({
         exit: 0,
         unchanged: false,
       })
@@ -544,7 +521,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
     onDb('purge-target', async (db) => {
       await seedTasks(db)
       await aged(db)
-      const line = ['purge', ...EVERY_STATE, '--execute', '--queue', QUEUE, '--json']
+      const line = ['purge', ...PURGE_EVERY_STATE, '--execute', '--queue', QUEUE, '--json']
       const recorded = recordingOpener()
       const elsewhere = await changedBy(db, () =>
         runCli([...line, '--target', `${db.target}.other`], db.env, recorded.opener),
@@ -566,7 +543,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
         unnamed: [2, true],
         sent: 0,
       })
-      expect(await control(db, [...EVERY_STATE, '--execute'])).toEqual({
+      expect(await control(db, [...PURGE_EVERY_STATE, '--execute'])).toEqual({
         exit: 0,
         unchanged: false,
       })
@@ -589,7 +566,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
           '--cancelled-after',
           '59m',
         ],
-        'a failed window of nothing': [...WINDOWS, '--failed-after', '0s'],
+        'a failed window of nothing': [...PURGE_WINDOWS, '--failed-after', '0s'],
         'a window with no unit': ['--completed-after', '3600', '--cancelled-after', '1h'],
         'a window that is no duration': ['--completed-after', 'soon', '--cancelled-after', '1h'],
         'no completed window': ['--cancelled-after', '1h'],
@@ -632,7 +609,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
       await aged(db)
       const answered: unknown[] = []
       for (const more of [['--yes'], ['--limit', '0'], ['--limit', '1001'], ['--limit', 'many']]) {
-        const asked = await refused(db, [...EVERY_STATE, '--execute', ...more])
+        const asked = await refused(db, [...PURGE_EVERY_STATE, '--execute', ...more])
         answered.push([more.join(' '), asked.exit, asked.unchanged, asked.labels.length])
       }
       expect(answered).toEqual([
@@ -641,7 +618,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
         ['--limit 1001', 2, true, 0],
         ['--limit many', 2, true, 0],
       ])
-      expect(await control(db, [...EVERY_STATE, '--execute', '--limit', '1000'])).toEqual({
+      expect(await control(db, [...PURGE_EVERY_STATE, '--execute', '--limit', '1000'])).toEqual({
         exit: 0,
         unchanged: false,
       })
@@ -652,7 +629,7 @@ describe('what purge refuses, each beside the command that is not refused', () =
     try {
       const file = join(dir, 'never.sqlite')
       const run = await runCli(
-        ['purge', ...EVERY_STATE, '--execute', '--queue', QUEUE, '--target', file, '--json'],
+        ['purge', ...PURGE_EVERY_STATE, '--execute', '--queue', QUEUE, '--target', file, '--json'],
         { DURABLERUN_STORE_URL: `file:${file}` },
       )
       expect([run.exit, existsSync(file)]).toEqual([exitCode('schema'), false])
@@ -667,10 +644,10 @@ describe('how far one purge goes', () => {
     onDb('purge-limit', async (db) => {
       const tasks = await completedTasks(db, 5, 'job')
       await aged(db)
-      const dry = await changedBy(db, () => purge(db, [...WINDOWS, '--limit', '2']))
+      const dry = await changedBy(db, () => purge(db, [...PURGE_WINDOWS, '--limit', '2']))
       const runs: unknown[] = []
       for (let run = 0; run < 4; run++) {
-        const { answer } = await purge(db, [...WINDOWS, '--limit', '2', '--execute'])
+        const { answer } = await purge(db, [...PURGE_WINDOWS, '--limit', '2', '--execute'])
         runs.push([idsOf(answer.purged), answer.more])
       }
       expect(
@@ -696,8 +673,8 @@ describe('how far one purge goes', () => {
     onDb('purge-limit-exact', async (db) => {
       const tasks = await completedTasks(db, 3, 'job')
       await aged(db)
-      const exact = await purge(db, [...WINDOWS, '--limit', '3', '--execute'])
-      const none = await purge(db, [...WINDOWS, '--execute'])
+      const exact = await purge(db, [...PURGE_WINDOWS, '--limit', '3', '--execute'])
+      const none = await purge(db, [...PURGE_WINDOWS, '--execute'])
       expect({
         exact: [idsOf(exact.answer.purged), exact.answer.more],
         defaultLimit: none.answer.limit,
@@ -715,7 +692,7 @@ describe('how far one purge goes', () => {
       // A limit of two is also the size of a page, so the first page holds kept units alone.
       const { exit, answer } = await purge(
         db,
-        [...WINDOWS, '--limit', '2', '--execute'],
+        [...PURGE_WINDOWS, '--limit', '2', '--execute'],
         recorded.opener,
       )
       // Past the first page, which holds kept units alone, something goes.
@@ -733,7 +710,7 @@ describe('how far one purge goes', () => {
         'mutation-verdict:behavior:cli-purge-stops-at-its-limit-inside-a-page',
       ).toEqual({ purged: behind.slice(0, 2), more: true, pages: 3 })
       // A dry run walks the same way, and says the same of what is left.
-      const dry = await purge(db, [...WINDOWS, '--limit', '2'])
+      const dry = await purge(db, [...PURGE_WINDOWS, '--limit', '2'])
       expect({
         wouldPurge: idsOf(dry.answer.wouldPurge),
         kept: idsOf(dry.answer.kept),
@@ -867,9 +844,7 @@ const PLANTED: Readonly<Record<PurgeBarrierCondition, Planted>> = {
   withinTheCheckpointCap: {
     what: `a completed task with ${MAX_PURGE_UNIT_CHECKPOINTS + 1} checkpoints, fixture-built`,
     plant: async (db, seeded) => {
-      const [runId] = await column(db, 'SELECT run_id AS value FROM runs WHERE task_id = ?', [
-        seeded.completed,
-      ])
+      const runId = await runOf(db, seeded.completed)
       // The seeded task holds one checkpoint, and these bring it one past the cap.
       const wanted = MAX_PURGE_UNIT_CHECKPOINTS
       const perStatement = 2_000
@@ -918,8 +893,8 @@ describe('a unit the barrier keeps is named by the condition that is false, as o
   it('plants a unit for every condition of the barrier, and names a reason for each', () => {
     expect(Object.keys(PLANTED)).toEqual([...PURGE_BARRIER_CONDITIONS])
     expect(REASON_OF_CONDITION).toEqual(REASON_NAMED)
-    expect([...new Set(Object.values(REASON_NAMED))].sort()).toEqual([...KEPT_REASONS].sort())
-    expect(Object.keys(REASON_SAYS).sort()).toEqual([...KEPT_REASONS].sort())
+    // No two conditions give one reason, so a reason names its condition.
+    expect(new Set(Object.values(REASON_NAMED)).size).toBe(PURGE_BARRIER_CONDITIONS.length)
   })
 
   it('names each planted unit by the one condition that keeps it, in a dry run and in a purge, for every condition of the barrier', async () => {
@@ -935,7 +910,7 @@ describe('a unit the barrier keeps is named by the condition that is false, as o
             await aged(db)
             const { exit, answer } = await purge(
               db,
-              mode === 'a purge' ? [...EVERY_STATE, '--execute'] : EVERY_STATE,
+              mode === 'a purge' ? [...PURGE_EVERY_STATE, '--execute'] : PURGE_EVERY_STATE,
               afterListing === undefined ? openStore : afterTheListing(afterListing),
             )
             const taken = mode === 'a purge' ? answer.purged : answer.wouldPurge
@@ -973,7 +948,7 @@ describe('a purge whose store answers otherwise than a clean run', () => {
       await aged(db)
       const { exit, answer } = await purge(
         db,
-        [...EVERY_STATE, '--execute'],
+        [...PURGE_EVERY_STATE, '--execute'],
         faultAt({ label: 'purge-unit', occurrence: 1 }, 'duplicate'),
       )
       expect({
@@ -996,12 +971,12 @@ describe('a purge whose store answers otherwise than a clean run', () => {
       const other = db.retentionWith(testIdSource('another-purger'))
       const { exit, answer } = await purge(
         db,
-        [...EVERY_STATE, '--execute'],
+        [...PURGE_EVERY_STATE, '--execute'],
         afterTheListing(async () => {
           const took = await other.purgeUnit(
             QUEUE,
             { taskId: seeded.completed, idempotencyKey: COMPLETED_KEY },
-            POLICY,
+            NAMING_FAILED,
           )
           if (took === null) throw new Error('the other purger took nothing')
         }),
@@ -1021,7 +996,7 @@ describe('a purge whose store answers otherwise than a clean run', () => {
         await aged(db)
         const { exit, answer } = await purge(
           db,
-          [...EVERY_STATE, '--execute'],
+          [...PURGE_EVERY_STATE, '--execute'],
           faultAt({ label: 'purge-unit', occurrence: 2 }, fault),
         )
         const left = await tasksLeft(db)
@@ -1047,7 +1022,7 @@ describe('a purge whose store answers otherwise than a clean run', () => {
           stoppedAt: { call: 'purge-unit', taskId: seeded.failed },
           secondIsThere: fault === 'crash-before',
         })
-        const again = await purge(db, [...EVERY_STATE, '--execute'])
+        const again = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
         expect({
           exit: again.exit,
           finished: again.answer.finished,
@@ -1063,7 +1038,7 @@ describe('a purge whose store answers otherwise than a clean run', () => {
       await aged(db)
       const text = await purgeText(
         db,
-        [...EVERY_STATE, '--execute'],
+        [...PURGE_EVERY_STATE, '--execute'],
         faultAt({ label: 'purge-unit', occurrence: 2 }, 'crash-before'),
       )
       expect({
@@ -1086,7 +1061,7 @@ describe('a purge whose store answers otherwise than a clean run', () => {
       const run = await changedBy(db, () =>
         purge(
           db,
-          [...EVERY_STATE, '--execute'],
+          [...PURGE_EVERY_STATE, '--execute'],
           faultAt({ label: 'purge-candidates', occurrence: 1 }, 'crash-before'),
         ),
       )
@@ -1109,7 +1084,7 @@ describe('a purge whose store answers otherwise than a clean run', () => {
       // The child is listed last, the port answers kept, and the read of why is lost.
       const { exit, answer } = await purge(
         db,
-        [...EVERY_STATE, '--execute'],
+        [...PURGE_EVERY_STATE, '--execute'],
         faultAt({ label: 'purge-admission', occurrence: 1 }, 'crash-before'),
       )
       expect({
@@ -1132,7 +1107,7 @@ describe('after a purge', () => {
     onDb('purge-then-retry', async (db) => {
       const seeded = await seedTasks(db)
       await aged(db)
-      await purge(db, [...EVERY_STATE, '--execute'])
+      await purge(db, [...PURGE_EVERY_STATE, '--execute'])
       const line = ['retry', seeded.failed, ...writeFlags(db)]
       const answers: unknown[] = []
       for (const more of [[], ['--yes']]) {
@@ -1169,23 +1144,13 @@ describe('after a purge', () => {
       }
       await aged(db)
       /** An opener whose store purges the task of `key` straight after the read of its id by its key. */
-      const purgedBetween = (key: string): StoreOpener => {
-        let fired = false
-        return openerWrapping((real) => ({
-          batch: async (label, statements, control) => {
-            const results = await real.batch(label, statements, control)
-            if (label === 'task-id-by-key' && !fired) {
-              fired = true
-              const took = await db
-                .retentionWith(testIdSource(`between-${key}`))
-                .purgeUnit(QUEUE, { taskId: String(keyed[key]), idempotencyKey: key }, POLICY)
-              if (took === null)
-                throw new Error(`the purge between the reads took nothing of ${key}`)
-            }
-            return results
-          },
-        }))
-      }
+      const purgedBetween = (key: string): StoreOpener =>
+        afterFirst('task-id-by-key', async () => {
+          const took = await db
+            .retentionWith(testIdSource(`between-${key}`))
+            .purgeUnit(QUEUE, { taskId: String(keyed[key]), idempotencyKey: key }, NAMING_FAILED)
+          if (took === null) throw new Error(`the purge between the reads took nothing of ${key}`)
+        })
       const said = (taskId: string | undefined) =>
         `the idempotency key named task ${taskId} in queue ${QUEUE}, and the task is gone as of the next read: a purge retained it out between the two reads`
       const answers: unknown[] = []
@@ -1247,7 +1212,7 @@ describe('after a purge', () => {
     onDb('purge-then-read', async (db) => {
       const seeded = await seedTasks(db)
       await aged(db)
-      await purge(db, [...EVERY_STATE, '--execute'])
+      await purge(db, [...PURGE_EVERY_STATE, '--execute'])
       const exits: number[] = []
       for (const line of [
         ['result', seeded.completed],

@@ -15,6 +15,8 @@ import { OWED_AT_MS, owedQueue } from './queue-seeds.js'
 import {
   BIN,
   NOW_MS,
+  PURGE_EVERY_STATE,
+  PURGE_WINDOWS,
   QUEUE,
   ROOT,
   SELECTED,
@@ -108,7 +110,7 @@ function owedAnswersOn(dialect: (typeof SELECTED)[number]) {
 
 /** A purge's command lines over the seeded tasks, by name, without the flags every write takes. */
 const PURGE_LINES: readonly (readonly [string, readonly string[]])[] = (() => {
-  const windows = ['--completed-after', '1h', '--cancelled-after', '1h', '--failed-after', '1h']
+  const windows = PURGE_EVERY_STATE
   return [
     ['a dry run', windows],
     ['a purge of at most two units', [...windows, '--limit', '2', '--execute']],
@@ -521,7 +523,7 @@ describe('the CLI on every selected dialect', () => {
           const seeded = await seedTasks(db)
           await seedTasks(cleared)
           await cleared.admin.setFakeNowEpochMs(null)
-          const windows = ['--completed-after', '1h', '--cancelled-after', '1h']
+          const windows = PURGE_WINDOWS
           // A task that is due from this instant, for `stuck` to find.
           await db.store.spawn(QUEUE, 'report', '{}')
           await plantNullPayload(older)

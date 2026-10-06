@@ -1,14 +1,16 @@
-import type { RetentionPolicy, SqlExecutor } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import type { StoreFixtureFactory } from '../src/index.js'
+import { NAMING_FAILED } from '../src/retention-policies.js'
 import {
   ENDED_UNIT_TABLES,
+  SOAK_TIMEOUT_MS,
   type SoakControl,
   overTheBound,
   soakControl,
   soakWeek,
   vacuous,
 } from '../src/retention-soak.js'
+import { bent } from './bent-fixture.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
@@ -18,9 +20,6 @@ import { makeLibsqlFixture } from './fixture-libsql.js'
  * age than the policy names, a driver that stops for a day, and a store that leaves a
  * wait behind when it ends a run. The control is the clean week, run once.
  */
-
-/** How long one bent week may take: the limit the week's own cases have. */
-const TIMEOUT_MS = 600_000
 
 /** A fixture whose purge answers that the barrier kept the unit, and sends nothing. */
 const deletingNothing: StoreFixtureFactory = async (seed, options) => {
@@ -34,14 +33,10 @@ const deletingNothing: StoreFixtureFactory = async (seed, options) => {
   }
 }
 
-/** The shortest windows the port takes, which is as near as a caller gets to no age at all. */
-const AN_HOUR: RetentionPolicy = {
-  completedSeconds: 3_600,
-  cancelledSeconds: 3_600,
-  failedSeconds: 3_600,
-}
-
-/** A fixture whose purge reads every unit's age against an hour, whatever policy it is handed. */
+/**
+ * A fixture whose purge reads every unit's age against an hour, the shortest window the
+ * port takes and as near as a caller gets to no age at all, whatever policy it is handed.
+ */
 const readingAShorterAge: StoreFixtureFactory = async (seed, options) => {
   const f = await makeLibsqlFixture(seed, options)
   return {
@@ -50,42 +45,25 @@ const readingAShorterAge: StoreFixtureFactory = async (seed, options) => {
       const retention = f.retentionOver(db)
       return {
         ...retention,
-        purgeCandidates: (queue, _policy, page) => retention.purgeCandidates(queue, AN_HOUR, page),
-        purgeUnit: (queue, unit) => retention.purgeUnit(queue, unit, AN_HOUR),
+        purgeCandidates: (queue, _policy, page) =>
+          retention.purgeCandidates(queue, NAMING_FAILED, page),
+        purgeUnit: (queue, unit) => retention.purgeUnit(queue, unit, NAMING_FAILED),
       }
     },
   }
 }
 
 /** A fixture whose store, after each completion, leaves a wait on every completed run that has none. */
-const leavingAWaitBehind: StoreFixtureFactory = async (seed, options) => {
-  const f = await makeLibsqlFixture(seed, options)
-  const following = (db: SqlExecutor): SqlExecutor => ({
-    batch: async (label, statements, control) => {
-      const results = await db.batch(label, statements, control)
-      if (label === 'complete') {
-        await db.batch(
-          'bend',
-          [
-            {
-              sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
-                      timeout_at_ms, created_at_ms)
-                    SELECT r.run_id, 'left-behind', r.queue, r.task_id, 'left-behind', 'waiting',
-                      NULL, 0
-                    FROM runs r
-                    WHERE r.state = 'completed'
-                      AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.run_id = r.run_id)`,
-              args: [],
-            },
-          ],
-          'write',
-        )
-      }
-      return results
-    },
-  })
-  return { ...f, storeOver: (db, buggify) => f.storeOver(following(db), buggify) }
-}
+const leavingAWaitBehind = bent('complete', {
+  sql: `INSERT INTO waits (run_id, step_name, queue, task_id, event_name, status,
+          timeout_at_ms, created_at_ms)
+        SELECT r.run_id, 'left-behind', r.queue, r.task_id, 'left-behind', 'waiting',
+          NULL, 0
+        FROM runs r
+        WHERE r.state = 'completed'
+          AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.run_id = r.run_id)`,
+  args: [],
+})
 
 describe('each hold of the simulated week can fail', () => {
   let made: Promise<SoakControl> | undefined
@@ -114,7 +92,7 @@ describe('each hold of the simulated week can fail', () => {
         aPassIsNotTheModels: true,
       })
     },
-    TIMEOUT_MS,
+    SOAK_TIMEOUT_MS,
   )
 
   it(
@@ -142,7 +120,7 @@ describe('each hold of the simulated week can fail', () => {
         purgedUnits: 0,
       })
     },
-    TIMEOUT_MS,
+    SOAK_TIMEOUT_MS,
   )
 
   it(
@@ -153,7 +131,7 @@ describe('each hold of the simulated week can fail', () => {
         'hour 3: the pass took [0/child, 0/main], and the model lets go []',
       )
     },
-    TIMEOUT_MS,
+    SOAK_TIMEOUT_MS,
   )
 
   it(
@@ -167,7 +145,7 @@ describe('each hold of the simulated week can fail', () => {
         someNotAsAssigned: report.notAsAssigned.length > 0,
       }).toEqual({ endedAsAssigned: 213, someNotAsAssigned: true })
     },
-    TIMEOUT_MS,
+    SOAK_TIMEOUT_MS,
   )
 
   it(
@@ -182,6 +160,6 @@ describe('each hold of the simulated week can fail', () => {
         passMismatches: report.passMismatches,
       }).toEqual({ ofEndedRuns: true, purgedWaits: true, found: true, passMismatches: [] })
     },
-    TIMEOUT_MS,
+    SOAK_TIMEOUT_MS,
   )
 })
