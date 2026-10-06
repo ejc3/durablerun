@@ -900,11 +900,14 @@ export function retentionSoakConformance(dialect: string, makeFixture: StoreFixt
       'each hourly pass takes exactly the units the model lets go, and leaves every table as the model leaves it',
       async () => {
         const { report } = await week()
-        expect({
-          mismatches: report.passMismatches,
-          passesThatPurged: report.passesThatPurged,
-          purgedUnits: report.purgedUnits,
-        }).toEqual({ mismatches: [], passesThatPurged: 131, purgedUnits: 253 })
+        expect(
+          {
+            mismatches: report.passMismatches,
+            passesThatPurged: report.passesThatPurged,
+            purgedUnits: report.purgedUnits,
+          },
+          'mutation-verdict:behavior:retention-soak-holds-each-pass-to-the-age-of-its-units',
+        ).toEqual({ mismatches: [], passesThatPurged: 131, purgedUnits: 253 })
       },
       SOAK_TIMEOUT_MS,
     )
@@ -913,11 +916,14 @@ export function retentionSoakConformance(dialect: string, makeFixture: StoreFixt
       "at each day boundary after hour 48, every counted table holds at most the control's rows of the units the model still holds",
       async () => {
         const { report } = await week()
-        expect({
-          over: overTheBound(report),
-          readAt: report.boundaries.map(({ hour }) => hour),
-          day7: report.boundaries[report.boundaries.length - 1],
-        }).toEqual({
+        expect(
+          {
+            over: overTheBound(report),
+            readAt: report.boundaries.map(({ hour }) => hour),
+            day7: report.boundaries[report.boundaries.length - 1],
+          },
+          'mutation-verdict:behavior:retention-soak-holds-the-rows-of-a-queue-to-the-bound',
+        ).toEqual({
           over: [],
           readAt: [...SOAK_DAY_BOUNDARIES],
           day7: {
@@ -936,7 +942,10 @@ export function retentionSoakConformance(dialect: string, makeFixture: StoreFixt
       async () => {
         const { report } = await week()
         const measured = { tasks: 5.8, runs: 6.3, checkpoints: 5.9, events: 6.3 }
-        expect({ vacuous: vacuous(report), ratios: vacuityRatios(report) }).toEqual({
+        expect(
+          { vacuous: vacuous(report), ratios: vacuityRatios(report) },
+          'mutation-verdict:behavior:retention-soak-fails-as-vacuous-when-nothing-is-purged',
+        ).toEqual({
           vacuous: [],
           ratios: { controlOverTheBound: measured, controlOverThePurgedWeek: measured },
         })

@@ -21795,6 +21795,60 @@ VERDICTS.update(
     }
 )
 
+# The simulated week (DESIGN.md §3.12, BUILD.md exit test line 43): the age a pass reads a
+# unit by, the bound on a queue's rows, and the check that the bound is no empty claim,
+# each caught by its own case of the week on libSQL.
+MUTATION_SPECS.extend(
+    (
+        (
+            "retention-soak-holds-each-pass-to-the-age-of-its-units",
+            "packages/core/src/statements/purge.ts",
+            "  return eb(stampedAt, '<=', eb(nowValue, '-', eb.val(windowMs) as Expression<number>))\n",
+            "  return eb(stampedAt, '<=', eb(nowValue, '-', eb.val(windowMs && 0) as Expression<number>))\n",
+            "the age conjunct is dropped: a task of a state the policy names is listed and purged the moment it ends, and a failed task goes before its operator revives it",
+        ),
+        (
+            "retention-soak-holds-the-rows-of-a-queue-to-the-bound",
+            "packages/core/src/retention.ts",
+            "  const candidates = listed.slice(0, limit)\n",
+            "  const candidates = listed.slice(0, 0)\n",
+            "a listing of purge candidates lists nothing, so no pass purges and a queue's tables grow with every arrival",
+        ),
+        (
+            "retention-soak-fails-as-vacuous-when-nothing-is-purged",
+            "packages/core/src/retention.ts",
+            "  if (!spawningParent(idempotencyKey).known) return null\n",
+            "  if (spawningParent(idempotencyKey).known) return null\n",
+            "a purge answers that the barrier kept every unit whose key it can read and sends nothing, so retention deletes nothing",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "retention-soak-holds-each-pass-to-the-age-of-its-units": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the simulated week [libsql] each hourly pass takes exactly the units the model lets go, and leaves every table as the model leaves it",
+            "mutation-verdict:behavior:retention-soak-holds-each-pass-to-the-age-of-its-units",
+            "packages/conformance/src/retention-soak.ts",
+        ),
+        "retention-soak-holds-the-rows-of-a-queue-to-the-bound": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the simulated week [libsql] at each day boundary after hour 48, every counted table holds at most the control's rows of the units the model still holds",
+            "mutation-verdict:behavior:retention-soak-holds-the-rows-of-a-queue-to-the-bound",
+            "packages/conformance/src/retention-soak.ts",
+        ),
+        "retention-soak-fails-as-vacuous-when-nothing-is-purged": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the simulated week [libsql] by day 7 the control holds at least three times the bound, and three times what the purged week holds, in every table an ended unit holds rows in",
+            "mutation-verdict:behavior:retention-soak-fails-as-vacuous-when-nothing-is-purged",
+            "packages/conformance/src/retention-soak.ts",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -25724,7 +25778,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1448:
+        if len(MUTATIONS) != 1451:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
