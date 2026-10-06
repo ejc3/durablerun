@@ -8,7 +8,13 @@
 import { PortRefusalError } from './errors.js'
 import { TASK_INTRINSICS } from './intrinsics.js'
 import { taskResultContradiction } from './task-result.js'
-import { type SpawnOptions, type TaskResult, type TerminalState, isTerminalState } from './types.js'
+import {
+  type SpawnOptions,
+  type SpawnResult,
+  type TaskResult,
+  type TerminalState,
+  isTerminalState,
+} from './types.js'
 import { requireIdentifiersFit } from './validate.js'
 
 // Task code shares this process, and this file decodes what task code will read, so it
@@ -226,6 +232,24 @@ export function parseChildSpawnKey(
   return childSpawnKey(parentTaskId, replayKey) === key ? { parentTaskId, replayKey } : null
 }
 
+/** Whose child a task is, as far as its idempotency key says (`spawningParent`). */
+export type SpawningParent =
+  | { readonly known: true; readonly taskId: string | null }
+  | { readonly known: false }
+
+/**
+ * The task that spawned a task, read from the idempotency key the task was spawned under
+ * (DESIGN.md §3.12, B5). A task with no key, or with a caller's own, was spawned by no
+ * task. A key `childSpawnKey` built names its parent. A key in the engine's spawn
+ * namespace that the builder could not have built names nobody that can be read: it is
+ * then not known whose child the task is, and retention keeps such a unit.
+ */
+export function spawningParent(key: string | null): SpawningParent {
+  if (key === null || !startsWith(key, CHILD_SPAWN_KEY_PREFIX)) return { known: true, taskId: null }
+  const named = parseChildSpawnKey(key)
+  return named === null ? { known: false } : { known: true, taskId: named.parentTaskId }
+}
+
 /**
  * Refuse a caller's idempotency key in the engine's namespace. `ctx.spawn` keys its
  * children there, and the spawn receipt adopts whatever task holds a key, so a caller
@@ -237,6 +261,29 @@ export function refuseReservedIdempotencyKey(operation: string, key: string): vo
       `${operation} idempotencyKey '${key}' is reserved: keys that start with '${RESERVED_EVENT_PREFIX}' belong to the engine`,
     )
   }
+}
+
+/**
+ * Send a spawn's batch, and once more when its insert lost and no task explains it
+ * (DESIGN.md §3.12). `send` is one send of the batch and answers null for that loss. A
+ * purge can take the task that holds a key between the batch's insert and its read of the
+ * holder: the insert loses to a task that is gone by the read, which then finds nothing.
+ * The key is free by then, so the batch is sent once more. A second loss that no task
+ * explains is real, and is thrown. Both sends are one spawn: a store mints the task's id
+ * and the run's once, and the second send takes the ids the first left unused. So a loss
+ * that is no purge's doing, an id that something else already holds, loses again and is
+ * thrown, as it was before anything deleted a task. Every dialect sends through here, so
+ * none sends a third time and none gives up after one.
+ */
+export async function spawnSendingOnceMore(
+  send: () => Promise<SpawnResult | null>,
+): Promise<SpawnResult> {
+  let answer = await send()
+  if (answer === null) answer = await send()
+  if (answer === null) {
+    throw new Error('spawn: the task insert lost but no existing task explains it')
+  }
+  return answer
 }
 
 /**

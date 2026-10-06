@@ -332,6 +332,40 @@ export const MIGRATIONS: Migration[] = [
        WHERE state IN ('pending','running','sleeping') AND enqueue_at_ms IS NOT NULL`,
     ],
   },
+  {
+    // Retention deletes whole units of ended tasks (DESIGN.md §3.12), and two of its reads
+    // had no index to go by.
+    //
+    // `tasks_terminal` holds the ended tasks of a queue by state and then by the instant
+    // their row was last stamped, which for an ended task is the instant it ended. The read
+    // of what a purge may take lists one state's tasks oldest first and stops at its limit.
+    // A task enters the index when it ends and leaves it when it is revived or purged, so no
+    // write of a live task touches it. Its second term is there for the reason `tasks_live`
+    // has one: every ended task this build wrote has a stamp, so the term leaves none of
+    // them out, and no statement the engine sends tests the stamp for NULL, so none is
+    // planned through the index. A read that means to use it writes both terms as they
+    // stand here.
+    //
+    // `runs_wake_holders` holds the runs that hold an event's payload. A run that an event
+    // woke keeps the event's name and its payload until its worker completes it or suspends
+    // it again, a run that failed or was cancelled meanwhile keeps both for good, and a
+    // successor carries both from the run it replaces. A purge asks whether any run of the
+    // queue, in any state, holds the outcome of the task it is about to delete, and
+    // `runs_woken` holds only pending runs. A run enters this index when an event wakes it
+    // with a payload and leaves it when its worker moves on. A run that parks on an event
+    // holds no payload and does not enter it. No statement the engine sends tests a run's
+    // payload for NULL, so none is planned through it.
+    //
+    // Both are indexes and nothing else: a build that predates them runs against this
+    // schema unchanged.
+    version: 12,
+    statements: [
+      `CREATE INDEX IF NOT EXISTS tasks_terminal ON tasks (queue, state, fence_at_ms)
+       WHERE state IN ('completed','failed','cancelled') AND fence_at_ms IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS runs_wake_holders ON runs (queue, wake_event)
+       WHERE wake_event IS NOT NULL AND event_payload IS NOT NULL`,
+    ],
+  },
 ]
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0
@@ -340,7 +374,7 @@ export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version
  * The schema versions this build's reads accept. A read-only tool, such as the operator
  * CLI, answers against any version in the window and refuses one outside it, and it never
  * migrates. The window starts at version 5 because the release alpha.1 migrated its
- * databases to version 5 and nothing later: versions 6 to 11 add indexes, empty versions and
+ * databases to version 5 and nothing later: versions 6 to 12 add indexes, empty versions and
  * triggers, and no read selects a column that a later version adds. A database recorded
  * past `newest` was migrated by a newer build and is refused.
  */

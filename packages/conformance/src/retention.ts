@@ -14,24 +14,30 @@ import { describe, expect, it } from 'vitest'
 import { type ReadyChild, TERMINAL_BATCHES, type TerminalBatch } from './child-tasks.js'
 import { engineHistoryViolations } from './engine-history.js'
 import {
+  MATRIX_RETENTION_POLICY,
   MATRIX_WRITE_LABELS,
   type MatrixWriteLabel,
   TERMINAL_BATCH_LABELS,
 } from './fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import {
+  ENDED_PRE_STATES,
   ENDED_TASK_SHAPE_CELLS,
   type EndedChildReplayObservation,
+  type EndedPreState,
   type EndedTaskStamp,
   type EndedTaskStamps,
+  HEALTHY_INVOCATION,
   INVOCATION_SHAPES,
   POISON_INVOCATION,
   TERMINAL_PRE_STATE_ENDED_AT_MS,
   TERMINAL_PRE_STATE_INVOKED_AT_MS,
   type TerminalPreStateObservation,
   observeTerminalPreState,
+  snapshot,
   storedInstant,
 } from './poison-matrix.js'
+import { purgeConformance } from './retention-purge.js'
 import {
   checkpointOwned,
   claimActivated,
@@ -365,28 +371,55 @@ function revives(label: MatrixWriteLabel, state: string): boolean {
 export async function terminalPreStateCase(
   makeFixture: StoreFixtureFactory,
   label: MatrixWriteLabel,
-  state: TerminalState,
+  state: EndedPreState,
 ): Promise<{ observed: TerminalPreStateObservation; expected: TerminalPreStateObservation }> {
   const observed = await observeTerminalPreState(makeFixture, label, state)
-  const after = (before: EndedTaskStamp): EndedTaskStamp =>
-    revives(label, before.state)
+  // A revival moves the stamp of the failed task it revives. A task that failed with a
+  // saga is failed too, and `retry-task` refuses it, so the stamp of the cell's task stays.
+  const sagaBegan = state === 'failed with a saga'
+  const after = (taskId: string, before: EndedTaskStamp): EndedTaskStamp =>
+    revives(label, before.state) && !(sagaBegan && taskId === POISON_INVOCATION.taskId)
       ? { state: 'pending', stampedAtMs: TERMINAL_PRE_STATE_INVOKED_AT_MS }
       : before
   const tasks: Record<string, EndedTaskStamps> = {}
   for (const [taskId, seen] of Object.entries(observed.tasks)) {
-    tasks[taskId] = { before: seen.before, after: after(seen.before) }
+    tasks[taskId] = { before: seen.before, after: after(taskId, seen.before) }
+  }
+  // The purge is the one label that removes a task that had ended. Its healthy call names
+  // a unit that completed at the cell's first instant, and is sent a window later, so that
+  // unit goes. It is expected whether or not it was read, so a purge that took nothing
+  // fails here.
+  if (label === 'purge-unit') {
+    tasks[HEALTHY_INVOCATION.taskId] = {
+      before: { state: 'completed', stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS },
+      after: null,
+    }
   }
   // The task the cell is about was ended by the engine, at the instant the cell set. It is
   // expected whether or not it was read, so a cell whose task had not ended fails.
-  const ended = { state, stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS }
-  tasks[POISON_INVOCATION.taskId] = { before: ended, after: after(ended) }
+  const ended = {
+    state: sagaBegan ? 'failed' : state,
+    stampedAtMs: TERMINAL_PRE_STATE_ENDED_AT_MS,
+  }
+  tasks[POISON_INVOCATION.taskId] = {
+    before: ended,
+    after: after(POISON_INVOCATION.taskId, ended),
+  }
   return {
     observed,
     expected: { reachedTheEndedTask: true, fired: true, healthy: 'fulfilled', tasks },
   }
 }
 
-function terminalPreStateTitle(label: MatrixWriteLabel, state: TerminalState): string {
+function terminalPreStateTitle(label: MatrixWriteLabel, state: EndedPreState): string {
+  if (state === 'failed with a saga' && label !== 'purge-unit') {
+    return label === 'retry-task'
+      ? 'retry-task refuses a task that failed with a saga, and leaves its stamp where its ending put it'
+      : `${label} leaves the stamp of a task that failed with a saga where its ending put it`
+  }
+  if (label === 'purge-unit') {
+    return `purge-unit leaves a ${state} task younger than its window as its ending left it, and takes the unit that is a window old`
+  }
   return revives(label, state)
     ? 'retry-task moves the stamp of the failed task it revives to the instant of the revival'
     : `${label} leaves the stamp of a ${state} task where its ending put it`
@@ -449,7 +482,7 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
 
     describe('a write label over a task that had ended', () => {
       for (const label of MATRIX_WRITE_LABELS) {
-        for (const state of TERMINAL_STATES) {
+        for (const state of ENDED_PRE_STATES) {
           it(terminalPreStateTitle(label, state), async () => {
             const { observed, expected } = await terminalPreStateCase(makeFixture, label, state)
             expect(observed).toEqual(expected)
@@ -558,6 +591,95 @@ export function retentionConformance(dialect: string, makeFixture: StoreFixtureF
           ])
         })
       })
+
+      it('names a completion event whose task is gone', async () => {
+        await withFixture(makeFixture, 'retention-rows-event', async (f) => {
+          const outcome = { state: 'completed', completedPayloadJson: '{"out":1}' } as const
+          await f.raw.batch(
+            'hand-written-rows',
+            [
+              {
+                sql: `INSERT INTO events (queue, event_name, payload, emitted_at_ms)
+                      VALUES (?, ?, ?, ?)`,
+                args: [Q, taskDoneEventName('purged-child'), encodeTaskOutcome(outcome), START_MS],
+              },
+            ],
+            'write',
+          )
+          expect(
+            await engineHistoryViolations(f.raw),
+            'mutation-verdict:behavior:history-names-a-completion-event-without-its-task',
+          ).toEqual([`completion-event-without-task: ${taskDoneEventName('purged-child')}`])
+        })
+      })
+    })
+
+    describe('the purge of a unit', () => {
+      // fenceTwin('PurgeChild') fenceTwin('PurgeHolder'): this case is the executable twin of
+      // the guard the two purge actions share against a caller that comes again. The first
+      // purge of each unit takes it whole. The same call sent again finds no task row for
+      // its compare-and-set, answers null, and leaves every table as it was.
+      it('takes a child and its parent, each whole, and the same purge sent again takes nothing', async () => {
+        await withFixture(makeFixture, 'retention-purge-again', async (f) => {
+          await f.admin.setFakeNowEpochMs(START_MS)
+          const parent = await f.store.spawn(Q, 'parent', '{}')
+          const parentRun = await claimActivated(f.store, Q, 'w-parent')
+          const child = await f.store.spawn(Q, 'child', '{}', {
+            childOf: {
+              parentQueue: Q,
+              parentTaskId: parent.taskId,
+              runId: parentRun.runId,
+              claimToken: parentRun.claimToken,
+              replayKey: 'child#1',
+            },
+          })
+          const childRun = await claimActivated(f.store, Q, 'w-child')
+          await checkpointOwned(f.store, Q, childRun, 'step', '1', 60)
+          await f.store.complete(Q, childRun.runId, childRun.claimToken, '"child"')
+          await f.store.complete(Q, parentRun.runId, parentRun.claimToken, '"parent"')
+
+          await f.admin.setFakeNowEpochMs(
+            START_MS + MATRIX_RETENTION_POLICY.completedSeconds * 1_000,
+          )
+          const retention = f.retentionOver(f.raw)
+          const { candidates, next } = await retention.purgeCandidates(Q, MATRIX_RETENTION_POLICY, {
+            limit: 10,
+          })
+          const purged = []
+          for (const candidate of candidates) {
+            purged.push(await retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
+          }
+          const left = await snapshot(f.raw)
+          const again = []
+          for (const candidate of candidates) {
+            again.push(await retention.purgeUnit(Q, candidate, MATRIX_RETENTION_POLICY))
+          }
+          const whole = (taskId: string, checkpoints: number) => ({
+            taskId,
+            rows: { tasks: 1, runs: 1, checkpoints, waits: 0, events: 1 },
+          })
+          const byTask = (units: readonly ({ taskId: string } | null)[]) =>
+            [...units].sort((a, b) => String(a?.taskId).localeCompare(String(b?.taskId)))
+          expect({
+            listed: candidates.map(({ taskId }) => taskId).sort(),
+            next,
+            purged: byTask(purged),
+            left,
+            again,
+            rowsAfterwards: await snapshot(f.raw),
+            violations: await engineHistoryViolations(f.raw),
+          }).toEqual({
+            listed: [child.taskId, parent.taskId].sort(),
+            next: null,
+            purged: byTask([whole(child.taskId, 1), whole(parent.taskId, 0)]),
+            left: { tasks: [], runs: [], checkpoints: [], events: [], waits: [], drivers: [] },
+            again: [null, null],
+            rowsAfterwards: left,
+            violations: [],
+          })
+        })
+      })
     })
   })
+  purgeConformance(dialect, makeFixture)
 }

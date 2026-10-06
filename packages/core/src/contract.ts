@@ -156,6 +156,28 @@ export const FENCE_RELATIONS = Object.freeze({
     column: 'run_id',
     queueScoped: false,
   }),
+  'tasks-to-checkpoints': Object.freeze({
+    target: 'checkpoints',
+    key: 'task_id',
+    from: 'tasks',
+    column: 'task_id',
+    // A task is authoritative for every checkpoint that names it, as a run is for its
+    // waits. A checkpoint carries no provenance, so the relation serves a generated
+    // DELETE and never an UPDATE: the purge of a task's unit (DESIGN.md §3.12).
+    queueScoped: false,
+  }),
+  'tasks-to-events': Object.freeze({
+    target: 'events',
+    key: 'queue',
+    from: 'tasks',
+    column: 'queue',
+    // The one event a task owns is its completion event, which lives in the task's queue
+    // under a name built from the task's id. No column of a task holds that name, so the
+    // relation reaches the queue, and a generated DELETE names the one event itself, from
+    // the lock its batch holds (`FencedBatch.derived`). It serves the purge of a task's
+    // unit and nothing else.
+    queueScoped: false,
+  }),
 } as const)
 
 export type FenceRelation = keyof typeof FENCE_RELATIONS
@@ -247,3 +269,19 @@ export const OPERATOR_LIST_CAP = 1_000
 
 /** The cap of every count of a queue's rows of one table. */
 export const OPERATOR_TABLE_ROWS_CAP = 1_000_000
+
+/**
+ * The shortest window a retention policy may name, in seconds: one hour (DESIGN.md §3.12).
+ * A window is how long an idempotency key still dedupes and a handle of the task still
+ * answers after the task ended, so core refuses a policy that names less.
+ */
+export const MIN_RETENTION_SECONDS = 3_600
+
+/**
+ * The most checkpoints a task's unit may hold and still be purged (DESIGN.md §3.12). A
+ * purge deletes a unit whole, in one batch, and a batch holds the database's writer for as
+ * long as it runs. A unit past the cap is kept. The cap is the largest unit libSQL was
+ * measured to purge without holding its writer for a second: units of 200,000 checkpoints
+ * went in 263 to 284 ms, and one of five units of 400,000 took 1,016 ms.
+ */
+export const MAX_PURGE_UNIT_CHECKPOINTS = 200_000

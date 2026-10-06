@@ -35,6 +35,10 @@ export const LIVE_TASKS =
 export const LIVE_TASKS_COUNTED =
   'SEARCH t USING COVERING INDEX tasks_live (queue=? AND state=? AND enqueue_at_ms>?)'
 
+/** The ended tasks of one state, in the order they ended: the range a purge's candidates are read by. */
+export const ENDED_TASKS =
+  'SEARCH t USING INDEX tasks_terminal (queue=? AND state=? AND fence_at_ms>? AND fence_at_ms<?)'
+
 /**
  * A due range that drives no other step is bounded the same way and shown no better, so
  * every statement that has one is named here too, with the lines and with what bounds
@@ -86,6 +90,13 @@ export const A_DUE_RANGE_ALONE: Readonly<
   'aged-tasks/read#0': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
   'aged-tasks/read#1': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
   'aged-tasks/read#2': { ranges: [LIVE_TASKS], boundedBy: 'LIMIT' },
+  // Retention's read of what a purge may take (DESIGN.md §3.12): the ended tasks of each
+  // state that are a window old, oldest first, after the place the page before ended, up
+  // to one row past the limit it was asked for. A state the policy keeps is sent a limit
+  // of no rows.
+  'purge-candidates/read#0': { ranges: [ENDED_TASKS], boundedBy: 'LIMIT' },
+  'purge-candidates/read#1': { ranges: [ENDED_TASKS], boundedBy: 'LIMIT' },
+  'purge-candidates/read#2': { ranges: [ENDED_TASKS], boundedBy: 'LIMIT' },
 }
 
 /** A statement's name: where the corpus holds it, or for text its place in its batch. */

@@ -352,21 +352,23 @@ describe('MySQL spelling of the shared statement trees', () => {
     expect(
       () =>
         compiled(
-          treeBuilder
-            .deleteFrom('waits')
-            .where((eb) =>
-              eb(
-                'run_id',
-                'in',
-                eb
-                  .selectFrom('tasks as f')
-                  .select('f.task_id')
-                  .where('f.fence_stamp', '=', 'stamp'),
-              ),
+          treeBuilder.deleteFrom('waits').where((eb) =>
+            eb(
+              'run_id',
+              'in',
+              // Every table that carries a stamp now declares an index of it, so the keys
+              // here come from a table that carries none, named as if it did.
+              eb
+                .selectFrom('checkpoints as f')
+                .select('f.task_id')
+                .where((keys) => keys(keys.ref('f.fence_stamp' as 'f.task_id'), '=', 'stamp')),
             ),
+          ),
         ),
       'mutation-verdict:construction:mysql-keyed-delete-unindexed-stamp-refused',
-    ).toThrow('a delete of waits takes its keys from tasks, which declares no index of its stamp')
+    ).toThrow(
+      'a delete of waits takes its keys from checkpoints, which declares no index of its stamp',
+    )
   })
 
   it('refuses a delete whose keys are anything but a selection of one plain table', () => {

@@ -7849,8 +7849,8 @@ MUTATION_SPECS.extend(
         (
             "mysql-keyed-delete-reads-its-keys-by-their-stamp",
             "packages/store-mysql/src/tree.ts",
-            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: RUNS_STAMP_INDEX }\n",
-            "const STAMP_INDEXES: Readonly<Record<string, string>> = { runs: 'runs_poll' }\n",
+            "  runs: RUNS_STAMP_INDEX,\n",
+            "  runs: 'runs_poll',\n",
             "a delete reads its keys through the queue's poll index, takes shared locks on the runs other claimers hold, and a second claimer waits for the first",
         ),
         (
@@ -21274,6 +21274,527 @@ VERDICTS.update(
     }
 )
 
+# Retention (DESIGN.md §3.12): a row of a task's unit is deleted by the purge of that unit
+# and by nothing else. One mutation drops each table from the rule, and one bends each
+# condition of it.
+MUTATION_SPECS.extend(
+    (
+        (
+            "purge-alone-deletes-tasks",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['runs', 'checkpoints', 'events']\n",
+            "a batch that is no purge deletes a task row and leaves its runs, its checkpoints and its completion event behind",
+        ),
+        (
+            "purge-alone-deletes-runs",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'checkpoints', 'events']\n",
+            "a batch that is no purge deletes the runs of a task whose row stays, and the task has no run",
+        ),
+        (
+            "purge-alone-deletes-checkpoints",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'events']\n",
+            "a batch that is no purge deletes the checkpoints of a task that can still be revived, and every step then runs again",
+        ),
+        (
+            "purge-alone-deletes-events",
+            "packages/core/src/fenced-batch.ts",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']\n",
+            "const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints']\n",
+            "a batch that is no purge deletes a completion event while its task can still be awaited",
+        ),
+        (
+            "purge-rule-reads-deletes",
+            "packages/core/src/fenced-batch.ts",
+            "        tree.kind === 'DeleteQueryNode' &&\n",
+            "        tree.kind !== 'DeleteQueryNode' &&\n",
+            "the rule refuses every update of a task or a run under a stamp that is no purge, and lets every delete through",
+        ),
+        (
+            "purge-rule-spares-other-tables",
+            "packages/core/src/fenced-batch.ts",
+            "        DELETED_BY_A_PURGE_ALONE.some((table) => table === written)\n",
+            "        DELETED_BY_A_PURGE_ALONE.some((table) => table !== written)\n",
+            "a delete of waits under the stamp of a batch that ends or parks a run is refused, so no such batch can be built",
+        ),
+        (
+            "purge-rule-reads-the-gating-statement",
+            "packages/core/src/fenced-batch.ts",
+            "        const gate = this.statements.find((earlier) => earlier.name === gateName)\n",
+            "        const gate = this.statements.find((earlier) => earlier.name !== gateName)\n",
+            "the rule asks another statement of the batch whether it is the purge, and refuses the purge's own deletes",
+        ),
+        (
+            "purge-rule-asks-for-the-purge",
+            "packages/core/src/fenced-batch.ts",
+            "        if (gate?.purges !== true) {\n",
+            "        if (gate?.name === undefined) {\n",
+            "a delete of a unit's rows is taken under the stamp of any statement of the batch, the one the purge writes on its unit's runs included",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "purge-alone-deletes-tasks": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of tasks under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-tasks",
+        ),
+        "purge-alone-deletes-runs": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of runs under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-runs",
+        ),
+        "purge-alone-deletes-checkpoints": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of checkpoints under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-checkpoints",
+        ),
+        "purge-alone-deletes-events": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of events under the stamp of a compare-and-set that is no purge",
+            "mutation-verdict:construction:purge-alone-deletes-events",
+        ),
+        "purge-rule-reads-deletes": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit takes an update of a task under a stamp that is no purge, because the rule reads deletes",
+            "mutation-verdict:construction:purge-rule-reads-deletes",
+        ),
+        "purge-rule-spares-other-tables": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit takes a delete of waits under any stamp, as every batch that ends or parks a run sends one",
+            "mutation-verdict:construction:purge-rule-spares-other-tables",
+        ),
+        "purge-rule-reads-the-gating-statement": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit takes every delete of a unit under the stamp of the purge, in the order the batch sends them",
+            "mutation-verdict:construction:purge-rule-reads-the-gating-statement",
+        ),
+        "purge-rule-asks-for-the-purge": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit refuses a delete of a unit's rows under a stamp of the purge's batch that is not the purge's own",
+            "mutation-verdict:construction:purge-rule-asks-for-the-purge",
+        ),
+    }
+)
+
+# The child-task row checker has named a completion event whose task is not in its queue
+# since child tasks landed, and until a purge nothing could leave one, so nothing showed
+# that the condition can fail. Retention's surface writes the rows.
+MUTATION_SPECS.append(
+    (
+        "history-names-a-completion-event-without-its-task",
+        "packages/conformance/src/child-task-rows.ts",
+        "    violations.push(`completion-event-without-task: ${eventName}`)\n",
+        "",
+        "a purge that deleted a task and left its completion event, or an await that recorded an outcome after the purge, passes every row check",
+    )
+)
+VERDICTS["history-names-a-completion-event-without-its-task"] = ExpectedVerdict(
+    "behavior",
+    "packages/conformance/test/libsql.test.ts",
+    "retention conformance [libsql] the rows a wrong purge would leave names a completion event whose task is gone",
+    "mutation-verdict:behavior:history-names-a-completion-event-without-its-task",
+    "packages/conformance/src/retention.ts",
+)
+
+# Retention's purge (DESIGN.md §3.12, BUILD.md exit test line 42): each conjunct of the
+# barrier, the window comparison, the cap, the key, the order of the unit's statements, the
+# lock of its completion event, SKIP LOCKED added to a purge delete, the spawn that sends
+# once more, in each store, and MySQL's two index rules for a purge.
+MUTATION_SPECS.extend(
+    (
+        (
+            "purge-keeps-the-child-of-a-live-parent",
+            "packages/core/src/statements/purge.ts",
+            "              parent('parent.state', 'in', [...LIVE_STATES]),\n",
+            "              parent('parent.state', '=', literalValue('failed')),\n",
+            "a purge takes the child of a parent that is live, and the parent's replay of its spawn creates a second child",
+        ),
+        (
+            "purge-keeps-the-child-of-a-failed-parent",
+            "packages/core/src/statements/purge.ts",
+            "              parent('parent.state', '=', literalValue('failed')),\n",
+            "              parent('parent.state', 'in', [...LIVE_STATES]),\n",
+            "a purge takes the child of a failed parent, and a revival of the parent spawns a second child",
+        ),
+        (
+            "purge-finds-a-parent-in-any-queue",
+            "packages/core/src/statements/purge.ts",
+            "              .where('p.task_id', '=', task.val(binds.parentTaskId) as Expression<string>)\n",
+            "              .where('p.task_id', '=', task.val(binds.parentTaskId) as Expression<string>)\n              .where('p.queue', '=', binds.queue)\n",
+            "a purge looks for the spawning parent in the child's queue alone, and takes the child of a live parent in another queue",
+        ),
+        (
+            "purge-is-not-kept-by-a-run-that-holds-no-payload",
+            "packages/core/src/statements/purge.ts",
+            "          .where('holder.event_payload', 'is not', null)\n",
+            "",
+            "a run that names the completion event and holds no payload keeps the unit for ever",
+        ),
+        (
+            "purge-keeps-a-unit-whose-outcome-a-run-holds",
+            "packages/core/src/statements/purge.ts",
+            "          .where('holder.wake_event', '=', taskDoneEventName(binds.taskId))\n",
+            "          .where('holder.wake_event', '=', 'no-such-event')\n",
+            "a purge takes a unit whose outcome a run of another unit still holds, and that run's payload has no event",
+        ),
+        (
+            "purge-keeps-a-unit-whose-event-a-wait-names",
+            "packages/core/src/statements/purge.ts",
+            "          .where('waiter.event_name', '=', taskDoneEventName(binds.taskId)),\n",
+            "          .where('waiter.event_name', '=', 'no-such-event'),\n",
+            "a purge takes a unit while a wait names its completion event, and nothing can ever wake the waiter",
+        ),
+        (
+            "purge-takes-a-unit-exactly-a-window-old",
+            "packages/core/src/statements/purge.ts",
+            "  return eb(stampedAt, '<=', eb(nowValue, '-', eb.val(windowMs) as Expression<number>))\n",
+            "  return eb(stampedAt, '<', eb(nowValue, '-', eb.val(windowMs) as Expression<number>))\n",
+            "a unit exactly its window old is kept one millisecond longer than the policy says",
+        ),
+        (
+            "purge-keeps-a-unit-past-the-checkpoint-cap",
+            "packages/core/src/statements/purge.ts",
+            "      '<=',\n      MAX_PURGE_UNIT_CHECKPOINTS,\n",
+            "      '<=',\n      MAX_PURGE_UNIT_CHECKPOINTS + 1,\n",
+            "a purge takes a unit with more checkpoints than one batch may delete",
+        ),
+        (
+            "purge-takes-a-unit-at-the-checkpoint-cap",
+            "packages/core/src/statements/purge.ts",
+            "      '<=',\n      MAX_PURGE_UNIT_CHECKPOINTS,\n",
+            "      '<',\n      MAX_PURGE_UNIT_CHECKPOINTS,\n",
+            "a unit with exactly the cap's worth of checkpoints is kept for ever",
+        ),
+        (
+            "purge-keeps-a-state-the-policy-does-not-name",
+            "packages/core/src/statements/purge.ts",
+            "          atLeastAWindowOld(task.ref('fence_at_ms'), binds.windowsMs[state]),\n",
+            "          atLeastAWindowOld(task.ref('fence_at_ms'), binds.windowsMs.completed),\n",
+            "a failed task is purged under a policy that names no window for failed tasks, by the window of completed ones",
+        ),
+        (
+            "purge-reads-an-age-only-from-a-stamp-in-range",
+            "packages/store-libsql/src/retention.ts",
+            "const STAMP_STORED = storedIntegerWithin(STAMP)\n",
+            "const STAMP_STORED = '1 = 1'\n",
+            "libSQL purges a unit whose stamp is no instant in range, by an age read from it",
+        ),
+        (
+            "purge-reads-an-age-only-from-a-stamp-in-range-on-postgres",
+            "packages/store-postgres/src/retention.ts",
+            "const STAMP_STORED = storedIntegerWithin(STAMP)\n",
+            "const STAMP_STORED = '1 = 1'\n",
+            "PostgreSQL purges a unit whose stamp is no instant in range, by an age read from it",
+        ),
+        (
+            "purge-reads-an-age-only-from-a-stamp-in-range-on-mysql",
+            "packages/store-mysql/src/retention.ts",
+            "const STAMP_STORED = storedIntegerWithin(STAMP)\n",
+            "const STAMP_STORED = '1 = 1'\n",
+            "MySQL purges a unit whose stamp is no instant in range, by an age read from it",
+        ),
+        (
+            "purge-keeps-a-unit-with-a-live-run",
+            "packages/core/src/statements/purge.ts",
+            "          .where('live.state', 'in', [...LIVE_STATES]),\n",
+            "          .where('live.task_id', '<>', binds.taskId),\n",
+            "a purge takes a unit one of whose runs is live, and a worker's write then finds no run",
+        ),
+        (
+            "purge-keeps-a-unit-with-a-run-in-another-queue",
+            "packages/core/src/statements/purge.ts",
+            "          .where('stray.queue', '<>', binds.queue),\n",
+            "          .where('stray.task_id', '<>', binds.taskId),\n",
+            "a purge takes a task whose run is in another queue and leaves that run with no task",
+        ),
+        (
+            "purge-keeps-a-unit-whose-key-names-no-parent",
+            "packages/core/src/child-tasks.ts",
+            "  return named === null ? { known: false } : { known: true, taskId: named.parentTaskId }\n",
+            "  return named === null ? { known: true, taskId: null } : { known: true, taskId: named.parentTaskId }\n",
+            "a key in the reserved namespace that names no parent reads as a key of no parent, and the child of a parent nobody can name is purged",
+        ),
+        (
+            "purge-holds-the-key-the-unit-was-spawned-under",
+            "packages/core/src/statements/purge.ts",
+            "      'idempotency_key',\n      'is not distinct from',\n      task.val(binds.idempotencyKey) as Expression<string>,\n",
+            "      'task_id',\n      '=',\n      task.val(binds.taskId) as Expression<string>,\n",
+            "a purge named under a key reads its unit's parent from that key and not from the row, so a child named under no key is purged beside its live parent",
+        ),
+        (
+            "purge-is-not-kept-by-its-own-run",
+            "packages/core/src/statements/purge.ts",
+            "          .where('holder.task_id', '<>', binds.taskId),\n",
+            "          .where('holder.queue', '=', binds.queue),\n",
+            "a run of the unit itself that holds the unit's own outcome keeps the unit for ever",
+        ),
+        (
+            "purge-deletes-the-task-row-last",
+            "packages/core/src/retention.ts",
+            "  b.derived('event', { relation: 'tasks-to-events', fence: 'purge', ...ofTheUnit, rows: 'one' })\n  b.followOnTree('task', purgedTaskDelete({ queue, taskId }), 'one')\n",
+            "  b.followOnTree('task', purgedTaskDelete({ queue, taskId }), 'one')\n  b.derived('event', { relation: 'tasks-to-events', fence: 'purge', ...ofTheUnit, rows: 'one' })\n",
+            "the task row goes before the completion event, whose delete then finds no stamped row and leaves the event",
+        ),
+        (
+            "purge-holds-the-lock-of-its-completion-event",
+            "packages/core/src/statements/purge.ts",
+            "  (binds) => ({ queue: binds.queue, eventName: EventName.taskDone(binds.taskId) }),\n",
+            "  null,\n",
+            "a purge holds no lock of its unit's completion event, and an await registers a wait on an event the purge is deleting",
+        ),
+        (
+            "purge-delete-skips-no-locked-row",
+            "packages/core/src/fenced-batch.ts",
+            "        .deleteFrom(target)\n        .where((eb) => eb(eb.ref(key), 'in', sourceKeys))\n",
+            "        .deleteFrom(target)\n        .where((eb) => eb(eb.ref(key), 'in', (sourceKeys as never as { forUpdate(): { skipLocked(): never } }).forUpdate().skipLocked()))\n",
+            "a generated delete reads its keys with SKIP LOCKED, and a purge skips a row its own batch stamped",
+        ),
+        (
+            "spawn-sends-once-more-when-its-holder-is-gone",
+            "packages/core/src/child-tasks.ts",
+            "  if (answer === null) answer = await send()\n",
+            "",
+            "a spawn whose key a purge freed between its insert and its read throws, where it must create the task",
+        ),
+        (
+            "mysql-purge-reads-its-keys-by-the-stamp-of-tasks",
+            "packages/store-mysql/src/tree.ts",
+            "  tasks: TASKS_STAMP_INDEX,\n",
+            "  tasks: 'tasks_terminal',\n",
+            "a purge's deletes read their keys through the index of ended tasks, and walk every task of the queue under shared locks",
+        ),
+        (
+            "mysql-purge-takes-the-key-before-the-row",
+            "packages/store-mysql/src/tree.ts",
+            "    target === 'tasks' &&\n",
+            "    target === 'no-such-table' &&\n",
+            "a purge reaches its task by the primary key, and deadlocks with a spawn that reuses the key of the unit being purged",
+        ),
+        (
+            "entry-exports-no-builder-of-a-purge",
+            "packages/core/src/index.ts",
+            "export { type HeldRetention, type RetentionDialect, createRetention } from './retention.js'\n",
+            "export * from './retention.js'\n",
+            "core's entry exports the function that adds a purge's statements to a batch, and its caller chooses the barrier's inputs",
+        ),
+        (
+            "retention-port-reads-each-member-once",
+            "packages/core/src/retention.ts",
+            "      return apply(entry, undefined, once)\n",
+            "      return apply(entry, undefined, args)\n",
+            "a method of the retention port reads a member of its argument again after the check read it, and binds what the second reading answered",
+        ),
+        (
+            "purge-candidates-holds-its-limit",
+            "packages/core/src/retention.ts",
+            "  const limit = requireListLimit(options.limit)\n",
+            "  const limit = options.limit\n",
+            "a listing of purge candidates takes any limit, and one of a million reads a million rows of each state in one batch",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "purge-keeps-the-child-of-a-live-parent": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that completed, spawned by a live parent: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-keeps-the-child-of-a-live-parent",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-the-child-of-a-failed-parent": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that completed, spawned by a failed parent: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-keeps-the-child-of-a-failed-parent",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-finds-a-parent-in-any-queue": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that was cancelled, spawned by a live parent: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-finds-a-parent-in-any-queue",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-is-not-kept-by-a-run-that-holds-no-payload": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that completed, spawned by no task: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-is-not-kept-by-a-run-that-holds-no-payload",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-unit-whose-outcome-a-run-holds": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that was cancelled, spawned by no task: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-keeps-a-unit-whose-outcome-a-run-holds",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-unit-whose-event-a-wait-names": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that failed with no saga, spawned by no task: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-keeps-a-unit-whose-event-a-wait-names",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-takes-a-unit-exactly-a-window-old": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that failed with a saga, spawned by no task: the purge takes what the model lets go, whole, and nothing else",
+            "mutation-verdict:behavior:purge-takes-a-unit-exactly-a-window-old",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-unit-past-the-checkpoint-cap": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that completed, at the checkpoint cap and one either side of it: the purge takes the unit up to the cap, and keeps it past it",
+            "mutation-verdict:behavior:purge-keeps-a-unit-past-the-checkpoint-cap",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-takes-a-unit-at-the-checkpoint-cap": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the barrier grid [libsql] a unit that was cancelled, at the checkpoint cap and one either side of it: the purge takes the unit up to the cap, and keeps it past it",
+            "mutation-verdict:behavior:purge-takes-a-unit-at-the-checkpoint-cap",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-state-the-policy-does-not-name": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a failed unit is kept under a policy that names no window for failed tasks",
+            "mutation-verdict:behavior:purge-keeps-a-state-the-policy-does-not-name",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-reads-an-age-only-from-a-stamp-in-range": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a unit whose stamp is NULL, or below every instant, is kept, however old its rows are",
+            "mutation-verdict:behavior:purge-reads-an-age-only-from-a-stamp-in-range",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-reads-an-age-only-from-a-stamp-in-range-on-postgres": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [postgres] a unit whose stamp is NULL, or below every instant, is kept, however old its rows are",
+            "mutation-verdict:behavior:purge-reads-an-age-only-from-a-stamp-in-range",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-reads-an-age-only-from-a-stamp-in-range-on-mysql": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [mysql] a unit whose stamp is NULL, or below every instant, is kept, however old its rows are",
+            "mutation-verdict:behavior:purge-reads-an-age-only-from-a-stamp-in-range",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-unit-with-a-live-run": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a unit one of whose runs is live is kept, though its task has ended",
+            "mutation-verdict:behavior:purge-keeps-a-unit-with-a-live-run",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-unit-with-a-run-in-another-queue": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a unit one of whose runs is in another queue is kept whole",
+            "mutation-verdict:behavior:purge-keeps-a-unit-with-a-run-in-another-queue",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-keeps-a-unit-whose-key-names-no-parent": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a unit whose key is in the reserved namespace and names no parent is kept",
+            "mutation-verdict:behavior:purge-keeps-a-unit-whose-key-names-no-parent",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-holds-the-key-the-unit-was-spawned-under": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a unit named under a key it was not spawned under is kept, and so is one named under none",
+            "mutation-verdict:behavior:purge-holds-the-key-the-unit-was-spawned-under",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-is-not-kept-by-its-own-run": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what keeps a unit that no engine path leaves [libsql] a run of the unit itself that holds the unit's own outcome does not keep it",
+            "mutation-verdict:behavior:purge-is-not-kept-by-its-own-run",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-deletes-the-task-row-last": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit sends the delete of the task row last, after every delete that finds its rows through it",
+            "mutation-verdict:behavior:purge-deletes-the-task-row-last",
+        ),
+        "purge-holds-the-lock-of-its-completion-event": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit builds the batch of a purge only under the lock of the unit's completion event",
+            "mutation-verdict:construction:purge-holds-the-lock-of-its-completion-event",
+        ),
+        "purge-delete-skips-no-locked-row": ExpectedVerdict(
+            "construction",
+            "packages/core/test/retention.test.ts",
+            "the rule that only a purge deletes a row of a task's unit builds no delete of a purge that skips a locked row",
+            "mutation-verdict:construction:purge-delete-skips-no-locked-row",
+        ),
+        "spawn-sends-once-more-when-its-holder-is-gone": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "a spawn under a key whose task a purge takes [libsql] creates the task on a second insert when the first lost to a task that is gone by its read",
+            "mutation-verdict:behavior:spawn-sends-once-more-when-its-holder-is-gone",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "mysql-purge-reads-its-keys-by-the-stamp-of-tasks": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "retention beside a history of ended tasks, on MySQL lists what a purge may take, and purges one unit, without walking the ended tasks of the queue or their runs, checkpoints and events",
+            "mutation-verdict:behavior:mysql-purge-reads-its-keys-by-the-stamp-of-tasks",
+        ),
+        "mysql-purge-takes-the-key-before-the-row": ExpectedVerdict(
+            "behavior",
+            "packages/store-mysql/test/query-plans.test.ts",
+            "a purge beside a spawn under the key of its unit, on MySQL takes the key and then the row, as the spawn does, so the server chooses no deadlock victim",
+            "mutation-verdict:behavior:mysql-purge-takes-the-key-before-the-row",
+        ),
+        "entry-exports-no-builder-of-a-purge": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/retention.test.ts",
+            "what core's entry exports of retention exports the factory of the port, and no builder of a purge, no maker of windows and no mark",
+            "mutation-verdict:behavior:entry-exports-no-builder-of-a-purge",
+        ),
+        "retention-port-reads-each-member-once": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what the retention port refuses [libsql] reads each member of an object argument once, so what the check read is what is bound",
+            "mutation-verdict:behavior:retention-port-reads-each-member-once",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+        "purge-candidates-holds-its-limit": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "what the retention port refuses [libsql] refuses a limit that is no whole number from 1 to 1000 and options that are no object, and sends nothing",
+            "mutation-verdict:behavior:purge-candidates-holds-its-limit",
+            "packages/conformance/src/retention-purge.ts",
+        ),
+    }
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -25203,7 +25724,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1412:
+        if len(MUTATIONS) != 1448:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

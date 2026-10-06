@@ -7,6 +7,7 @@ import {
   type PersistedCounterFieldDescriptor,
   type PersistedCounterFieldId,
   type PersistedTemporalFieldDescriptor,
+  type Retention,
   RunCancelledError,
   SAGA_PHASE_CHECKPOINT,
   SAGA_STARTED_PREFIX,
@@ -17,7 +18,9 @@ import {
   type SqlResult,
   type SqlRow,
   type SqlStatement,
+  TERMINAL_STATES,
   type TerminalState,
+  encodeTaskOutcome,
   isLiveState,
   isTerminalState,
   parseFenceStamp,
@@ -26,6 +29,7 @@ import {
 } from '@durablerun/core'
 import { type RecordedBatch, RecordingExecutor } from '@durablerun/core/testing'
 import {
+  MATRIX_RETENTION_POLICY,
   MATRIX_WRITE_LABELS,
   type MatrixWriteLabel,
   TERMINAL_BATCH_LABELS,
@@ -1951,6 +1955,59 @@ function endedChild(taskId: string): SqlStatement {
   )
 }
 
+/**
+ * The instant a purge of the matrix is sent at: a window after the fixed instant, so a
+ * unit that ended at the fixed instant is exactly old enough.
+ */
+const PURGE_AT_MS = NOW + MATRIX_RETENTION_POLICY.completedSeconds * 1_000
+
+/**
+ * The healthy trigger of a purge: a unit as the engine leaves one it completed at the
+ * fixed instant. Its task was spawned under a key, ran once, kept a checkpoint, and ended
+ * with its completion event recorded.
+ */
+function endedTriggerUnit(): SqlStatement[] {
+  const result = '{"healthy":true}'
+  return [
+    sql(
+      `INSERT INTO tasks
+         (task_id, queue, task_name, params, retry_strategy, max_attempts, idempotency_key,
+          state, attempts, infra_retries, last_attempt_run, completed_payload, enqueue_at_ms,
+          first_started_at_ms, created_at_ms, fence_stamp, fence_at_ms)
+       VALUES (?, ?, 'trigger', '{}', '{"kind":"none"}', 5, ?, 'completed', 0, 0, ?, ?, ?, ?, ?,
+               'trigger-ending:task', ?)`,
+      [TRIGGER_TASK, Q, TRIGGER_IDEMPOTENCY_KEY, TRIGGER_RUN, result, NOW, NOW, NOW, NOW],
+    ),
+    sql(
+      `INSERT INTO runs
+         (run_id, queue, task_id, attempt, state, claim_gen, activated_gen, relaunch_count,
+          lease_ms, heartbeat_at_ms, available_at_ms, started_at_ms, completed_at_ms, result,
+          created_at_ms, fence_stamp, fence_at_ms)
+       VALUES (?, ?, ?, 1, 'completed', 1, 1, 0, 60000, ?, ?, ?, ?, ?, ?,
+               'trigger-ending:complete', ?)`,
+      [TRIGGER_RUN, Q, TRIGGER_TASK, NOW, NOW, NOW, NOW, result, NOW, NOW],
+    ),
+    sql(
+      `INSERT INTO checkpoints
+         (task_id, checkpoint_name, queue, state, status, owner_run_id, owner_attempt,
+          updated_at_ms)
+       VALUES (?, 'trigger-checkpoint', ?, '{}', 'committed', ?, 1, ?)`,
+      [TRIGGER_TASK, Q, TRIGGER_RUN, NOW],
+    ),
+    sql(
+      `INSERT INTO events (queue, event_name, payload, emitted_at_ms, fence_stamp, fence_at_ms)
+       VALUES (?, ?, ?, ?, 'trigger-ending:event', ?)`,
+      [
+        Q,
+        taskDoneEventName(TRIGGER_TASK),
+        encodeTaskOutcome({ state: 'completed', completedPayloadJson: result }),
+        NOW,
+        NOW,
+      ],
+    ),
+  ]
+}
+
 /** The attempt record a `fail-rollback` invocation writes. */
 const ROLLBACK_STEP = 'probe'
 export const ROLLBACK_TRIED = `${SAGA_TRIES_PREFIX}${ROLLBACK_STEP}`
@@ -2085,6 +2142,9 @@ export async function seedHealthyTrigger(
         }),
       ]
       break
+    case 'purge-unit':
+      statements = endedTriggerUnit()
+      break
     case 'fail-rollback':
       // A failed rollback is one only while its task is rolling back, so the trigger
       // stands in the phase, with one rollback owed.
@@ -2182,10 +2242,28 @@ export const HEALTHY_INVOCATION: InvocationTarget = {
   endedChildId: TRIGGER_ENDED_CHILD,
 }
 
-/** The one call of the scheduler port that sends `label`, naming `target`. */
+/**
+ * The ports a write label is sent through. Every label is the scheduler's but the purge of
+ * a unit, which is retention's (DESIGN.md §3.12).
+ */
+export interface LabelPorts {
+  readonly store: SchedulerStore
+  readonly retention: Retention
+}
+
+/**
+ * A fixture's ports: its own store with its retention, or both over `db`, so a recorder or
+ * a bend under one is under the other.
+ */
+export const portsOver = (f: StoreFixture, db?: SqlExecutor): LabelPorts =>
+  db === undefined
+    ? { store: f.store, retention: f.retentionOver(f.raw) }
+    : { store: f.storeOver(db), retention: f.retentionOver(db) }
+
+/** The one call of a port that sends `label`, naming `target`. */
 export async function invoke(
   label: MatrixWriteLabel,
-  store: SchedulerStore,
+  { store, retention }: LabelPorts,
   target: InvocationTarget,
   selectionLimit = 100,
 ): Promise<unknown> {
@@ -2278,6 +2356,12 @@ export async function invoke(
     case 'sweep:lost-launch':
     case 'sweep:claim-timeout':
       return store.sweep(Q, selectionLimit)
+    case 'purge-unit':
+      return retention.purgeUnit(
+        Q,
+        { taskId: target.taskId, idempotencyKey: target.idempotencyKey },
+        MATRIX_RETENTION_POLICY,
+      )
     default:
       throw new Error(`poison matrix has no driver for write label '${label}'`)
   }
@@ -2348,8 +2432,14 @@ export type PoisonInvocationOutcome<
       reason: unknown
     }>
 
-function freezeAuthority(before: ProtocolSnapshot): FrozenAuthority {
+function freezeAuthority(before: ProtocolSnapshot, label: string): FrozenAuthority {
   const taskIds = new Set([TASK, TRIGGER_TASK])
+  // A purge removes the completion event of the unit it takes, and no other label may
+  // touch a completion event that exists.
+  const eventNames =
+    label === 'purge-unit'
+      ? [EVENT, TRIGGER_EVENT, taskDoneEventName(TASK), taskDoneEventName(TRIGGER_TASK)]
+      : [EVENT, TRIGGER_EVENT]
   const runIds = new Set([RUN, RUN_2, GHOST_RUN, TRIGGER_RUN])
   for (const run of before.runs) {
     if (taskIds.has(String(run.task_id))) runIds.add(String(run.run_id))
@@ -2373,7 +2463,7 @@ function freezeAuthority(before: ProtocolSnapshot): FrozenAuthority {
     ),
     events: new Set(
       before.events
-        .filter((row) => row.queue === Q && [EVENT, TRIGGER_EVENT].includes(String(row.event_name)))
+        .filter((row) => row.queue === Q && eventNames.includes(String(row.event_name)))
         .map((row) => key('events', row)),
     ),
     drivers: new Set(
@@ -2729,6 +2819,22 @@ function terminalBarrier(
         )
       ) {
         errors.push(`revived task ${taskId} changed a column a revival does not write`)
+      }
+      continue
+    }
+    // The purge is the other sanctioned exit, and the only one that removes a task: it
+    // takes the row with every row of its unit, or it takes nothing.
+    if (label === 'purge-unit' && afterTask === undefined) {
+      const left = [
+        ...after.runs.filter((row) => row.task_id === taskId),
+        ...after.checkpoints.filter((row) => row.task_id === taskId),
+        ...after.waits.filter((row) => row.task_id === taskId),
+        ...after.events.filter(
+          (row) => row.queue === task.queue && row.event_name === taskDoneEventName(taskId),
+        ),
+      ]
+      if (left.length > 0) {
+        errors.push(`purged task ${taskId} left ${left.length} rows of its unit behind`)
       }
       continue
     }
@@ -3519,6 +3625,18 @@ function healthyWinErrors(
         'trigger task was not cancelled',
       )
       break
+    case 'purge-unit':
+      expect(
+        hasOutcome(healthy, (result) => object(result)?.taskId === TRIGGER_TASK) &&
+          task === undefined &&
+          run === undefined &&
+          !after.checkpoints.some((row) => row.task_id === TRIGGER_TASK) &&
+          !after.events.some(
+            (row) => row.queue === Q && row.event_name === taskDoneEventName(TRIGGER_TASK),
+          ),
+        'trigger unit was not purged whole',
+      )
+      break
     case 'expire-lease-now':
       expect(
         hasOutcome(healthy, (result) => result === true) && same(run?.claim_expires_at_ms, NOW),
@@ -3684,6 +3802,8 @@ async function preparePoisonCase(
       }
       await seedHealthyTrigger(fixture.raw, label)
     }
+    // A purge takes a unit a window after it ended, so its cells run a window on.
+    if (label === 'purge-unit') await fixture.admin.setFakeNowEpochMs(PURGE_AT_MS)
     await options.beforeSnapshot?.(fixture.raw)
 
     const beforeFindings = await engineInvariantFindings(fixture.raw)
@@ -3790,9 +3910,9 @@ export async function runPoisonMatrixCase(
         throw new Error(`${caseName}: ${targetErrors.join('; ')}`)
       }
     }
-    const frozenAuthority = freezeAuthority(before)
+    const frozenAuthority = freezeAuthority(before, label)
     const recorder = new StateWatchingExecutor(f.raw)
-    const store = f.storeOver(recorder)
+    const ports = portsOver(f, recorder)
     const outcomes: PoisonInvocationOutcome[] = []
     const call = async <Target extends PoisonInvocationTarget>(
       target: Target,
@@ -3810,11 +3930,11 @@ export async function runPoisonMatrixCase(
     const targetedSelection = options.targetProfile !== undefined && !isAddressedArm(label)
     outcomes.push(
       await call('poison', () =>
-        invoke(label, store, POISON_INVOCATION, targetedSelection ? 1 : 100),
+        invoke(label, ports, POISON_INVOCATION, targetedSelection ? 1 : 100),
       ),
     )
     if (options.healthyTrigger !== false && !targetedSelection) {
-      outcomes.push(await call('healthy', () => invoke(label, store, HEALTHY_INVOCATION)))
+      outcomes.push(await call('healthy', () => invoke(label, ports, HEALTHY_INVOCATION)))
     }
     options.afterOutcomes?.(outcomes)
     try {
@@ -3917,7 +4037,7 @@ export async function observeCleanAddressedProfile(
   })
   try {
     const before = await snapshot(f.raw)
-    const [invocation] = await Promise.allSettled([invoke(arm, f.store, POISON_INVOCATION)])
+    const [invocation] = await Promise.allSettled([invoke(arm, portsOver(f), POISON_INVOCATION)])
     const after = await snapshot(f.raw)
     if (invocation === undefined) throw new Error(`${profile}: the clean call did not settle`)
     const closure = poisonOwnedClosure(after)
@@ -3946,7 +4066,8 @@ export interface EndedTaskStamp {
 /** One task that had ended, as a terminal pre-state cell read it before the label ran and after. */
 export interface EndedTaskStamps {
   readonly before: EndedTaskStamp
-  readonly after: EndedTaskStamp
+  /** Null for a task that is gone, which only a purge leaves. */
+  readonly after: EndedTaskStamp | null
 }
 
 export interface TerminalPreStateObservation {
@@ -3966,6 +4087,13 @@ const ENDING_LABEL: Readonly<Record<TerminalState, MatrixWriteLabel>> = {
   failed: 'fail',
   cancelled: 'cancel-task',
 }
+
+/**
+ * What a cell's task had ended as: each terminal state, and a task that failed by the
+ * rollback that halted its saga. That one is failed too, and `retry-task` refuses it.
+ */
+export const ENDED_PRE_STATES = [...TERMINAL_STATES, 'failed with a saga'] as const
+export type EndedPreState = (typeof ENDED_PRE_STATES)[number]
 
 /** The instant the engine ends a terminal pre-state cell's task at. */
 export const TERMINAL_PRE_STATE_ENDED_AT_MS = NOW
@@ -3994,8 +4122,10 @@ function endedTasksAcross(
     if (!isTerminalState(task.state)) continue
     const taskId = key('tasks', task)
     const still = later.get(taskId)
-    if (still === undefined) throw new Error(`${label}: task ${taskId} is gone`)
-    tasks[taskId] = { before: endedTaskStamp(task), after: endedTaskStamp(still) }
+    tasks[taskId] = {
+      before: endedTaskStamp(task),
+      after: still === undefined ? null : endedTaskStamp(still),
+    }
   }
   return tasks
 }
@@ -4026,25 +4156,35 @@ async function endedWithNothingRecorded(f: StoreFixture): Promise<string> {
 export function observeTerminalPreState(
   makeFixture: StoreFixtureFactory,
   label: MatrixWriteLabel,
-  state: TerminalState,
+  state: EndedPreState,
 ): Promise<TerminalPreStateObservation> {
   return withFixture(makeFixture, `terminal-pre-state-${label}-${state}`, async (f) => {
     await seedBase(f)
-    await invoke(ENDING_LABEL[state], f.store, POISON_INVOCATION)
+    if (state === 'failed with a saga') {
+      // The base task is put in the rolling-back phase, and its rollback fails for good.
+      await f.raw.batch('poison:rolling-back', rollingBack(TASK, RUN), 'write')
+      await invoke('fail-rollback', portsOver(f), POISON_INVOCATION)
+    } else {
+      await invoke(ENDING_LABEL[state], portsOver(f), POISON_INVOCATION)
+    }
     await seedHealthyTrigger(f.raw, label)
     // The healthy call that records a task's outcome records this one's.
     const healthyTarget = { ...HEALTHY_INVOCATION, endedChildId: await endedWithNothingRecorded(f) }
     await f.admin.setFakeNowEpochMs(TERMINAL_PRE_STATE_INVOKED_AT_MS)
     const before = await snapshot(f.raw)
     const recorder = new StateWatchingExecutor(f.raw)
-    const store = f.storeOver(recorder)
+    const ports = portsOver(f, recorder)
     // A run of the ended task is refused with one of the store's two refusals of a claim
     // that is gone, and that refusal is an answer here. Any other error is the cell's.
-    await invoke(label, store, POISON_INVOCATION).catch((error: unknown) => {
+    await invoke(label, ports, POISON_INVOCATION).catch((error: unknown) => {
       if (!(error instanceof LeaseLostError || error instanceof RunCancelledError)) throw error
     })
     const reachedTheEndedTask = recorder.labels.includes(label)
-    const healthy = await invoke(label, store, healthyTarget).then(
+    // A purge takes its healthy unit a window after that unit ended, so its healthy call
+    // is sent a window on. The task the cell ended is then old enough too, and no call
+    // names it again.
+    if (label === 'purge-unit') await f.admin.setFakeNowEpochMs(PURGE_AT_MS)
+    const healthy = await invoke(label, ports, healthyTarget).then(
       () => 'fulfilled' as const,
       () => 'rejected' as const,
     )
@@ -4085,13 +4225,13 @@ export const ENDED_TASK_SHAPE_CELLS: Readonly<
       const parent = { ...HEALTHY_INVOCATION, ...INVOCATION_SHAPES.childReplayKey.set }
       await seedBase(f)
       await seedHealthyTrigger(f.raw, 'spawn', parent)
-      const first = (await invoke('spawn', f.store, parent)) as { taskId: string }
+      const first = (await invoke('spawn', portsOver(f), parent)) as { taskId: string }
       if (state === 'cancelled') {
         await f.store.cancelTask(Q, first.taskId)
       } else {
         const run = await claimActivated(f.store, Q, 'ended-child-worker')
         if (run.taskId !== first.taskId) throw new Error('the claim did not take the child')
-        await invoke(ENDING_LABEL[state], f.store, {
+        await invoke(ENDING_LABEL[state], portsOver(f), {
           ...HEALTHY_INVOCATION,
           taskId: run.taskId,
           runId: run.runId,
@@ -4101,7 +4241,7 @@ export const ENDED_TASK_SHAPE_CELLS: Readonly<
       await f.admin.setFakeNowEpochMs(TERMINAL_PRE_STATE_INVOKED_AT_MS)
       const before = await snapshot(f.raw)
       const recorder = new StateWatchingExecutor(f.raw)
-      const replay = (await invoke('spawn', f.storeOver(recorder), parent)) as {
+      const replay = (await invoke('spawn', portsOver(f, recorder), parent)) as {
         taskId: string
         created: unknown
       }

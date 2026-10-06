@@ -367,7 +367,7 @@ const codePointRank = (unit: number): number =>
  * No database collation decides it, and an implementation whose strings are UTF-8 gets the
  * same order from a plain comparison of bytes.
  */
-function byCodePoints(left: string, right: string): number {
+export function byCodePoints(left: string, right: string): number {
   const shared = left.length < right.length ? left.length : right.length
   for (let index = 0; index < shared; index++) {
     const leftUnit = charCodeAt(left, index)
@@ -583,7 +583,7 @@ const gaugeOf = (counted: number, cap: number): Gauge =>
   counted > cap ? { count: cap, atLeast: true } : { count: counted, atLeast: false }
 
 /** The most rows a leg may be asked for, refused as a store refuses a number it cannot take. */
-function requireListLimit(limit: number): number {
+export function requireListLimit(limit: number): number {
   if (requirePositiveInt('limit', limit) > OPERATOR_LIST_CAP) {
     throw new TrustedRangeError(`limit must be at most ${OPERATOR_LIST_CAP}, got ${limit}`)
   }

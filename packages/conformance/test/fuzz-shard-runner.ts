@@ -162,11 +162,14 @@ function runFuzzBatch(shard: number, of: number, batch: number): void {
         sagasEnded: 0,
         haltsNamed: 0,
         portStringRefusals: 0,
+        purges: 0,
       }
       let walks = 0
       for (const seed of seeds) {
         try {
-          const stats = await runFuzzScenario(makeLibsqlFixture, seed, STEPS)
+          const stats = await runFuzzScenario(makeLibsqlFixture, seed, STEPS, undefined, {
+            purges: true,
+          })
           walks++
           for (const key of Object.keys(totals) as (keyof FuzzStats)[]) {
             totals[key] += stats[key]

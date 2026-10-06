@@ -28,8 +28,10 @@ function columnDeclaration(table: string, column: string): string | undefined {
 
 describe('MySQL schema', () => {
   it('keeps the logical version numbers of the other dialects', () => {
-    expect(MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
-    expect(CURRENT_SCHEMA_VERSION).toBe(11)
+    expect(MIGRATIONS.map(({ version }) => version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ])
+    expect(CURRENT_SCHEMA_VERSION).toBe(12)
   })
 
   it('writes only statements that are safe to repeat', () => {
@@ -39,7 +41,8 @@ describe('MySQL schema', () => {
     // such a version the comparison below is with that form's own output and cannot fail:
     // it only keeps the version out of the table check. That the form is safe to repeat
     // is carried by the real-server test, which runs it again over an index that exists
-    // and twice over one that was dropped, and by the frozen hashes of versions 6, 8, 9 and 11.
+    // and twice over one that was dropped, and by the frozen hashes of versions 6, 8, 9, 11
+    // and 12. Version 12 builds two indexes, each through the form.
     // A column that becomes NOT NULL has no IF form either and goes through a guarded form
     // of its own, read here from the version that ships it, which the real-server test
     // repeats the same way, under version 10's hash.
@@ -49,6 +52,10 @@ describe('MySQL schema', () => {
       createIndexIfMissing('runs', 'runs_stamp', '(fence_stamp(768))'),
       createIndexIfMissing('runs', 'runs_held', '(queue, claimed_by(255), state)'),
       createIndexIfMissing('tasks', 'tasks_live', '(queue, state, enqueue_at_ms)'),
+      [
+        ...createIndexIfMissing('tasks', 'tasks_terminal', '(queue, state, fence_at_ms)'),
+        ...createIndexIfMissing('tasks', 'tasks_stamp', '(fence_stamp(768))'),
+      ],
       MIGRATIONS.find((migration) => migration.version === 10)?.statements ?? [],
     ]
     const statements = [
@@ -138,6 +145,7 @@ describe('MySQL migrations are append-only', () => {
     9: 'dcf5d703193f6bf5e8b5ba2f8cf06110f51b238b99b40c193b8f503b728f3275',
     10: '2bc9b0ab9fd7082f0ad0a0e48eb28f927fcf990448b418d13cec817f12cfc56b',
     11: 'f41d54d4baa513d3f6422087488b958ae73a3944bd3a655a55e99187ecb17309',
+    12: 'b4b3f6e4bbbdf68dafb397a7d5ba0c9c454ed14d856b73be2e4a497699c87454',
   }
 
   it('matches every migration to an independently frozen content hash', () => {

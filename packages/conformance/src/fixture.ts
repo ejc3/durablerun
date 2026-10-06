@@ -1,10 +1,11 @@
 import {
   type Buggify,
+  type HeldOperatorReads,
+  type HeldRetention,
+  type HeldSchedulerStore,
   IDENTIFIER_CHARACTERS,
   type PersistedCounterFieldDescriptor,
   type PersistedTemporalFieldDescriptor,
-  type HeldSchedulerStore,
-  type HeldOperatorReads,
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
@@ -350,6 +351,13 @@ export interface StoreFixture {
    * string, is a fixture's operator reads.
    */
   operatorReadsOver(db: SqlExecutor): HeldOperatorReads
+  /**
+   * The dialect's retention port over an executor, through the factory its store package
+   * exports, on this fixture's id stream. It is apart from the store, and nothing but a
+   * test calls it: no engine actor, driver, or command purges. The type is nominal, as the
+   * store's is: only core's one implementation is a fixture's retention.
+   */
+  retentionOver(db: SqlExecutor): HeldRetention
   /**
    * How many times the server has chosen one of this fixture's batches as a deadlock
    * victim, read from the fixture's own executor. The executor runs a victim again, which

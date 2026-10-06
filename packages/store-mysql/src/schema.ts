@@ -79,6 +79,9 @@ const STAMP_INDEX_PREFIX = 768
  */
 export const RUNS_TASK_ATTEMPT_INDEX = 'runs_task_attempt'
 export const RUNS_STAMP_INDEX = 'runs_stamp'
+export const TASKS_STAMP_INDEX = 'tasks_stamp'
+/** The unique index of a task's idempotency key within its queue. */
+export const TASKS_KEY_INDEX = 'tasks_idem'
 
 /**
  * How much of a claim token `runs_held` holds. A key of `(queue, claimed_by, state)` is 255
@@ -174,7 +177,7 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
         fence_stamp ${BODY},
         fence_at_ms BIGINT,
         CONSTRAINT tasks_state CHECK (state IN ${LIVE_OR_TERMINAL}),
-        UNIQUE KEY tasks_idem (queue, idempotency_key),
+        UNIQUE KEY ${TASKS_KEY_INDEX} (queue, idempotency_key),
         KEY tasks_cancel (queue, state, cancel_at_ms)
       )`,
 
@@ -336,6 +339,32 @@ export const MIGRATIONS: readonly MysqlMigration[] = [
     // against this schema unchanged, and no statement the engine sends reads it.
     version: 11,
     statements: createIndexIfMissing('tasks', 'tasks_live', '(queue, state, enqueue_at_ms)'),
+  },
+  {
+    // Retention deletes whole units of ended tasks (DESIGN.md §3.12), and its statements had
+    // two indexes missing.
+    //
+    // `tasks_terminal` holds a queue's tasks by state and then by the instant their row was
+    // last stamped, which for an ended task is the instant it ended. The read of what a
+    // purge may take lists one ended state's tasks oldest first and stops at its limit.
+    // MySQL has no partial index, so this one holds every task, the live ones too: a task
+    // enters it at spawn and moves in it at every write of its row, because every such
+    // write stamps the row.
+    //
+    // `tasks_stamp` is for `tasks` what version 8's index is for `runs`. A keyed delete
+    // reads its keys with shared locks, so it finds them by their stamp, and a purge's
+    // deletes take their keys from the task row the purge stamped. Every stamping write of
+    // a task changes its entry here. A build that purges names this index in those deletes,
+    // so a database is migrated to this version before any build purges on it.
+    //
+    // The other dialects' second index of this version, of the runs that hold an event's
+    // payload, has nothing to add here: `runs_woken` holds a queue's runs by the event that
+    // woke them in every state, because it could never be partial.
+    version: 12,
+    statements: [
+      ...createIndexIfMissing('tasks', 'tasks_terminal', '(queue, state, fence_at_ms)'),
+      ...createIndexIfMissing('tasks', TASKS_STAMP_INDEX, `(fence_stamp(${STAMP_INDEX_PREFIX}))`),
+    ],
   },
 ]
 

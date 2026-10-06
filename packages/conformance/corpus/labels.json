@@ -36,5 +36,7 @@
   "event-waiters": ["read"],
   "event-payload": ["read"],
   "task-admission": ["read"],
-  "aged-tasks": ["read"]
+  "aged-tasks": ["read"],
+  "purge-candidates": ["read"],
+  "purge-unit": ["purged", "purged-by-its-key"]
 }

@@ -28,6 +28,9 @@ import {
 /** Non-terminal states — tasks and runs still in play. */
 export const LIVE = `('pending','running','sleeping')`
 
+/** The states a task ends in, as the predicate of `tasks_terminal` spells them. */
+export const ENDED = `('completed','failed','cancelled')`
+
 /** The states a freshly created successor run can be in: waiting for its turn. */
 export const QUEUED = `('pending','sleeping')`
 

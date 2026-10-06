@@ -299,6 +299,9 @@
 \*     await of a child that ended with no outcome recorded writes the completion
 \*     event from the child's row, fenced on that row's stamp and on the live
 \*     claim; a replay finds the event it wrote and answers with it)
+\*   'purge-unit' -> PurgeChild / PurgeHolder  [cas-fenced]  (Retention.tla: the
+\*     purge of one ended task's unit, whole, under the barrier; a replay finds no
+\*     task row and writes nothing)
 \* Excluded (reason  [dup-class]):
 \*   'driver-heartbeat' [receipt] -- observability liveness upsert; nothing
 \*     in the protocol reads it, and a replay re-applies the same row
@@ -352,6 +355,9 @@
 \*   'task-admission' [read] -- an operator's read of what the retry guard, a claim
 \*     and a sweep each say of one task now, by the predicates 'retry-task', 'claim'
 \*     and 'sweep:scan' hold; no engine actor sends it
+\*   'purge-candidates' [read] -- retention's read of a queue's ended tasks that
+\*     are a window old, oldest first; a candidate decides nothing, the barrier
+\*     is held by 'purge-unit', and no engine actor sends it
 \*   'migrate:bootstrap' [setup] -- infrastructure, not protocol
 \*   'migrate:version' [setup] -- infrastructure, not protocol
 \*   'admin:set-fake-now' [setup] -- infrastructure, not protocol

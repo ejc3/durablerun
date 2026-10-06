@@ -235,8 +235,8 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
       expect(duplicatePoisonWitnessIds()).toEqual([])
       expect(ENGINE_INVARIANT_CONDITIONS).toHaveLength(116)
       expect(POISON_WITNESS_COUNT).toBe(147)
-      expect(POISON_WRITE_LABELS).toHaveLength(21)
-      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_087)
+      expect(POISON_WRITE_LABELS).toHaveLength(22)
+      expect(POISON_WRITE_LABELS.length * POISON_WITNESS_COUNT).toBe(3_234)
       expect(POISON_TARGET_CASES).toHaveLength(98)
       expect(POISON_UNREACHABLE_TARGETS).toHaveLength(83)
       expect(new Set(POISON_TARGET_CASES.map((target) => target.id)).size).toBe(
@@ -469,6 +469,7 @@ function poisonMatrixConformance(dialect: string, makeFixture: StoreFixtureFacto
             'sweep:cancel',
             'sweep:lost-launch',
             'sweep:claim-timeout',
+            'purge-unit',
           ].map((label) => ({
             id: `ambient/${label}`,
             kind: 'observed',

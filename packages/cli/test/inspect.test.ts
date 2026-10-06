@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { DEFAULT_MAX_ATTEMPTS, type TaskFacts } from '@durablerun/core'
+import { testIdSource } from '@durablerun/core/testing'
+import { retention } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, usage } from '../src/commands.js'
 import { factsView, whatIsNotReadable } from '../src/inspect.js'
@@ -194,6 +196,44 @@ describe('inspect on libSQL', () => {
         db.env,
       )
       expect(elsewhere.exit).toBe(8)
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('exits 8 for a task whose unit a purge took, by its id and by its key, as for a task that never existed', async () => {
+    // Nothing the CLI runs purges, so the test calls the store's retention port itself,
+    // a window after the seeded task completed.
+    const db = await openCliDb('libsql', 'inspect-purged')
+    try {
+      const seeded = await seedTasks(db)
+      const byId = ['inspect', seeded.completed, '--queue', QUEUE, '--json']
+      const byKey = ['inspect', '--key', COMPLETED_KEY, '--queue', QUEUE, '--json']
+      const before = [await runCli(byId, db.env), await runCli(byKey, db.env)]
+      await db.admin.setFakeNowEpochMs(NOW_MS + 3_600_000)
+      const purged = await retention(db.raw, testIdSource('inspect-purged-purge')).purgeUnit(
+        QUEUE,
+        { taskId: seeded.completed, idempotencyKey: COMPLETED_KEY },
+        { completedSeconds: 3_600, cancelledSeconds: 3_600 },
+      )
+      const after = [
+        await runCli(byId, db.env),
+        await runCli(byKey, db.env),
+        await runCli(['explain', seeded.completed, '--queue', QUEUE, '--json'], db.env),
+      ]
+      expect({
+        before: before.map(({ exit }) => exit),
+        purged: purged?.rows.tasks,
+        after: after.map(({ exit }) => exit),
+        error: parsed(after[0]?.stdout ?? '{}').error,
+        printedTheKey: after.some(({ stdout }) => stdout.includes(SENTINEL)),
+      }).toEqual({
+        before: [0, 0],
+        purged: 1,
+        after: [8, 8, 8],
+        error: { kind: 'not-found', message: `no task ${seeded.completed} in queue ${QUEUE}` },
+        printedTheKey: false,
+      })
     } finally {
       await db.close()
     }

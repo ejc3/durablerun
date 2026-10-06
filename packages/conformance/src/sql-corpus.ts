@@ -49,6 +49,13 @@ export const CORPUS_VARIANT_NAMERS: VariantNamers = {
     signature.some(({ sql }) => sql.includes(`'${SAGA_PHASE_CHECKPOINT}'`))
       ? 'cancelled-unless-saga-began'
       : 'cancelled',
+  // MySQL reaches a task that has an idempotency key through the key's unique index, so a
+  // purge takes the key's entry and the row in a spawn's order. No other dialect writes
+  // the purge of a keyed unit apart from the purge of one that has no key.
+  'purge-unit': (signature) =>
+    signature.some(({ sql }) => /^update `tasks` force index \(/.test(sql))
+      ? 'purged-by-its-key'
+      : 'purged',
   'await-event': (signature) =>
     signature.some(({ sql }) => /["`]tasks["`] as ["`]c["`]/.test(sql))
       ? 'registered-child'

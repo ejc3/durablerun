@@ -95,7 +95,7 @@
 \* outcome (such a run never clears the columns); and a wait an older build left
 \* stranded.  AgedUnblockedIsPurged says nothing else the model can express
 \* does.  Outside the model a NULL stamp, a $spawn: key that does not parse,
-\* PR5.2c2's checkpoint cap, and a cycle of runs that carry each other's
+\* the checkpoint cap, and a cycle of runs that carry each other's
 \* outcomes keep a unit too (DESIGN.md S3.12).
 \*
 \* TWO PARTS OF B5 THAT NO PROPERTY HOLDS, on purpose, so no mutant names them:
@@ -104,12 +104,12 @@
 \*    began), and admitting both stays green on every configuration.  The first
 \*    release keeps the stricter rule, which stays right if a saga ever becomes
 \*    revivable.  The barrier grid's rolling-back and saga-failed parent cells
-\*    hold both halves (PR5.2c2).
+\*    hold both halves.
 \*  - B5 admits a completed or cancelled parent.  A rule that waited for such a
 \*    parent's own purge would only delay the child's: every policy the policy
 \*    type can express names completed and cancelled, so the parent is purged
 \*    in time, and no property here tells a delay from a correct purge.  The
-\*    barrier grid's completed and cancelled parent cells hold it (PR5.2c2).
+\*    barrier grid's completed and cancelled parent cells hold it.
 \*
 \* NOT MODELED, and why that is sound or what bounds it:
 \*  - Units that await each other.  Only C is awaited here, and C is never a
@@ -125,7 +125,8 @@
 \*    handle, a replay's included.
 \*  - Caller events.  The purge never removes one.
 \*  - Sizes, the unit cap, chunked deletes, and lock order.  The purge is one
-\*    atomic step here.  The concurrency contest and the unit cap are PR5.2c2's.
+\*    atomic step here.  The retention surface's contest and its size cells
+\*    hold the lock order and the unit cap.
 \*  - Several windows.  The policy's windows differ per state in the SQL, and one
 \*    window is enough for the ordering the barrier reads.  The window's edges,
 \*    minus and plus one millisecond, are the barrier grid's.
@@ -145,9 +146,9 @@
 \* action named is an action of Next below, and every action of Next is mapped
 \* here or listed as having no batch, with the reason.  An entry's layout and
 \* its class are as that block describes them.  The engine's actions keep the
-\* labels ChildTasks.tla and Sagas.tla map them from.  No store sends a purge
-\* batch yet, so the purge's actions are listed as having none.  PR5.2c2 writes
-\* that batch and turns those lines into mappings.  The script reads no guard.
+\* labels ChildTasks.tla and Sagas.tla map them from.  The purge's two actions
+\* are one batch, 'purge-unit': the unit it purges is the child's or a
+\* holder's.  The script reads no guard.
 \* Each property below names its executable twin.
 \*
 \* Modeled (a label and its condition, its actions, its class):
@@ -179,8 +180,10 @@
 \*     clears the wake columns, as complete does)
 \*   'fail' with a retry -> HolderAttemptFails  [cas-fenced]  (the failed run
 \*     keeps the wake columns, and the successor carries them)
+\*   'purge-unit' -> PurgeChild / PurgeHolder  [cas-fenced]  (the barrier is the
+\*     batch's compare-and-set, and every delete of the batch is keyed on its
+\*     stamp, so the unit goes whole or not at all)
 \* No batch (action -- reason):
-\*   PurgeChild / PurgeHolder -- the purge batch lands in PR5.2c2
 \*   LegacyEnds -- a terminal batch of an older build: no SQL of this build
 \*   Tick -- database time passes
 \*   PurgeRow / MaterializeWrite -- exist only for vacuity probes
@@ -555,7 +558,7 @@ WholeUnit ==
 \* A purge takes only a task in a state the policy names whose stamp is at least
 \* a window old.  So a live task is never touched, and a key dedupes for the
 \* window of its task's terminal state.  Twin: the barrier grid's state and age
-\* legs, at the window and one millisecond either side of it (PR5.2c2).
+\* legs, at the window and one millisecond either side of it.
 PurgeStepIsDeadAndOld ==
   \A t \in Tasks : (Present(t) /\ ~Present(t)') => (st[t] \in Policy /\ age[t] >= Window)
 PurgeOnlyDeadAndOld == [][PurgeStepIsDeadAndOld]_vars
@@ -565,7 +568,7 @@ PurgeOnlyDeadAndOld == [][PurgeStepIsDeadAndOld]_vars
 \* finds the child's key taken, and its await finds the child's task.  Twin: the
 \* retention row checker's spawn-memo-without-its-task condition, that a live
 \* task, or a failed one whose saga never began, holds no spawn memo whose child
-\* is gone, and the consequence oracle (PR5.2c2).
+\* is gone, and the retention surface's consequence cases.
 ReplayableParentKeepsChild ==
   (spawned /\ (st["P"] = "live" \/ (st["P"] = "failed" /\ ~saga["P"]))) => Present("C")
 

@@ -2,6 +2,8 @@ import {
   ChildAwaitRefusedError,
   type ClaimedRun,
   type FailOutcome,
+  type PurgeCursor,
+  type RetentionPolicy,
   SAGA_PHASE_CHECKPOINT,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
@@ -13,7 +15,10 @@ import {
 import { Rng } from '@durablerun/harness'
 import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
+import { snapshot } from './poison-matrix.js'
 import { HELD_PLACES, OUTSIDE_THE_DOMAIN, PAST_THE_WIDTH } from './port-strings.js'
+import { UNIT_TABLES, dumpDifferences, purgeOracle } from './retention-oracle.js'
+import { NAMING_FAILED, SHORTEST_WINDOW_MS } from './retention-policies.js'
 import {
   awaitOwned,
   awaitTaskOwned,
@@ -66,6 +71,82 @@ export interface FuzzStats {
   haltsNamed: number
   /** Names past the width or outside the durable string domain that the port refused. */
   portStringRefusals: number
+  /** Units a purge took, each held to the oracle over a dump of every table. */
+  purges: number
+}
+
+/** The policy the walk purges under: every ended state named, at the shortest window core takes. */
+const FUZZ_RETENTION: RetentionPolicy = NAMING_FAILED
+const FUZZ_WINDOW_MS = SHORTEST_WINDOW_MS
+/** The steps of a walk that purge: the top of the clock's share of the roll. */
+const PURGE_FROM = 0.985
+
+/**
+ * Purge what retention lists, and hold every purge to the oracle (DESIGN.md §3.12). Each
+ * candidate is judged over a dump of every table taken before its purge: the candidates
+ * list nothing the model keeps for its state, its stamp or its age, the purge answers
+ * exactly when the model lets the unit go, with the rows the unit held, and every table
+ * afterwards is the dump less that unit and nothing else. The candidates are walked until
+ * a walk of them purges nothing, because one unit's purge can let another go, and then no
+ * unit the model lets go may be left. The answer is the tasks whose units went.
+ */
+async function purgeByTheOracle(f: StoreFixture, nowMs: number, where: string): Promise<string[]> {
+  const retention = f.retentionOver(f.raw)
+  const gone: string[] = []
+  // One dump is carried through the walk. Between one purge and the next nothing writes
+  // but the purge itself, so the dump taken after a purge is the dump before the next.
+  let dump = await snapshot(f.raw)
+  for (let before = -1; before !== gone.length; ) {
+    before = gone.length
+    let after: PurgeCursor | null = null
+    do {
+      const page = await retention.purgeCandidates(Q, FUZZ_RETENTION, {
+        limit: 5,
+        ...(after === null ? {} : { after }),
+      })
+      for (const candidate of page.candidates) {
+        const oracle = purgeOracle(dump, nowMs, Q, candidate, FUZZ_RETENTION)
+        const notACandidate = oracle.keptBy.filter((kept) =>
+          ['no-such-task', 'state', 'stamp', 'age'].includes(kept),
+        )
+        if (notACandidate.length > 0) {
+          throw new Error(
+            `${where}: the candidates list ${candidate.taskId}, which the model keeps by ${notACandidate.join(', ')}`,
+          )
+        }
+        const answer = await retention.purgeUnit(Q, candidate, FUZZ_RETENTION)
+        dump = await snapshot(f.raw)
+        const differences = dumpDifferences(oracle.after, dump)
+        const letGo = oracle.keptBy.length === 0
+        const counted =
+          answer === null || UNIT_TABLES.every((table) => answer.rows[table] === oracle.rows[table])
+        if ((answer !== null) !== letGo || !counted || differences.length > 0) {
+          throw new Error(
+            `${where}: the purge of ${candidate.taskId} answered ${JSON.stringify(answer)}, and the model ${
+              letGo
+                ? `lets the unit go with ${JSON.stringify(oracle.rows)}`
+                : `keeps it by ${oracle.keptBy.join(', ')}`
+            }; ${differences.length} rows differ: ${differences.slice(0, 3).join('; ')}`,
+          )
+        }
+        if (answer !== null) gone.push(candidate.taskId)
+      }
+      after = page.next
+    } while (after !== null)
+  }
+  const left = dump.tasks
+    .filter((task) => task.queue === Q)
+    .map((task) => ({
+      taskId: String(task.task_id),
+      ...(task.idempotency_key === null ? {} : { idempotencyKey: String(task.idempotency_key) }),
+    }))
+    .filter((unit) => purgeOracle(dump, nowMs, Q, unit, FUZZ_RETENTION).keptBy.length === 0)
+  if (left.length > 0) {
+    throw new Error(
+      `${where}: the purge left ${left.map(({ taskId }) => taskId).join(', ')}, which the model lets go`,
+    )
+  }
+  return gone
 }
 
 /**
@@ -76,21 +157,34 @@ export interface FuzzStats {
  * and fractional/invalid numeric corpora at the port boundary. Any failing
  * seed replays exactly. (Interleaving fuzz via SimWorld schedules is layered
  * on separately; this walk hammers state-machine coverage, not concurrency.)
+ *
+ * A walk whose caller asks also purges: a window passes, and every ended unit retention
+ * lists is purged, each purge held to the model's oracle (`purgeByTheOracle`). The fuzz
+ * shards ask. A caller that walks the engine for the states a walk leaves does not ask,
+ * and its walk is what it was before the purge existed: the step that would purge moves
+ * the clock, as it did, and takes the same one draw. A purge takes the failed and the
+ * ended tasks such a caller reads, and its floors were measured with them there.
  */
 export async function runFuzzScenario(
   makeFixture: StoreFixtureFactory,
   seed: number | string,
   steps: number,
   afterWalk?: (fixture: StoreFixture) => Promise<void>,
+  walk: { readonly purges?: boolean } = {},
 ): Promise<FuzzStats> {
   return withFixture(makeFixture, `fuzz-${seed}`, async (f) => {
-    const stats = await runWalk(f, seed, steps)
+    const stats = await runWalk(f, seed, steps, walk.purges === true)
     await afterWalk?.(f)
     return stats
   })
 }
 
-async function runWalk(f: StoreFixture, seed: number | string, steps: number): Promise<FuzzStats> {
+async function runWalk(
+  f: StoreFixture,
+  seed: number | string,
+  steps: number,
+  purges: boolean,
+): Promise<FuzzStats> {
   const rng = new Rng(`fuzz-${seed}`)
   let now = 1_000_000
   await f.admin.setFakeNowEpochMs(now)
@@ -121,6 +215,7 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
     sagasEnded: 0,
     haltsNamed: 0,
     portStringRefusals: 0,
+    purges: 0,
   }
   /** What the walk knows of each task's saga: its steps in start order, and what ran. */
   const sagas = new Map<
@@ -131,6 +226,8 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
   const rolling = new Set<string>()
   /** The failure of the rollback that ended a task, by task: the one its result must name. */
   const haltedBy = new Map<string, string>()
+  /** Tasks whose units a purge took. Every port answers of one as of a task that never existed. */
+  const purged = new Set<string>()
   const sagaOf = (taskId: string) => {
     const known = sagas.get(taskId)
     if (known) return known
@@ -571,16 +668,36 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
         const known = knownTasks[rng.int(knownTasks.length + 1)]
         const childTaskId = known ?? (await f.store.spawn(Q, `child${step}`, '{}')).taskId
         if (known === undefined) knownTasks.push(childTaskId)
-        await countIfHeld('childAwaits', () =>
-          awaitTaskOwned(
-            f.store,
-            Q,
-            run,
-            `cw${step}`,
-            childTaskId,
-            rng.next() < 0.5 ? 30 + rng.int(60) : null,
-          ),
-        )
+        const timeoutSeconds = rng.next() < 0.5 ? 30 + rng.int(60) : null
+        const awaitChild = () =>
+          awaitTaskOwned(f.store, Q, run, `cw${step}`, childTaskId, timeoutSeconds)
+        if (!purged.has(childTaskId)) {
+          await countIfHeld('childAwaits', awaitChild)
+        } else {
+          // A child whose unit a purge took. The await is refused for a task that is gone,
+          // and registers nothing, so the run is held as it was. A run whose claim is lost
+          // is refused for that, as any write of it is.
+          try {
+            await awaitChild()
+            throw new Error(
+              `fuzz seed ${seed} step ${step}: an await of a child whose unit was purged was ACCEPTED`,
+            )
+          } catch (error) {
+            const gone = error instanceof ChildAwaitRefusedError && error.reason === 'no-such-task'
+            if (!gone && !isRefusedWrite(error)) throw error
+          }
+          held.push(run)
+        }
+      }
+    } else if (purges && roll >= PURGE_FROM) {
+      // Retention, from the top of the clock's share. A window passes, with the seconds
+      // the clock's own step would have drawn, so the op takes the one draw that step
+      // takes. Then every unit the candidates list is purged, each beside the oracle.
+      now += FUZZ_WINDOW_MS + (1 + rng.int(120)) * 1000
+      await f.admin.setFakeNowEpochMs(now)
+      for (const taskId of await purgeByTheOracle(f, now, `fuzz seed ${seed} step ${step}`)) {
+        purged.add(taskId)
+        stats.purges++
       }
     } else {
       now += (1 + rng.int(120)) * 1000
@@ -601,6 +718,8 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
   // TriesOnlyGrow, over every walk: the store counts a rollback's failed attempts itself,
   // so the count it stored is the number of failed attempts the walk saw it record.
   for (const [taskId, saga] of sagas) {
+    // The attempt records of a purged task went with its unit.
+    if (purged.has(taskId)) continue
     for (const [step, tries] of saga.tries) {
       const stored = decodeRollbackTry(
         String(await checkpointState(f.raw, taskId, `${SAGA_TRIES_PREFIX}${step}`)),
@@ -618,6 +737,13 @@ async function runWalk(f: StoreFixture, seed: number | string, steps: number): P
   // not it, and no row invariant can say so, because the error is derived when it is read.
   // Every task the walk spawned is read, so a plain task is held to naming none.
   for (const taskId of new Set(knownTasks)) {
+    if (purged.has(taskId)) {
+      // A unit that is gone is answered as a task that never existed.
+      if ((await f.store.getTaskResult(Q, taskId)) !== null) {
+        throw new Error(`fuzz seed ${seed} final: task ${taskId} was purged and still has a result`)
+      }
+      continue
+    }
     const named = (await f.store.getTaskResult(Q, taskId))?.rollback?.errorJson
     if (named !== haltedBy.get(taskId)) {
       throw new Error(

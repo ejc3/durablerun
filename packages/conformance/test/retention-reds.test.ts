@@ -2,7 +2,12 @@ import { type SqlExecutor, type SqlStatement, TERMINAL_STATES } from '@durableru
 import { describe, expect, it } from 'vitest'
 import { MATRIX_WRITE_LABELS } from '../src/fault-matrix.js'
 import type { StoreFixture, StoreFixtureFactory } from '../src/index.js'
-import { ENDED_TASK_SHAPE_CELLS, POISON_INVOCATION } from '../src/poison-matrix.js'
+import {
+  ENDED_PRE_STATES,
+  ENDED_TASK_SHAPE_CELLS,
+  POISON_INVOCATION,
+} from '../src/poison-matrix.js'
+import { type GridCell, runGridCells } from '../src/retention-grid.js'
 import {
   endedChildReplayCase,
   endingStampCase,
@@ -33,33 +38,58 @@ function following(db: SqlExecutor, label: string, bend: SqlStatement): SqlExecu
 function bent(label: string, bend: SqlStatement): StoreFixtureFactory {
   return async (seed, options) => {
     const f = await makeLibsqlFixture(seed, options)
-    return { ...f, storeOver: (db, buggify) => f.storeOver(following(db, label, bend), buggify) }
+    return {
+      ...f,
+      storeOver: (db, buggify) => f.storeOver(following(db, label, bend), buggify),
+      retentionOver: (db) => f.retentionOver(following(db, label, bend)),
+    }
   }
 }
 
 /**
- * A fixture whose stores answer their first call without sending anything, as a store
- * would that skipped the batch for a task it took to have ended. Every later call goes
- * through.
+ * A fixture whose ports answer the first call made over an executor without sending
+ * anything, as a store would that skipped the batch for a task it took to have ended.
+ * Every later call goes through. The first call is counted by executor, because a purge
+ * is sent through retention's port and every other label through the store's.
  */
 const skippingTheFirstCall: StoreFixtureFactory = async (seed, options) => {
   const f = await makeLibsqlFixture(seed, options)
+  const called = new WeakSet<SqlExecutor>()
+  const isTheFirstCallOver = (db: SqlExecutor): boolean => {
+    if (called.has(db)) return false
+    called.add(db)
+    return true
+  }
   return {
     ...f,
     storeOver: (db, buggify) => {
       const store = f.storeOver(db, buggify)
-      let skipped = false
       return new Proxy(store, {
         get(target, member) {
           const value: unknown = Reflect.get(target, member, target)
           if (typeof value !== 'function') return value
-          return (...args: unknown[]) => {
-            if (skipped) return value.apply(target, args) as unknown
-            skipped = true
-            return Promise.resolve(undefined)
-          }
+          return (...args: unknown[]) =>
+            isTheFirstCallOver(db)
+              ? Promise.resolve(undefined)
+              : (value.apply(target, args) as unknown)
         },
       }) as ReturnType<StoreFixture['storeOver']>
+    },
+    retentionOver: (db) => {
+      const retention = f.retentionOver(db)
+      // Core's retention is frozen, which a proxy may not answer differently from, so its
+      // two methods are wrapped by name.
+      return {
+        ...retention,
+        purgeCandidates: (...args) =>
+          isTheFirstCallOver(db)
+            ? (Promise.resolve(undefined) as never)
+            : retention.purgeCandidates(...args),
+        purgeUnit: (...args) =>
+          isTheFirstCallOver(db)
+            ? (Promise.resolve(undefined) as never)
+            : retention.purgeUnit(...args),
+      }
     },
   }
 }
@@ -98,7 +128,7 @@ describe('the stamp case of each path through a terminal batch can fail', () => 
 describe('the cell of each write label over an ended task can fail', () => {
   const TASK = POISON_INVOCATION.taskId
   for (const label of MATRIX_WRITE_LABELS) {
-    for (const state of TERMINAL_STATES) {
+    for (const state of ENDED_PRE_STATES) {
       it(`${label} from ${state}: a batch that moves the ended task's stamp is not what the cell expects`, async () => {
         const { observed, expected } = await terminalPreStateCase(
           bent(label, {
@@ -108,8 +138,8 @@ describe('the cell of each write label over an ended task can fail', () => {
           label,
           state,
         )
-        expect(observed.tasks[TASK]?.after.stampedAtMs).toBe(MOVED_TO)
-        expect(expected.tasks[TASK]?.after.stampedAtMs).not.toBe(MOVED_TO)
+        expect(observed.tasks[TASK]?.after?.stampedAtMs).toBe(MOVED_TO)
+        expect(expected.tasks[TASK]?.after?.stampedAtMs).not.toBe(MOVED_TO)
         expect(observed).not.toEqual(expected)
       })
 
@@ -139,7 +169,7 @@ describe('the cell of each write label over an ended task can fail', () => {
         state,
       )
       const cleared = Object.values(observed.tasks).filter(
-        (task) => task.before.stampedAtMs !== null && task.after.stampedAtMs === null,
+        (task) => task.before.stampedAtMs !== null && task.after?.stampedAtMs === null,
       )
       expect(cleared).toHaveLength(1)
       expect(observed).not.toEqual(expected)
@@ -159,9 +189,83 @@ describe('the cell of each write label over an ended task can fail', () => {
           shape,
           state,
         )
-        expect(observed.child.after.stampedAtMs).toBe(MOVED_TO)
+        expect(observed.child.after?.stampedAtMs).toBe(MOVED_TO)
         expect(observed).not.toEqual(expected)
       })
     }
   }
+})
+
+/**
+ * The purge's batch with one statement rewritten below the store, as `bent` rewrites what
+ * follows a batch. Core's build rules refuse a delete that names no key or no stamp, so a
+ * purge that lost either can only be shown where the statements reach the database.
+ */
+function purgingWith(rewrite: (statement: SqlStatement) => SqlStatement): StoreFixtureFactory {
+  return async (seed, options) => {
+    const f = await makeLibsqlFixture(seed, options)
+    return {
+      ...f,
+      retentionOver: (db) =>
+        f.retentionOver({
+          batch: (label, statements, control) =>
+            db.batch(label, label === 'purge-unit' ? statements.map(rewrite) : statements, control),
+        }),
+    }
+  }
+}
+
+const unit = (unitState: GridCell['unit'], age: GridCell['age']): GridCell => ({
+  unit: unitState,
+  parent: 'none',
+  parentQueue: "the child's",
+  holder: 'none',
+  age,
+})
+
+describe('the grid can fail: a purge whose delete lost its key or its stamp', () => {
+  it('a delete of checkpoints that lost its key takes the checkpoints of a unit the purge was not sent for, and the count of what the unit held refuses it', async () => {
+    // The first cell's unit is younger than its window and is kept, with its checkpoint.
+    // The second cell's purge wins, and its delete of checkpoints names no task.
+    const lostItsKey = purgingWith((statement) =>
+      statement.sql.startsWith('delete from "checkpoints"')
+        ? {
+            ...statement,
+            sql: 'DELETE FROM checkpoints WHERE EXISTS (SELECT 1 FROM tasks f WHERE f.fence_stamp = ?)',
+            args: statement.args.slice(-1),
+          }
+        : statement,
+    )
+    await expect(
+      runGridCells(lostItsKey, 'lost key', [unit('completed', -1), unit('completed', 1)]),
+    ).rejects.toThrow(
+      /the batch deleted 2 rows of checkpoints, and the unit its compare-and-set read held 1/,
+    )
+  })
+
+  it('a delete of runs that lost its stamp takes the runs of a unit the barrier keeps, and the dump and the row checks say so', async () => {
+    // The unit is younger than its window, so the compare-and-set matches nothing. A delete
+    // keyed on the task alone runs all the same, and the purge answers that it took nothing.
+    const lostItsStamp = purgingWith((statement) => {
+      if (!statement.sql.startsWith('delete from "runs"')) return statement
+      const { skipUnlessWrote: _gate, ...ungated } = statement
+      return {
+        ...ungated,
+        sql: 'DELETE FROM runs WHERE task_id = ?',
+        args: statement.args.slice(0, 1),
+      }
+    })
+    const { observed, expected } = await runGridCells(lostItsStamp, 'lost stamp', [
+      unit('completed', -1),
+    ])
+    const [cell] = observed
+    expect({
+      purged: cell?.purged,
+      lostARun: cell?.differences.some((difference) => difference.startsWith('runs lost ')),
+      namedByTheRowChecks: cell?.violations.after.some((violation) =>
+        violation.startsWith('task-without-a-run: '),
+      ),
+    }).toEqual({ purged: null, lostARun: true, namedByTheRowChecks: true })
+    expect(observed).not.toEqual(expected)
+  })
 })

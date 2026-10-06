@@ -106,6 +106,7 @@ import {
   spawnIdempotencyKey,
   spawnReceiptRead,
   spawnRunInsert,
+  spawnSendingOnceMore,
   spawnTaskCas,
   sqlFragment,
   stampedRunState,
@@ -653,16 +654,36 @@ export class PostgresSchedulerStore extends HeldPort implements SchedulerStore {
   private readonly runTasks = new RunTaskMemo()
   private taskDoneFacts: TaskDoneDialect | undefined
 
-  async spawn(
+  spawn(
     queue: string,
     taskName: string,
     paramsJson: string,
     opts: SpawnOptions = {},
   ): Promise<SpawnResult> {
+    // Both sends are one spawn, under the ids the first send mints.
+    const minted: { ids?: { taskId: string; runId: string } } = {}
+    return spawnSendingOnceMore(() => this.spawnOnce(queue, taskName, paramsJson, opts, minted))
+  }
+
+  /**
+   * One send of the spawn batch. Null when the insert lost and the read of the key's
+   * holder then found no task: a purge took the holder between the two (DESIGN.md §3.12),
+   * and core sends the batch once more (`spawnSendingOnceMore`). The task's id and the
+   * run's are minted by the first send, where a spawn always minted them, and kept in
+   * `minted` for the second: the lost insert left them unused, and an id that lost to
+   * something other than a purged task must lose again.
+   */
+  private async spawnOnce(
+    queue: string,
+    taskName: string,
+    paramsJson: string,
+    opts: SpawnOptions,
+    minted: { ids?: { taskId: string; runId: string } },
+  ): Promise<SpawnResult | null> {
     const key = spawnIdempotencyKey(opts)
     const childOf = opts.childOf
-    const taskId = this.ids.uuidv7()
-    const runId = this.ids.uuidv7()
+    minted.ids ??= { taskId: this.ids.uuidv7(), runId: this.ids.uuidv7() }
+    const { taskId, runId } = minted.ids
     const retryInput = opts.retryStrategy
     const retry = serializeTaskValue(
       'retry strategy',
@@ -798,7 +819,7 @@ export class PostgresSchedulerStore extends HeldPort implements SchedulerStore {
       // A child is created only under its parent's live claim, so a child spawn that
       // created nothing and found nothing is that claim, refused.
       if (childOf !== undefined) throw await this.refusal('spawn', childOf.runId)
-      throw new Error('spawn: the task insert lost but no existing task explains it')
+      return null
     }
     // A pre-existing task may legitimately have no run — swept away, or never
     // given one. There is no honest run id to report then, and the previous

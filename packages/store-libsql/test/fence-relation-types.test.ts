@@ -24,6 +24,10 @@ it('pins every cross-table relation to its exact queue-ownership policy', () => 
     requireFalse(FENCE_RELATIONS['tasks-to-runs'].queueScoped)
     // @ts-expect-error waits-to-runs must remain queue-scoped — mutation-verdict:construction:generated-waits-to-runs-queue-ownership
     requireFalse(FENCE_RELATIONS['waits-to-runs'].queueScoped)
+    // @ts-expect-error a task's checkpoints go with its unit whatever queue each one names
+    requireTrue(FENCE_RELATIONS['tasks-to-checkpoints'].queueScoped)
+    // @ts-expect-error a task's completion event is reached through the task's own queue
+    requireTrue(FENCE_RELATIONS['tasks-to-events'].queueScoped)
   }
 
   expect(compileOnly).toBeTypeOf('function')

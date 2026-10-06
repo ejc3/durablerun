@@ -12,7 +12,12 @@ import type {
   FailedRollback,
   LaunchIdentity,
   LeaseState,
+  PurgeCandidates,
+  PurgeCandidatesOptions,
+  PurgeUnitTarget,
+  PurgedUnit,
   QueueStatus,
+  RetentionPolicy,
   SpawnOptions,
   SpawnResult,
   StoredEventPayload,
@@ -322,6 +327,44 @@ export interface OperatorReads {
    * Null when the queue holds no such task.
    */
   taskAdmission(queue: string, taskId: string): Promise<TaskAdmission | null>
+}
+
+/**
+ * Retention (DESIGN.md §3.12, specs/Retention.tla): the purge of whole units of ended
+ * tasks. It is apart from `SchedulerStore`: no engine actor calls it, and nothing purges
+ * unless its caller names a policy. Core holds the one implementation (`createRetention`),
+ * and each store package exports a factory that reaches it with that store's batches and
+ * fragments.
+ */
+export interface Retention {
+  /**
+   * One page of the ended tasks of a queue that are at least their state's window old,
+   * oldest first. A task the policy keeps is not listed. A listed task is only a
+   * candidate: the barrier may still keep its unit, and `purgeUnit` decides. A page that
+   * holds only units the barrier keeps is followed by `next`, so a caller that walks the
+   * pages reaches what stands behind them.
+   */
+  purgeCandidates(
+    queue: string,
+    policy: RetentionPolicy,
+    options: PurgeCandidatesOptions,
+  ): Promise<PurgeCandidates>
+
+  /**
+   * Purge one ended task's unit whole: its task row, its runs, its checkpoints, the waits
+   * of its runs, and its completion event, in one batch. The unit goes only if every
+   * condition of the barrier holds inside that batch's compare-and-set. Null, writing
+   * nothing, when one does not: the task is not in this queue, is live, is in a state the
+   * policy keeps or is younger than its window, a run of another task still holds its
+   * outcome, a wait still names its completion event, the task that spawned it could run
+   * again, it holds more checkpoints than `MAX_PURGE_UNIT_CHECKPOINTS`, or the key passed
+   * is not the one it was spawned under. A candidate of `purgeCandidates` names a unit.
+   */
+  purgeUnit(
+    queue: string,
+    unit: PurgeUnitTarget,
+    policy: RetentionPolicy,
+  ): Promise<PurgedUnit | null>
 }
 
 /** Test/simulation-only surface; never used by engine actors. */
