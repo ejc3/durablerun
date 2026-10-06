@@ -839,8 +839,8 @@ export function vacuous(report: SoakReport): string[] {
 
 /**
  * How long one case of the week may take. The first case that asks runs both weeks, and
- * the rest read what it left. Both weeks took 22 seconds on libSQL, 38 on PostgreSQL and
- * 24 on MySQL, on a loaded shared machine, so this is over fifteen times the slowest.
+ * the rest read what it left. Both weeks took 22 seconds on libSQL, 39 on PostgreSQL and
+ * 22 on MySQL, on a loaded shared machine, so this is over fifteen times the slowest.
  */
 const SOAK_TIMEOUT_MS = 600_000
 
