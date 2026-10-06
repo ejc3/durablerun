@@ -8,7 +8,7 @@ import {
   type PurgeCandidate,
   type PurgeCursor,
   type RetentionPolicy,
-  requireDurableString,
+  requirePortString,
 } from '@durablerun/core'
 import { PURGE_DEFAULT_LIMIT, durationSeconds, wholeNumber } from './commands.js'
 import { userValue } from './render.js'
@@ -113,8 +113,9 @@ export function cursorOf(
   const endedAtMs = Number(text.slice(0, colon))
   const taskId = text.slice(colon + 1)
   if (endedAtMs > MAX_EPOCH_MS || taskId === '') return refused
+  // The port's own check of a task id, so a place the port would refuse is refused here.
   try {
-    requireDurableString('taskId', taskId)
+    requirePortString('taskId', taskId)
   } catch {
     return refused
   }
