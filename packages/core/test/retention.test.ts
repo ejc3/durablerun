@@ -5,17 +5,16 @@ import {
   MIN_RETENTION_SECONDS,
   PortRefusalError,
   type RetentionPolicy,
-  addUnitPurge,
   childSpawnKey,
   treeBuilder as db,
   defineStatement,
   fenceValue,
   nowValue,
-  retentionWindowsMs,
   spawningParent,
   sqlFragment,
   stampValue,
 } from '../src/index.js'
+import { addUnitPurge, retentionWindowsMs } from '../src/retention.js'
 import {
   accepts,
   batch,
@@ -135,8 +134,7 @@ const UNIT = {
   queue: 'q',
   taskId: 't1',
   idempotencyKey: 'order-7',
-  parentTaskId: null,
-  windowsMs: { completed: 3_600_000, failed: null, cancelled: 3_600_000 },
+  windowsMs: retentionWindowsMs(HOUR),
   stampStored: sqlFragment("typeof(fence_at_ms) = 'integer'"),
 }
 
@@ -276,6 +274,38 @@ describe("the rule that only a purge deletes a row of a task's unit", () => {
           { many: 'a test' },
         ),
     )
+  })
+})
+
+describe('the builder of a purge', () => {
+  it("builds no purge for a unit whose key is in the engine's namespace and names no parent", () => {
+    for (const idempotencyKey of ['$spawn:', '$spawn:nonsense', '$spawn:9:short:site']) {
+      expect(
+        () => addUnitPurge(batch('purge-unit'), { ...UNIT, idempotencyKey }),
+        idempotencyKey,
+      ).toThrow(/names no parent, so no purge is built/)
+    }
+    // A key of a caller's, a child's key and no key each name a parent or nobody.
+    for (const idempotencyKey of ['order-7', childSpawnKey('parent-1', 'site#1'), null]) {
+      expect(() => addUnitPurge(batch('purge-unit'), { ...UNIT, idempotencyKey })).not.toThrow()
+    }
+  })
+})
+
+describe("what core's entry exports of retention", () => {
+  it('exports the factory of the port, and no builder of a purge, no maker of windows and no mark', async () => {
+    const entry: Readonly<Record<string, unknown>> = await import('../src/index.js')
+    // Everything the three modules of retention export, so that a name one of them gains
+    // is asked too.
+    const inside = {
+      ...(await import('../src/statements/purge.js')),
+      ...(await import('../src/retention.js')),
+      ...(await import('../src/unit-purge.js')),
+    }
+    const exported = Object.keys(inside)
+      .filter((name) => name in entry)
+      .sort()
+    expect(exported).toEqual(['createRetention'])
   })
 })
 

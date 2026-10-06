@@ -127,11 +127,12 @@ export function retentionWindowsMs(policy: RetentionPolicy): RetentionWindows {
     }
     return seconds * 1000
   }
+  // The one place a policy's windows are made: every window above was held to the floor.
   return freeze({
     completed: windowOf('completed'),
     failed: windowOf('failed'),
     cancelled: windowOf('cancelled'),
-  })
+  }) as RetentionWindows
 }
 
 /**
@@ -340,16 +341,16 @@ async function purgeUnit(
   const windowsMs = retentionWindowsMs(policy)
   const taskId = unit.taskId
   const idempotencyKey = unit.idempotencyKey ?? null
-  const parent = spawningParent(idempotencyKey)
   // A key in the engine's spawn namespace that names no parent: it is not known whose
   // child the task is, so nothing says its parent can no longer run, and the unit is kept.
-  if (!parent.known) return null
+  // The builder of the purge would refuse the key too. The port answers as for any unit
+  // the barrier keeps.
+  if (!spawningParent(idempotencyKey).known) return null
   const b = dialect.open.purgeUnit()
   addUnitPurge(b, {
     queue,
     taskId,
     idempotencyKey,
-    parentTaskId: parent.taskId,
     windowsMs,
     stampStored: dialect.stampStored,
   })

@@ -1,5 +1,5 @@
 import { type Expression, type ExpressionBuilder, type SqlBool, expressionBuilder } from 'kysely'
-import { EventName, taskDoneEventName } from '../child-tasks.js'
+import { EventName, spawningParent, taskDoneEventName } from '../child-tasks.js'
 import { MAX_PURGE_UNIT_CHECKPOINTS } from '../contract.js'
 import {
   type DefinedStatement,
@@ -23,14 +23,22 @@ import { whereTaskInQueue } from './claimed-run.js'
  * hands out, and that a stored stamp is an instant in range.
  */
 
+declare const policyWindows: unique symbol
+
 /**
  * A retention policy as the statements take it: for each ended state, its window in
  * milliseconds, or null for a state the policy keeps. A null window is bound like any
  * other, so a statement's text does not depend on what the policy names. Database time
  * less no window is no instant, and no stamp is at or before that, so a state with no
  * window is never old enough.
+ *
+ * The type is nominal. `retentionWindowsMs` alone makes a value of it, after it has held
+ * every window to the floor, so nothing else in core hands a statement a window of its own
+ * choosing without a cast that says so.
  */
-export type RetentionWindows = Readonly<Record<TerminalState, number | null>>
+export type RetentionWindows = Readonly<Record<TerminalState, number | null>> & {
+  readonly [policyWindows]: true
+}
 
 /**
  * The window comparison, the one definition of it: an instant is at least a window behind
@@ -84,17 +92,22 @@ export const purgeCandidatesRead = defineStatement(
 export type PurgeUnitBinds = {
   readonly queue: string
   readonly taskId: string
-  /** The idempotency key the unit's task was spawned under, as its caller read it, or null. */
+  /**
+   * The idempotency key the unit's task was spawned under, as its caller read it, or null.
+   * The task that spawned the unit is read from this key by the builder itself, so a
+   * caller names no parent.
+   */
   readonly idempotencyKey: string | null
-  /** The task that spawned this one, which that key names, or null for a task no task spawned. */
-  readonly parentTaskId: string | null
   readonly windowsMs: RetentionWindows
   /** The store's proof that the row `tasks` holds a stamp instant in range. It binds nothing. */
   readonly stampStored: SqlFragment
 }
 
+/** A unit with the task that spawned it, which its key names, or null for a task no task spawned. */
+type UnitUnderItsParent = PurgeUnitBinds & { readonly parentTaskId: string | null }
+
 type TaskRow = ExpressionBuilder<StoreTables, 'tasks'>
-type Barrier = (task: TaskRow, binds: PurgeUnitBinds) => Expression<SqlBool>
+type Barrier = (task: TaskRow, binds: UnitUnderItsParent) => Expression<SqlBool>
 
 /**
  * The barrier (DESIGN.md §3.12): what the purge's compare-and-set requires of the task row
@@ -221,7 +234,7 @@ const PURGE_BARRIER = {
 
 const purgeCas = defineStatement(
   'purge-unit',
-  (binds: PurgeUnitBinds) =>
+  (binds: UnitUnderItsParent) =>
     treeBuilder
       .updateTable('tasks')
       .set({ ...FENCE_ASSIGNMENTS })
@@ -239,9 +252,20 @@ const purgeCas = defineStatement(
  * change nothing else of it. The stamp is what every delete of the batch is keyed on. The
  * statement is marked as the purge of a unit, and a batch deletes a row of a task's unit
  * only under the stamp of a statement so marked.
+ *
+ * The parent B5 asks about is read here, from the unit's key, and from nowhere else: a
+ * caller cannot name another. A key in the engine's namespace that names no parent builds
+ * nothing, because nothing says that the unit's parent can no longer run.
  */
-export const purgeUnitCas = (binds: PurgeUnitBinds): DefinedStatement =>
-  markUnitPurge(purgeCas(binds))
+export const purgeUnitCas = (binds: PurgeUnitBinds): DefinedStatement => {
+  const parent = spawningParent(binds.idempotencyKey)
+  if (!parent.known) {
+    throw new TypeError(
+      "purge-unit: the unit's key is in the engine's namespace and names no parent, so no purge is built",
+    )
+  }
+  return markUnitPurge(purgeCas({ ...binds, parentTaskId: parent.taskId }))
+}
 
 /**
  * `purge-unit`'s read of the unit its compare-and-set stamped: how many runs, checkpoints,

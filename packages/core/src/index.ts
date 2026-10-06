@@ -16,7 +16,6 @@ export * from './statements/fail.js'
 export * from './statements/lease.js'
 export * from './statements/operator.js'
 export * from './statements/park.js'
-export * from './statements/purge.js'
 export * from './statements/reads.js'
 export * from './statements/retry-task.js'
 export * from './statements/spawn.js'
@@ -32,7 +31,11 @@ export * from './port-refusal.js'
 export * from './port-strings.js'
 export * from './ports.js'
 export * from './primitives.js'
-export * from './retention.js'
+// Of retention the entry exports what a store's factory and a caller of the port need: the
+// factory of the port, the dialect it is made from, and the type it hands out (DESIGN.md
+// §3.12). The statements of a purge and the windows of a policy are not exported: they take
+// the barrier's inputs, and whoever can hand them inputs has no barrier in front of them.
+export { type HeldRetention, type RetentionDialect, createRetention } from './retention.js'
 export * from './retry.js'
 export * from './sagas.js'
 export * from './schema-version.js'
