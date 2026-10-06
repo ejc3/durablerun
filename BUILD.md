@@ -896,17 +896,16 @@ PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
 before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
 PR5.2c2. The maintainer approved the two contract changes of DESIGN.md section 3.12 on
-2026-10-03 and PR5.2a has merged, so they hold neither PR5.2a nor PR5.2c2. PR5.2c2 does
-not merge before the maintainer decides on the `fence_at_ms` plan-reader gate change and
-on the released-surface change the Held paragraph names. The
+2026-10-03 and PR5.2a has merged, so they hold neither PR5.2a nor PR5.2c2. The maintainer
+approved PR5.2c2's `fence_at_ms` plan-reader gate change and its released-surface change
+to `FENCE_RELATIONS` on 2026-10-06, so no decision holds PR5.2c2. The
 maintainer approved PR5.3c's `enqueue_at_ms` plan-reader gate change on
 2026-10-04, with its metric definitions and the seven legs of `stuck`, so no
 decision holds PR5.3c. A refusal
 is met by a docs pull request that first rewrites the lines it touches. If a
 contract change is refused, that pull request rewrites lines 40, 42, 43 and 44
 so that purge keeps every unit whose idempotency key may be presented again (the
-first change refused) or whose handle may still be awaited (the second). If the
-`fence_at_ms` change is refused, it rewrites line 42 before PR5.2c2 merges.
+first change refused) or whose handle may still be awaited (the second).
 
 **Non-goals:** the maintainer's live week, which is receipt M1 above; sharding
 and fan-out (PR5.1), dedicated placement (Phase 6) and the WDK wrapper (Phase
@@ -979,24 +978,22 @@ reader's due columns, the metric definitions, that claim latency is
 `claimLagMs`, the wait of the head of the queue, and a task's start latency,
 with no `claimed_at_ms` column, no histogram and no rate, and `stuck` listing
 seven legs where the plan had four. `sizes` is a statement tree, so the entry it
-would have needed as a text statement was never written. Still held, two
-released-surface changes. The first is made, and waits for the maintainer to
-confirm it: in PR5.3d `cancelTask` gained an optional third argument,
-`CancelOptions`, on core's `SchedulerStore` and on `LibsqlSchedulerStore`, the
-two declarations of it that the release alpha.1 published. It is recorded under
-`changed` in scripts/published-surface-v0.1.0-alpha.1.json with its reason, and
-the maintainer has been asked to confirm it. A caller that passes two arguments
-is unchanged, and a store outside this repository that ignores the third
-cancels a saga its caller asked it to spare. The second is made too, and waits
-for the maintainer to decide it: in PR5.2c2 `FENCE_RELATIONS` in
-@durablerun/core gained the relations from tasks to checkpoints and to events,
-which the generated deletes of a purge follow. It is recorded under `changed`
-in scripts/published-surface-v0.1.0-alpha.1.json with its reason, beside
+would have needed as a text statement was never written. And on
+2026-10-06 the maintainer approved three more things, each as made. In PR5.3d
+`cancelTask` gained an optional third argument, `CancelOptions`, on core's
+`SchedulerStore` and on `LibsqlSchedulerStore`, the two declarations of it that
+the release alpha.1 published. It is recorded under `changed` in
+scripts/published-surface-v0.1.0-alpha.1.json with its reason. A caller that
+passes two arguments is unchanged, and a store outside this repository that
+ignores the third cancels a saga its caller asked it to spare. In PR5.2c2
+`FENCE_RELATIONS` in @durablerun/core gained the relations from tasks to
+checkpoints and to events, which the generated deletes of a purge follow. It is
+recorded under `changed` in the same file with its reason, beside
 `FencedBatch`, whose generated statements take no set for a target that
-carries no provenance. The change is a commit of its own, and PR5.2c2 does not
-merge before the maintainer decides it. A consumer that names one of the five
-older relations is unchanged. One `gate-changes:` entry for the libSQL plan reader,
-adding `fence_at_ms` to its due columns in PR5.2c2. Whether
+carries no provenance. A consumer that names one of the five older relations is
+unchanged. And the `gate-changes:` entry that adds `fence_at_ms` to the libSQL
+plan reader's due columns in PR5.2c2. Still held are the decisions that
+follow. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write that opens a store and loads no `.env`, and the
@@ -6702,7 +6699,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   schema version is added. Two declarations the release alpha.1 published change, by one
   optional argument: `cancelTask` of core's `SchedulerStore` and of `LibsqlSchedulerStore`
   takes `CancelOptions`, which the fold of the review added and the published-surface file
-  records with its reason. One engine statement
+  records with its reason. The maintainer confirmed that change on 2026-10-06. One engine statement
   changes its text and nothing else: each store's retry guard is now built by core from a
   record of the guard's conjuncts, so the corpus of `retry-task` differs by the one
   separator between two conjuncts. DESIGN.md section 3.11 holds each verb, the write
@@ -6963,6 +6960,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   thirty-one markers, lists the four condition lines of the tree rule, and re-aims one
   entry of main's registry, whose line moved when the MySQL compiler's table of stamp
   indexes gained `tasks`.
+  - What the maintainer approved, on 2026-10-06, each as built: the two relations
+    `FENCE_RELATIONS` gained, with the `changed` entry of the published-surface file, and
+    the `gate-changes:` entry that adds `fence_at_ms` to the libSQL plan reader's due
+    columns. Each is a commit of its own.
   - Where the build differs from the plan, and why. (1) The red for SKIP LOCKED is a
     refusal when the batch is built. The statement grammar refuses every select modifier
     but DISTINCT, so no purge statement that holds SKIP LOCKED can be sent, and the contest

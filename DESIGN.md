@@ -1677,7 +1677,8 @@ One invocation executes one claimed run to its next suspension point:
     statement of the engine ranges over: the maintainer approved that fourth
     column on 2026-10-04, section 3.11; and `fence_at_ms`, which retention's
     read of a queue's ended tasks reads in order and no statement of the engine
-    ranges over, section 3.12). It is a walk otherwise: a SCAN of a
+    ranges over: the maintainer approved that fifth column on 2026-10-06,
+    section 3.12). It is a walk otherwise: a SCAN of a
     table, with an index or without one, a SEARCH through an automatic index,
     and a SEARCH whose constraint list holds neither. The rows of a VALUES are
     no table's, and a SCAN of them is no walk. The rule is three lines. Over
@@ -7009,8 +7010,9 @@ A build that predates the version runs against the schema unchanged, and the rel
 alpha.1 runs its cycle on a libSQL database the CLI migrated to it
 (`scripts/alpha1-compat.sh`).
 
-**A released declaration and a gate that changed.** Two things outside
-retention's own files changed for it. `FENCE_RELATIONS`, which the release
+**A released declaration and a gate that changed, each approved by the
+maintainer on 2026-10-06.** Two things outside retention's own files changed
+for it. `FENCE_RELATIONS`, which the release
 alpha.1 published, gained `tasks-to-checkpoints` and `tasks-to-events`, the
 relations the generated deletes of a purge follow. The change is recorded under
 `changed` in `scripts/published-surface-v0.1.0-alpha.1.json`, beside
