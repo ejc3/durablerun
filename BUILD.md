@@ -963,11 +963,15 @@ two declarations of it that the release alpha.1 published. It is recorded under
 `changed` in scripts/published-surface-v0.1.0-alpha.1.json with its reason, and
 the maintainer has been asked to confirm it. A caller that passes two arguments
 is unchanged, and a store outside this repository that ignores the third
-cancels a saga its caller asked it to spare. The second is not made:
-`FENCE_RELATIONS` in @durablerun/core gains the relations from tasks to
-checkpoints and to events, which needs a `changed` entry in
-scripts/published-surface-v0.1.0-alpha.1.json and the maintainer's approval
-before PR5.2c2 adds it. One `gate-changes:` entry for the libSQL plan reader,
+cancels a saga its caller asked it to spare. The second is made too, and waits
+for the maintainer to decide it: in PR5.2c2 `FENCE_RELATIONS` in
+@durablerun/core gained the relations from tasks to checkpoints and to events,
+which the generated deletes of a purge follow. It is recorded under `changed`
+in scripts/published-surface-v0.1.0-alpha.1.json with its reason, beside
+`FencedBatch`, whose generated statements take no set for a target that
+carries no provenance. The change is a commit of its own, and PR5.2c2 does not
+merge before the maintainer decides it. A consumer that names one of the five
+older relations is unchanged. One `gate-changes:` entry for the libSQL plan reader,
 adding `fence_at_ms` to its due columns in PR5.2c2. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires

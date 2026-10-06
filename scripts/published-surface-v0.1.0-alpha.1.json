@@ -40,8 +40,8 @@
           "declarationSha256": "2e474af2c619896655affe78b5e0f98184016a63ed880d1b5d5f35772472d9d8"
         },
         "FencedBatch": {
-          "reason": "Statements are trees (PR #37), and the text path is deleted (PR #52): cas, casMany, followOn, tail and openTail are gone, and the constructor requires tree, the dialect that compiles a tree. A consumer builds each statement as a tree and adds it with casTree, casManyTree, followOnTree, tailTree or openTailTree. Reads joined as readTree and readPrepared, and run's second parameter was renamed (PR #57). lockEvent is gone: a statement's definition names the event it is serialized on, which DefinedStatement carries as eventLock, and the batch takes that lock (PR #68). A consumer that called lockEvent names the event as defineStatement's third argument. A generated follow-on may bind its queue (PR #49), a generated set value may be an expression as well as text (PR #43), and one that writes a task's state gives it as an expression (PR #68).",
-          "declarationSha256": "611ce5ee61e07a8c29c42b111839742ad5957cd85c3b32fa64178442bfb0af4d"
+          "reason": "Statements are trees (PR #37), and the text path is deleted (PR #52): cas, casMany, followOn, tail and openTail are gone, and the constructor requires tree, the dialect that compiles a tree. A consumer builds each statement as a tree and adds it with casTree, casManyTree, followOnTree, tailTree or openTailTree. Reads joined as readTree and readPrepared, and run's second parameter was renamed (PR #57). lockEvent is gone: a statement's definition names the event it is serialized on, which DefinedStatement carries as eventLock, and the batch takes that lock (PR #68). A consumer that called lockEvent names the event as defineStatement's third argument. A generated follow-on may bind its queue (PR #49), a generated set value may be an expression as well as text (PR #43), and one that writes a task's state gives it as an expression (PR #68). PR5.2c2 typed the set of a generated follow-on as never for a relation whose target carries no provenance, which is the new tasks-to-checkpoints: a checkpoint has nowhere to hold the stamp a generated UPDATE writes, so a generated statement of that relation is a DELETE, and derived refuses a set for it. A consumer that generates a statement over one of the five older relations changes nothing.",
+          "declarationSha256": "d9761c08ab9ff0f64fbcb153c1d59ab4bbae52c5ef226e3acfe80431083ea371"
         },
         "LeaseState": {
           "reason": "A refused heartbeat names why (PR #32): the interface became a union, and a lease that is not held carries reason, cancelled or lease-lost. A consumer that reads held and remainingMs changes nothing; a store that answers a heartbeat returns the reason with a refusal.",
@@ -78,6 +78,10 @@
         "SqlTransactionLock": {
           "reason": "It gained the arm { kind: 'migration' }: a migration write carries the migration lock in the batch control as a lock coordinate, where the MySQL executor chose it from the batch label, and that executor refuses a migration write that names none (PR #83). A consumer that builds a transaction lock changes nothing, and one that switches over kind exhaustively adds the arm.",
           "declarationSha256": "9fa0ca234533585187cd20fa55f1f97de04fa4345eea7605d0f435ed74ff81ad"
+        },
+        "FENCE_RELATIONS": {
+          "reason": "Two relations joined, tasks-to-checkpoints and tasks-to-events (PR5.2c2): the purge of an ended task's unit deletes the task's checkpoints and its completion event in generated statements keyed on the task row the purge stamped, and a generated statement reaches its rows only through a relation of this record. The second reaches the task's queue, because no column of a task holds the name of its completion event, and the generated delete names that event itself. A consumer that names one of the five older relations changes nothing. One that walks every relation meets two more, and the target of the first carries no provenance, so a generated statement of it is a DELETE.",
+          "declarationSha256": "60b9f2b476e09b3767adfd7893b48ea2e046b3249949093959dd7975dda98ece"
         }
       }
     },

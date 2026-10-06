@@ -198,7 +198,8 @@ type RelationTarget<R extends FenceRelation> = (typeof FENCE_RELATIONS)[R]['targ
  *
  * A hand-written follow-on may deliberately carry no stamped target. Keeping the
  * generated statement's target in its own type prevents that broader
- * representation from making `null` an expressible generated UPDATE.
+ * representation from making `null` an expressible generated UPDATE. A target that
+ * carries no provenance is written by a generated DELETE alone (`DerivedSet`).
  */
 export type GeneratedUpdateTarget = RelationTarget<FenceRelation>
 
@@ -217,7 +218,12 @@ type DerivedSet<R extends FenceRelation> = RelationTarget<R> extends 'tasks'
   ? Partial<Record<Exclude<DerivedWritableColumn<'tasks'>, 'state'>, DerivedValue>> & {
       state?: Expression<string>
     }
-  : Partial<Record<DerivedWritableColumn<RelationTarget<R>>, DerivedValue>>
+  : // A generated UPDATE stamps what it writes, so a target that carries no provenance takes
+    // no set at all. Asked of the targets that carry it, so the relations taken together
+    // still take the columns of every one of those.
+    [Extract<RelationTarget<R>, FenceTable>] extends [never]
+    ? never
+    : Partial<Record<DerivedWritableColumn<Extract<RelationTarget<R>, FenceTable>>, DerivedValue>>
 
 type DerivedSpec<R extends FenceRelation = FenceRelation> =
   | (DerivedSelection<R> & {
@@ -485,7 +491,17 @@ export class FencedBatch {
     this.requireFenceSource(spec.fence, `derived('${name}')`)
     const assignments =
       spec.set === undefined ? [] : (Object.entries(spec.set) as Array<[string, DerivedValue]>)
-    const allowedColumns = new TrustedSet<string>(DERIVED_WRITABLE_COLUMNS[target])
+    // A generated UPDATE stamps the rows it writes, so it writes a table that carries
+    // provenance. A relation whose target carries none serves a generated DELETE alone.
+    const stampedTarget = FENCED_TABLES.find((table) => table === target)
+    if (spec.set !== undefined && stampedTarget === undefined) {
+      throw new Error(
+        `FencedBatch[${this.label}] derived('${name}') assigns to '${target}', which carries no provenance: a generated statement of '${spec.relation}' is a DELETE`,
+      )
+    }
+    const allowedColumns = new TrustedSet<string>(
+      stampedTarget === undefined ? [] : DERIVED_WRITABLE_COLUMNS[stampedTarget],
+    )
     if (sealedSelfKey !== null) allowedColumns.add(sealedSelfKey)
     for (const [column, expression] of assignments) {
       const isProvenanceColumn = /fence_(?:stamp|at_ms)/i.test(column)

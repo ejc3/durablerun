@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  FENCE_RELATIONS,
   LIVE_STATES,
   TERMINAL_STATES,
   isLiveState,
@@ -19,6 +20,28 @@ describe('canonical state partitions', () => {
     }
     expect(isLiveState('unknown')).toBe(false)
     expect(isTerminalState(null)).toBe(false)
+  })
+})
+
+describe("the relations the purge of a task's unit follows", () => {
+  it('reach the checkpoints by the task and the completion event by the queue', () => {
+    // A column of a task holds its id and its queue, and none holds the name of its
+    // completion event, so the second relation reaches the queue and a generated delete
+    // names the event itself.
+    expect(FENCE_RELATIONS['tasks-to-checkpoints']).toEqual({
+      target: 'checkpoints',
+      key: 'task_id',
+      from: 'tasks',
+      column: 'task_id',
+      queueScoped: false,
+    })
+    expect(FENCE_RELATIONS['tasks-to-events']).toEqual({
+      target: 'events',
+      key: 'queue',
+      from: 'tasks',
+      column: 'queue',
+      queueScoped: false,
+    })
   })
 })
 

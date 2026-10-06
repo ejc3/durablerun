@@ -156,6 +156,28 @@ export const FENCE_RELATIONS = Object.freeze({
     column: 'run_id',
     queueScoped: false,
   }),
+  'tasks-to-checkpoints': Object.freeze({
+    target: 'checkpoints',
+    key: 'task_id',
+    from: 'tasks',
+    column: 'task_id',
+    // A task is authoritative for every checkpoint that names it, as a run is for its
+    // waits. A checkpoint carries no provenance, so the relation serves a generated
+    // DELETE and never an UPDATE: the purge of a task's unit (DESIGN.md §3.12).
+    queueScoped: false,
+  }),
+  'tasks-to-events': Object.freeze({
+    target: 'events',
+    key: 'queue',
+    from: 'tasks',
+    column: 'queue',
+    // The one event a task owns is its completion event, which lives in the task's queue
+    // under a name built from the task's id. No column of a task holds that name, so the
+    // relation reaches the queue, and a generated DELETE names the one event itself, from
+    // the lock its batch holds (`FencedBatch.derived`). It serves the purge of a task's
+    // unit and nothing else.
+    queueScoped: false,
+  }),
 } as const)
 
 export type FenceRelation = keyof typeof FENCE_RELATIONS

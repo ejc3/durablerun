@@ -412,6 +412,31 @@ describe('fence() names a statement, and the primitive supplies the value', () =
     void typecheckInvalidRelation
   })
 
+  it('refuses a generated UPDATE of a table that carries no provenance', () => {
+    // A task's checkpoints are reached by a relation of their own, for the purge of the
+    // task's unit. A checkpoint has nowhere to hold a stamp, so the relation generates a
+    // DELETE and never an UPDATE, at runtime and at the type boundary.
+    const b = withCas()
+    expect(() =>
+      b.derived('stamped-checkpoints', {
+        relation: 'tasks-to-checkpoints',
+        fence: 'win',
+        set: { state: `'x'` },
+        rows: 'one',
+      } as never),
+    ).toThrow(/assigns to 'checkpoints', which carries no provenance/)
+
+    const typecheckNoSet = () =>
+      b.derived('does-not-compile', {
+        relation: 'tasks-to-checkpoints',
+        fence: 'win',
+        // @ts-expect-error a relation whose target carries no provenance takes no set
+        set: { state: `'x'` },
+        rows: 'one',
+      })
+    void typecheckNoSet
+  })
+
   it('rejects a relation that reads from a table other than the fence source', () => {
     const b = withCas()
     refuses(
