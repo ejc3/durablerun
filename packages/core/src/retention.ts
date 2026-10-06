@@ -36,9 +36,11 @@ import {
 } from './validate.js'
 
 const {
+  ArrayIsArray: isArray,
   NumberIsSafeInteger: isSafeInteger,
   ObjectCreate: createObject,
   ObjectFreeze: freeze,
+  ObjectKeys: objectKeys,
   PromiseReject: rejected,
   ReflectApply: apply,
   ReflectGet: reflectGet,
@@ -364,6 +366,30 @@ async function purgeUnit(
  * here in one loop, as `createOperatorReads` does for the operator's reads. A refusal is a
  * rejected promise, as a store's is.
  */
+/** How deep an argument of the port holds objects: the options, and the cursor they hold. */
+const ARGUMENT_DEPTH = 2
+
+/**
+ * One reading of an argument. An object is read member by member, each of its own
+ * members once, into a frozen object that holds what was read, and an object a member
+ * holds is read the same way. Everything behind the port then reads that copy: the check
+ * of strings, and the method. So what the check read is what a batch binds, for every
+ * member an argument has or gains, and a member that would answer its second reader
+ * another value has no second reader. A member an argument only inherits is not read:
+ * the port takes plain objects, and such a member is as one left out.
+ */
+function readOnce(value: unknown, depth: number): unknown {
+  if (depth === 0 || typeof value !== 'object' || value === null || isArray(value)) return value
+  const read = createObject(null) as Record<string, unknown>
+  const members = objectKeys(value)
+  for (let index = 0; index < members.length; index++) {
+    const member = members[index]
+    if (member === undefined) continue
+    read[member] = readOnce(reflectGet(value, member), depth - 1)
+  }
+  return freeze(read)
+}
+
 export function createRetention(dialect: RetentionDialect): HeldRetention {
   const entries: Retention = {
     purgeCandidates: (queue, policy, options) => purgeCandidates(dialect, queue, policy, options),
@@ -375,12 +401,14 @@ export function createRetention(dialect: RetentionDialect): HeldRetention {
     if (method === undefined) continue
     const entry: (...args: never[]) => Promise<unknown> = entries[method]
     held[method] = (...args: unknown[]): Promise<unknown> => {
+      const once: unknown[] = []
       try {
-        requireRetentionStrings(method, args)
+        for (let at = 0; at < args.length; at++) once[at] = readOnce(args[at], ARGUMENT_DEPTH)
+        requireRetentionStrings(method, once)
       } catch (error) {
         return rejected(error)
       }
-      return apply(entry, undefined, args)
+      return apply(entry, undefined, once)
     }
   }
   return freeze(held) as HeldRetention
