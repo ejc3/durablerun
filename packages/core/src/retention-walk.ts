@@ -147,21 +147,25 @@ export async function purgeWalk(
   let examined = 0
   const atABound = (): boolean => taken.length === limit || examined === examine
 
-  /** One look at a candidate: its purge, and what keeps it when the purge did not take it. */
+  /**
+   * One look at a candidate: its purge, and what keeps it when the purge did not take it. A
+   * unit leaves the list of kept units only when a look settles it.
+   */
   const look = async (candidate: PurgeCandidate): Promise<PurgeWalkFailure | null> => {
     const { taskId } = candidate
     examined += 1
-    kept.delete(taskId)
     if (execute) {
       let purged: PurgedUnit | null
       try {
         purged = await retention.purgeUnit(queue, candidate, policy)
       } catch (error) {
         // The batch was sent and no answer came: it may have committed.
+        kept.delete(taskId)
         outcomeNotKnown.push(candidate)
         return { call: 'purgeUnit', taskId, error }
       }
       if (purged !== null) {
+        kept.delete(taskId)
         takenAt.set(taskId, taken.length)
         taken.push({ candidate, rows: purged.rows })
         return null
@@ -171,10 +175,13 @@ export async function purgeWalk(
     try {
       admission = await retention.purgeAdmission(queue, candidate, policy)
     } catch (error) {
+      // A unit under a second try stays listed as kept, as it last read.
       return { call: 'purgeAdmission', taskId, error }
     }
-    if (admission === null) gone.push(candidate)
-    else if (!execute && letsGo(admission)) taken.push({ candidate, rows: null })
+    if (admission === null) {
+      kept.delete(taskId)
+      gone.push(candidate)
+    } else if (!execute && letsGo(admission)) taken.push({ candidate, rows: null })
     else kept.set(taskId, { candidate, admission, asOf: taken.length })
     return null
   }
