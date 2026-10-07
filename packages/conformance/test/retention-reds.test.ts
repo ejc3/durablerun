@@ -14,6 +14,7 @@ import {
   endingStampCases,
   terminalPreStateCase,
 } from '../src/retention.js'
+import { bent } from './bent-fixture.js'
 import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
@@ -22,29 +23,9 @@ import { makeLibsqlFixture } from './fixture-libsql.js'
  * seen fail holds nothing, so each one runs here over a store that does what the case
  * forbids. The bend sits below the store, as a write that follows the batch under the
  * label, because core's build rules refuse a batch that writes a task row and leaves the
- * stamp out: the rows are the only place such a defect could show.
+ * stamp out: the rows are the only place such a defect could show. `bent`, in
+ * bent-fixture.ts, is that fixture.
  */
-function following(db: SqlExecutor, label: string, bend: SqlStatement): SqlExecutor {
-  return {
-    batch: async (name, statements, control) => {
-      const results = await db.batch(name, statements, control)
-      if (name === label) await db.batch('bend', [bend], 'write')
-      return results
-    },
-  }
-}
-
-/** A fixture whose stores, the ones a case opens over an executor, all carry the bend. */
-function bent(label: string, bend: SqlStatement): StoreFixtureFactory {
-  return async (seed, options) => {
-    const f = await makeLibsqlFixture(seed, options)
-    return {
-      ...f,
-      storeOver: (db, buggify) => f.storeOver(following(db, label, bend), buggify),
-      retentionOver: (db) => f.retentionOver(following(db, label, bend)),
-    }
-  }
-}
 
 /**
  * A fixture whose ports answer the first call made over an executor without sending

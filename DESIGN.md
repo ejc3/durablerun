@@ -5661,7 +5661,7 @@ batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all 
 table. A command may name one argument that a flag stands in for, and it then takes one of
 the two and never both: `inspect` and `explain` each take a task id or `--key`. The commands are
 `help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect`, `explain`, `stuck`, `stats`,
-`sizes`, `enqueue`, `emit`, `cancel`, `retry`, `sweep` and `tick`.
+`sizes`, `enqueue`, `emit`, `cancel`, `retry`, `sweep`, `purge` and `tick`.
 
 **Transport.** Every command but `help` and `tick` opens a store directly, from
 `DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
@@ -5809,7 +5809,16 @@ clock's row, so that one read is the store's own text. It is reported because a 
 whose test clock was left set never sees a run come due. `inspect --key` reads twice:
 `task-id-by-key` finds the task, and `task-facts` then reads it. A task that is gone between
 the two answers exit 8 for a key that found it a moment before. Only the retention purge
-of section 3.12 deletes a task, and no command runs one yet.
+of section 3.12 deletes a task, which `purge --execute` runs, so an `inspect --key` beside
+a purge can find a task by its key and then find it gone. It then exits 8 and says that the
+key named the task, by its id, and that the task is gone as of the next read and may have
+been retained out. It says no more than the reads know: a database edited or restored
+between them shows the same, and `retry` claims as little of a task that is not there.
+`explain --key` reads the same way and answers the same. A key that names no task is
+answered by the first read, and a task named by its id that is not there is answered as one
+that is not there: no read says whether it ever was. The two reads stay two. One batch
+would add three statement shapes to `task-facts` on every dialect, and what an operator
+needs from the race is to be told which of two things happened, which the two reads say.
 
 The events of a snapshot are those of the task's own queue, and the reads name an event by
 its name alone. A run takes its queue from its task's row or from the run it succeeds, a
@@ -6570,15 +6579,171 @@ changed between the call and the read, and the answer says that and names no cau
 enumerates the conjuncts and plants a state for each, by the engine where an engine path
 reaches it and by fixture SQL where none does, and requires the command to name it.
 
+**A flag given twice.** Every command refuses a command line that names a flag twice, with
+exit 2 and the flag's name, before anything opens: with two values, with one value twice,
+joined to its value by an equals sign, and in both spellings at once, and a boolean flag the
+same. The parser would otherwise keep the last value, so a purge whose completed window was
+named as a hundred years and then as an hour would purge under the hour, and a command line
+that contradicts itself is not one anybody meant. `test/flag-twice.test.ts` generates the
+cases from the command table, for every flag of every command.
+
+**The purge verb.** `purge --queue Q --target T --completed-after D --cancelled-after D
+[--failed-after D] [--limit N] [--execute]` is the one command by which an
+operator deletes durable state, and the one command that calls the retention port (section
+3.12). It is that port's calls and nothing else: it runs core's one walk over the port
+(`purgeWalk`, section 3.12), which the simulated week and the tests run too.
+`purgeCandidates` lists the ended tasks that are a window old, `purgeUnit` deletes one unit
+in one batch whose compare-and-set holds the whole barrier at the instant of deletion, and
+`purgeAdmission` reads what the barrier says of one unit. The command builds no statement of
+its own, and core's entry exports no builder of a purge for it to import.
+
+A window is a duration as `stuck` takes one. `--completed-after` and `--cancelled-after` are
+required and have no default: a command line that leaves one out exits 2 and says there is
+none. Without `--failed-after`, failed tasks are kept, because `retry` can revive one. A
+window under 3,600 seconds exits 2 before anything is sent. The floor is core's
+(`MIN_RETENTION_SECONDS`), and the port refuses a shorter window as well.
+
+Without `--execute` the command is a dry run. It sends only read batches and deletes
+nothing. It lists each candidate under `wouldPurge`, or under `kept` with what the barrier
+says of it, or under `gone` when the task is no longer there, and says that each verdict is
+as of this read: a purge reads every condition again, inside the statement that deletes. A
+purge can take more than a dry run lists, because it takes with a unit the units that only
+it kept, and a dry run reads each unit as the database stands. `--execute` is the verb's one
+confirmation, and `purge` takes no `--yes`. The dry run is the default, `--execute` is the
+word that turns it into a purge, and a `--yes` beside it would be a second spelling of one
+meaning. A `--yes` is refused as any flag the command does not take.
+
+With `--execute` the command sends one `purge-unit` batch for each candidate it reaches,
+until its limit of units went. For each unit that went it prints the task's id and name, the
+state it ended in, the instant it ended, the sha256 of the idempotency key it was spawned
+under, or null, and the rows that went from each of `tasks`, `runs`, `checkpoints`, `waits`
+and `events`. The key prints as its digest and never as itself, with `--reveal` or without:
+a report of what was deleted is kept, a purged task's key is free to be used again, and the
+digest is what finds a unit in a report by its key. A unit of a task the engine ended holds
+no wait (section 3.12), so `waits` prints 0, and a case holds that it prints the count for a
+unit that does hold one.
+
+A unit the port answers kept is not an error. The command then reads what the barrier says
+of it and lists it under `kept`, with `reasons` and `conditionsNotHeld`, as of that read.
+Core names the nine conditions of the barrier once (`PURGE_BARRIER_CONDITIONS`), and the
+CLI's map from a condition to its reason is keyed by that list, so a condition the barrier
+gains stops the build until it has a reason.
+
+| Reason | Condition of the barrier | Meaning |
+| --- | --- | --- |
+| not-ended-a-window-ago | endedAWindowAgo | the task is not in a state the policy names, ended at least that state's window ago |
+| unstamped | stampInRange | the instant the task ended is not a stored instant in range |
+| live-run | noLiveRun | a run of the task is live, though the task has ended |
+| outcome-held | noRunHoldsTheOutcome | a run of another task holds the task's outcome |
+| awaited | noWaitOnTheOutcome | a wait names the task's completion event |
+| parent-can-run-again | parentCannotRunAgain | the task that spawned it is live or failed, or its key names no parent that can be read |
+| key-changed | spawnedUnderThisKey | the task is not spawned under the key it was listed under |
+| run-in-another-queue | ownsEveryRun | a run of the task is in another queue |
+| oversized | withinTheCheckpointCap | the unit holds more checkpoints than one batch may delete |
+
+When every condition holds at that read, the unit changed between the purge and the read,
+and the one reason is `none-as-of-this-read`. When no task is there at that read, the unit
+is listed under `gone` and not under `kept`: another purge took it, or the store delivered
+this command's batch twice. A test plants a unit for every condition, by the engine where an
+engine path reaches it and by fixture SQL where none does, and requires a dry run and a
+purge each to name it.
+
+A listing names only what a purge could take by its state and its age: an ended task in a
+state the policy names, with a stored stamp in range, at least that state's window old. So
+no dry run shows a failed task under a policy with no failed window, a task younger than
+its window, or a task whose stamp is NULL, which a build older than the stamp leaves. The
+command lists none of these as kept, because no read of the port lists them at all. An
+operator finds such a task by `inspect`, which prints its state and when its runs ended.
+The two reasons `not-ended-a-window-ago` and `unstamped` are therefore reached only when a
+row moves between the listing and the read of the barrier, which the test plants.
+
+One run is one pass from the oldest candidate, and `--limit` is its one bound. A pass takes
+what it frees: a unit kept only by a unit the same run then purges, as a child is by a
+failed parent that is listed after it, is tried again and goes in that run. `--limit` is the
+most units one run purges, or lists as ones it would purge, 100 by default and at most
+1,000. Nothing bounds the candidates a run examines but the queue. One run sends a listing
+for every 100 candidates (`PURGE_WALK_PAGE`), a purge for every candidate it reaches, and a
+read of the barrier for every one it keeps, so a queue whose kept units grow costs each run
+more: under a policy with no `--failed-after`, the children of failed parents are candidates
+for as long as they stand, and every run purges at and reads each of them again. The answer
+prints, as `examined`, how many candidates the run looked at, a second try counted with a
+first look, so that cost is in every report. With 30 kept children in front of two tasks, a
+run at a limit of 1 sends one listing, 31 purges and 30 reads, and at a limit of 100 one
+listing, 32 purges and 30 reads, which a case counts. A bound on what a run examines, with a
+place to resume from, was built and taken out again, and BUILD.md records it as an option
+with what building it taught.
+
+`finished` says that every call the run made was answered. `more` is false only when the run
+reached its end: every candidate was examined, and no kept unit was owed another try. It is
+true when the limit stopped the run with a candidate unread or with a kept unit owed another
+try, and when it stopped at a failure. The same command line run again, from the oldest,
+then takes what the first left. So when a run ends with `finished: true` and `more: false`,
+the same command line run again at once, on a database nothing else changed, purges nothing
+and lists the same units as kept for the same reasons. And a command line repeated until it
+says `more: false` leaves no unit the barrier would let go. Cases hold that for a child, the
+failed parent that kept it and two tasks behind them at a limit of 1, for 150 children listed
+before the parent that holds their outcome, past the limit, and over the states ten walks of
+the engine leave (below).
+
+Besides a command line it cannot read, the command refuses three things before it reads a
+candidate. A `--target` that does not name the store exits 2 before anything opens, as for
+every write. A database whose recorded schema version is not the build's exits 5 and names
+both versions, at the older versions libSQL's reads accept as well: the statements of a
+purge read the indexes version 12 adds. And a database whose test clock is set exits 2 with
+`fake-clock`, for a dry run too, because a unit's age is read against database time. The
+command learns that from `queueStatus`, the read that reports the flag for a queue. Each
+refusal leaves a dump of every table as it was and sends no purge batch, and each is held
+beside the same command line with the cause taken away, which changes the database. A
+`file:` URL that names no file exits 5 and creates none.
+
+An answered write is not reported as a failure. When the store fails partway through a
+purge, the command prints the units it had reached, on stdout, with `finished: false` and,
+under `stoppedAt`, the call it was in and the task that call was for. It exits as the
+failure does, 6 for an outage. A unit whose purge was sent and not answered is printed whole
+under `outcomeNotKnown`, with its task's id and name, its state, the instant it ended and
+the sha256 of its key: its batch may have committed. An operator does nothing with it but
+run the command again. The repeat lists the unit again if it stands, and does not if it
+went, and a report that joins units by the digest of their keys reads the unit from this
+list when no later run names it. A failure before any unit was reached has no report to
+print, and prints as any failure does: on stderr in text, and with `--json` as the failure
+alone.
+
+`test/purge-twin.test.ts` holds that the command is the port and nothing else, and it holds
+that against the model of the barrier and not against the walk, which the command runs. The
+command runs through `main` against a database, and a dump of every table is taken before
+each command and after it. The oracle of the retention surface (section 3.12), which states
+each condition a second time, from the model, is applied to the first dump in the order the
+command printed its units: it must let each go, with the rows the command printed for it,
+and what it leaves must be the second dump. No command may take more than its limit. When a
+run says no more remain, no unit may stand that the model lets go, and every unit it printed
+as kept must be one the model keeps as the database stands. A dry run is held to the port
+itself: the test lists every candidate from the port and reads what the barrier says of
+each, and the command lists as ones a purge would take exactly the units every condition
+holds of, and as kept exactly the others. That holds on every dialect over seeded tasks, two
+sagas, a child the barrier keeps and a child only its failed parent keeps, through a dry
+run, a purge under a limit, a purge that keeps failed tasks, a purge of the rest and a purge
+with nothing left, which purges nothing and keeps the same unit for the same reason as the
+run before it. It holds on libSQL over the states ten walks of the engine leave, each with a
+unit the barrier keeps written into it, because no walk of those seeds leaves one. There the
+same command line, three units at a time, is repeated until it says no more remain, first
+keeping failed tasks and then naming every state, and is then run once more: 73 commands
+purged 102 units, 29 completed, 22 failed and 51 cancelled, with 42 checkpoints, and printed
+55 units as kept, in 20 chains of 43 runs, under floors below those counts. Each of the 20
+repeats purges nothing and keeps the same units for the same reasons, and a repeat that
+keeps no unit fails the test, because it compares nothing. What the walk does with the
+port's answers is held in core, over a port held in memory (section 3.12).
+
 **The schema window for a write.** A drive verb is held to the window a read is held to. It
 exits 5 outside it and prints the recorded version and the versions the build reads. On
 libSQL that window starts at version 5, and a verb may write there because its twin passes
 there: the test runs every verb's twin at each version from 5 to the build's. The verbs it
-runs are the write commands of the command table, so a verb that joins the table joins the
-test, and one whose twin fails at a version fails by name. Versions 6 to 12 add indexes,
-empty versions and triggers, and no statement a drive verb sends names a column or an index
-a later version adds. PostgreSQL and MySQL read their own version alone, so a drive verb
-exits 5 on an older database of either. No command has a second path for an older schema.
+runs are the drive verbs of the command table, which is every command that writes but
+`migrate` and `purge`, so a verb that joins the table joins the test, and one whose twin
+fails at a version fails by name. `purge` is held more narrowly: it refuses every version
+but the build's (above). Versions 6 to 12 add indexes, empty versions and triggers, and no
+statement a drive verb sends names a column or an index a later version adds. PostgreSQL and
+MySQL read their own version alone, so a drive verb exits 5 on an older database of either.
+No command has a second path for an older schema.
 
 **One pass of a deployment.** `tick --url U [--timeout D]` opens no store. It sends one POST
 to the tick route of a hosted deployment (section 3.5) and prints the route's answer under
@@ -6644,29 +6809,32 @@ passed as their length and sha256, and their text with `--reveal`. A port's refu
 `enqueue` prints only with `--reveal`, unless it is of the queue or of the task name, because
 any other may quote the key. The payload an event already
 holds prints as its length and sha256 and never as text. `tick` prints neither URL as it
-was given and never the token.
+was given and never the token. `purge` prints a unit's task id, its task name, its state,
+the instant it ended and the rows that went, and of the idempotency key the task was
+spawned under only the sha256, with `--reveal` or without.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
 ASCII name, so a plain sort gives it), which is the same on every dialect apart from the
 object under `dialect`: the URL scheme and the store's schema window.
 
-In human text one rule decides the stream. An answer prints on stdout when the command
-exits 0. An answer its handler marks as the snapshot the command exists to print also
-prints on stdout, whatever the command exits with, so the exit code alone tells a script
-how it ended. The snapshot of `inspect`, the answer of `explain` and the reports of `stuck` and
-`stats` are marked so. Each prints there when it exits 10, and the report of `stuck` when
-it exits 9. Every other answer that does not exit 0 is a refusal and prints on
-stderr. That holds when the refusal names a fact about the store. On a database recorded
-at a schema version outside the window, every read exits 5 and prints the recorded version
-on stderr. `migrate` without `--yes` exits 2 and
-prints the version it starts from and the versions it would apply on stderr, and a
-`migrate` that fails partway prints the versions it applied there. A usage error, a
-refused call, a store that is unavailable, a task that is not there, and the answer of
-`result` or `checkpoints` for a row the decoders refuse print there too. A refusal of `stuck`, as of a grace
-it cannot read, prints there like any other. So does every refusal of a drive verb and of
-`tick`: a write that was not confirmed, a revival the guard refused, with its cause, and a
-token the deployment refused.
+In human text one rule decides the stream. An answer prints on stdout when the command exits
+0. An answer its handler marks as the snapshot the command exists to print also prints on
+stdout, whatever the command exits with, so the exit code alone tells a script how it ended.
+The snapshot of `inspect`, the answer of `explain` and the reports of `stuck` and `stats`
+are marked so. Each prints there when it exits 10, and the report of `stuck` when it exits
+9. The report of a `purge` that its store failed partway through is marked so too: the units
+that went print there, and the exit is the failure's. Every other answer that does not exit
+0 is a refusal and prints on stderr. That holds when the refusal names a fact about the
+store. On a database recorded at a schema version outside the window, every read exits 5 and
+prints the recorded version on stderr. `migrate` without `--yes` exits 2 and prints the
+version it starts from and the versions it would apply on stderr, and a `migrate` that fails
+partway prints the versions it applied there. A usage error, a refused call, a store that is
+unavailable, a task that is not there, and the answer of `result` or `checkpoints` for a row
+the decoders refuse print there too. A refusal of `stuck`, as of a grace it cannot read,
+prints there like any other. So does every refusal of a drive verb and of `tick`: a write
+that was not confirmed, a revival the guard refused, with its cause, and a token the
+deployment refused.
 
 **Exit codes.** A command declares which of these it gives, and `src/exit.ts` holds the
 same table, which a test holds equal to this one.
@@ -6675,10 +6843,10 @@ same table, which a test holds equal to this one.
 | --- | --- | --- |
 | 0 | done | the command did what it says |
 | 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
-| 2 | usage | usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and no request went to a deployment |
+| 2 | usage | usage, confirmation-required, target-mismatch, origin-mismatch or fake-clock; nothing was changed, and no request went to a deployment |
 | 3 | refused | the engine refused the call, and says why |
 | 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
-| 5 | schema | the database's schema version is outside the store's readable window, or the database is not initialized |
+| 5 | schema | the database's schema version is outside the store's readable window, the database is not initialized, or purge was asked of a database that is not at the build's version |
 | 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a wrong store credential exits 6 too |
 | 7 | permanent | the store answered with a permanent error, or the deployment answered tick with what the command takes for no outage: a status no tick route gives, a 500 of a hosted route itself, or a 200 that is no JSON object or is too long to read |
 | 8 | not-found | no such task in the queue |
@@ -6686,23 +6854,23 @@ same table, which a test holds equal to this one.
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
-nothing. For `migrate` it holds because each version's write is fenced by the version
-before it, and after a failed version write the admin reads the version again and carries
-on when the write landed, so a lost answer to a version write the store committed ends in
-0 and a rerun resumes from the version reached. For a drive verb it holds because running
-the command again reaches the state one successful run leaves and prints the state it finds
-as of that read: `enqueue` finds its task under the key, a repeated `emit` is told the
-event exists, a repeated `cancel` reports the task cancelled, a repeated `retry` reports
-the live run it finds, and a sweep takes what is still owed. For `tick` it holds because a
-tick is one bounded pass, and a second does what the next cron tick would. Safe to repeat
-is not sure to succeed. A
-wrong credential exits 6 today on every store: both server executors type an
-authentication failure as an outage (a test measures it on PostgreSQL and MySQL), and the
-libSQL executor types every client error but a constraint or a type mismatch as one. It
-fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is what `tick`
-gives for a token its deployment refuses. A store's wrong credential does not give it:
-typing an authentication failure apart from an outage changes the executors and core, and
-is the maintainer's decision.
+nothing. For `migrate` it holds because each version's write is fenced by the version before
+it, and after a failed version write the admin reads the version again and carries on when
+the write landed, so a lost answer to a version write the store committed ends in 0 and a
+rerun resumes from the version reached. For a drive verb it holds because running the
+command again reaches the state one successful run leaves and prints the state it finds as
+of that read: `enqueue` finds its task under the key, a repeated `emit` is told the event
+exists, a repeated `cancel` reports the task cancelled, a repeated `retry` reports the live
+run it finds, and a sweep takes what is still owed. For `purge` it holds because a unit goes
+whole in one batch or not at all, so a repeat purges what is left. For `tick` it holds
+because a tick is one bounded pass, and a second does what the next cron tick would. Safe to
+repeat is not sure to succeed. A wrong credential exits 6 today on every store: both server
+executors type an authentication failure as an outage (a test measures it on PostgreSQL and
+MySQL), and the libSQL executor types every client error but a constraint or a type mismatch
+as one. It fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is
+what `tick` gives for a token its deployment refuses. A store's wrong credential does not
+give it: typing an authentication failure apart from an outage changes the executors and
+core, and is the maintainer's decision.
 
 The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at the
 executor, as the CLI sees it: crash-before (the executor rejects with
@@ -6720,7 +6888,10 @@ reads of both tasks, so between them each batch it declares is sent. `stuck` run
 drive verb runs from the current version, over seeded tasks: `enqueue` under a key no task
 has, `emit` of an event a run awaits, `cancel` of a pending task, `retry` of a failed task
 and of a live one, which makes it read the guard, and `sweep` of a queue with a deadline
-passed, a launch lost and a lease lapsed. A drive verb mints ids, and its repeat is another
+passed, a launch lost and a lease lapsed. `purge` runs as a dry run and with `--execute`,
+over units that are years old by the database's own clock and one the barrier keeps, so a
+fault meets the listing, the purge of a unit, and the read of the barrier that follows a
+purge the port answered kept. A drive verb mints ids, and its repeat is another
 process, so the repeat's ids go on from where the first run's stopped and the two states
 are compared with the ids each run minted read as one placeholder. The command
 table declares exit 6 for
@@ -6743,10 +6914,10 @@ models it, TLC checks it, and the model was written and checked before the SQL.
 Each store sends the purge as one fenced batch, `purge-unit`, which the model's
 ledger maps onto its two purge actions, `PurgeChild` and `PurgeHolder`. The
 purge is reached through a port of its own, `Retention`. No engine actor calls
-it, and no command of the CLI, no hosted route and no driver reaches it yet:
-until the `purge` verb of BUILD.md exit test line 43 exists, only a test
-purges. The maintainer approved the two contract changes at the end of this
-section on 2026-10-03.
+it, and no hosted route and no driver reaches it. Its one caller outside the
+tests is the CLI's `purge` verb (section 3.11), which an operator runs. The
+maintainer approved the two contract changes at the end of this section on
+2026-10-03.
 
 - **The unit.** One terminal task and what only it owns: its task row, its
   runs, its checkpoints, the waits naming its runs, and its completion event
@@ -6754,7 +6925,13 @@ section on 2026-10-03.
   parts. A half-deleted failed task would let `retryTask` revive it with no
   memos, and every step would then run again with no error. The model's
   `RetentionProbeChunkedPurge` deletes the task row in a second batch and shows
-  exactly that revival.
+  exactly that revival. No engine path leaves a wait on a run that has ended:
+  every batch that ends or parks a run deletes that run's waits, and the
+  invariant library flags one that is left (`wait/dead-run`). So the unit of a
+  task the engine ended holds no wait, and the purge's delete of a unit's waits
+  is a defence over rows no engine path writes. The simulated week holds that
+  no purged unit held one (below), and a case of the CLI holds that the count
+  prints for a unit that does.
 - **Scope and policy.** Only completed, failed, and cancelled tasks are purged,
   and only as whole units. A live task is never touched. The policy is a value
   per invocation, `RetentionPolicy { completedSeconds, cancelledSeconds,
@@ -6891,7 +7068,7 @@ section on 2026-10-03.
   holds the state that showed the gap: a child that completed a moment ago
   under a parent that is still running, which nothing the entry exports can
   delete.
-- **The port.** `Retention` has two methods and is apart from `SchedulerStore`.
+- **The port.** `Retention` has three methods and is apart from `SchedulerStore`.
   Core holds the one implementation (`createRetention`), and each store package
   exports a factory that reaches it with that store's batches and fragments.
   `purgeCandidates(queue, policy, { limit, after? })` reads one page of the
@@ -6907,14 +7084,31 @@ section on 2026-10-03.
   keeps the unit. The caller passes the key the task was spawned under, which a
   candidate carries, and the compare-and-set holds the row to it: the builder of
   the compare-and-set parses B5's parent from that key, so a key that is not
-  the row's would name another parent, and the unit is kept. The port takes one
+  the row's would name another parent, and the unit is kept.
+  `purgeAdmission(queue, { taskId, idempotencyKey? }, policy)` reads what the
+  barrier says of one unit, in the read batch `purge-admission`: each condition
+  of the compare-and-set as a flag of its own, or null when no task of that id
+  is in the queue. It writes nothing and decides nothing, and a purge reads every
+  condition again at the instant of deletion. The read holds no copy of the
+  barrier. Core names the nine conditions once (`PURGE_BARRIER_CONDITIONS`), the
+  record of the functions that build them is keyed by that list, the
+  compare-and-set joins those functions and the read selects each as a `CASE`
+  flag, so a condition the barrier gains is a flag the read selects. A read may
+  not compare a state with a bound value (section 3.4), so the two conditions
+  that name the live states write them into the statement's text, in both
+  statements. A key in the engine's namespace that names no parent answers that
+  its parent may run again, as `purgeUnit` keeps such a unit before it builds a
+  batch. On every dialect the barrier grid holds the read: in each of its 780
+  cells, and in each case of a state no engine path leaves, what the read says
+  of every condition is what the oracle says of it, and the oracle states each
+  condition a second time, from the model. The port takes one
   reading of every argument before anything else. An object is read member by
   member, each of its own members once, into a frozen copy, and an object a
   member holds is read the same way. The check of strings and the method both
   read that copy, so what the check read is what a batch binds, for the unit,
   the cursor, the options and the policy, and for a member any of them gains.
-  A member an argument only inherits is not read, and is as one left out. Both
-  methods then check their strings as every store method does. Each refusal is
+  A member an argument only inherits is not read, and is as one left out. Every
+  method then checks its strings as every store method does. Each refusal is
   thrown before anything is sent, and is one of three kinds. A string no store
   keeps, and an argument that must be an object and is not, the options of a
   listing left out included, is an `InvalidDurableStringError`. A policy whose
@@ -6922,6 +7116,39 @@ section on 2026-10-03.
   cursor whose instant is no epoch-ms in range, is a `PortRefusalError`. A
   limit that is no whole number from 1 to 1,000 is a `RangeError`, as it is for
   an operator's read.
+- **The walk.** `purgeWalk(retention, queue, policy, { limit, execute? })` is
+  the one way a caller goes through a queue's candidates, in core beside the
+  port. The verb, the simulated week and the fault matrix run it, where each had
+  written the walk for itself with a page and a stopping rule of its own. The
+  verb's test had a fourth, and now holds the verb to the model (section 3.11).
+  Core's entry exports it, where it exports no builder of a purge,
+  because it takes the port and calls nothing but the port's three methods: a
+  caller it is handed to has no way round the barrier. One walk is one pass from
+  the oldest candidate. It lists the candidates `PURGE_WALK_PAGE` (100) to a
+  page and looks at each once: with `execute` it sends the unit's purge and
+  reads what the barrier says of a unit the purge kept, and without it only
+  reads. A pass is applied until it lets nothing more go. A kept unit is tried
+  again when a unit the walk took since could be what kept it: every condition
+  that is false of it must be one a purge can make hold, which B3, B4 and B5
+  are, and where its parent is what keeps it, the walk must have taken the task
+  its key names. That is repeated until a round finds none, and a round is owed
+  only after a take, so the rounds end. A walk without `execute` deletes nothing
+  and tries nothing again. One number bounds a walk: `limit`, the most units it
+  takes. Nothing bounds the candidates it looks at but the queue, and `examined`
+  says how many looks it took. `more` is false only when the walk reached its
+  end: every candidate was looked at, and no kept unit was owed another try. A
+  walk that its limit stopped says `more`, and the same walk run again takes
+  what it left. A call of the port that fails ends the walk, which throws
+  nothing: it answers what it had reached, the call that failed, and under
+  `outcomeNotKnown` the unit whose purge was sent and not answered. A unit under
+  a second try stays listed as kept, as it last read, when the read of the
+  barrier in that try is lost. `core/test/retention-walk.test.ts` holds each of
+  these over a port held in memory. The fault matrix runs the walk as a dry run
+  and as a purge, and arms each fault in the walk it is about: at the read of
+  the barrier in the dry run, and at the listing or at a purge in the walk that
+  purges, which is then run again, as an operator would run it. A cell fails
+  when a purge that was sent and not answered does not name its unit under
+  `outcomeNotKnown`, or a walk that failed at another call names one.
 - **The cap.** A unit with more than `MAX_PURGE_UNIT_CHECKPOINTS` checkpoints,
   200,000, is kept: a purge deletes a unit whole in one batch, and a batch holds
   the database's writer for as long as it runs. The cap is the largest unit
@@ -6952,7 +7179,9 @@ section on 2026-10-03.
   `ChildAwaitRefusedError('no-such-task')`, and a spawn under the unit's key
   creates a fresh task. The case `a unit that is gone` holds each on every
   dialect. The CLI's `inspect`, by id and by key, and its `explain` exit 8 for
-  the task, as for one that never existed, which a CLI case holds on libSQL.
+  the task, as for one that never existed, which a CLI case holds on libSQL. Its
+  `retry` exits 8 as well, and says the task was never there or was retained
+  out. No row says which, because a purge leaves nothing of a unit behind.
 - **What keeps a unit forever,** by design: a failed spawning parent the policy
   keeps; a run that failed or was cancelled while holding the child's outcome,
   while the run's own unit is kept, because its task is in a state the policy
@@ -6977,6 +7206,76 @@ section on 2026-10-03.
   though its task has ended, and a run of the unit that stands in another queue.
   The cases of `what keeps a unit that no engine path leaves` hold each on rows
   written by hand.
+
+**The bound, and the simulated week.** Retention bounds the rows a queue holds
+by the rows of the units the policy still keeps. `conformance/src/retention-soak.ts`
+holds that on every dialect, and is the executable twin of the model's
+`AgedUnblockedIsPurged`. It runs a week of 168 hourly arrivals through the store's own
+ports under fake time, with a purge pass every simulated hour under windows of 12 hours
+for a completed and a cancelled task and 48 for a failed one, and it runs the same week a
+second time with no purge, the control. The arrivals are a seeded mix of six kinds: a task
+of the shape of one period of a recurring workflow, a parent with an awaited child, a
+parent that fails in the pass its child's completion woke, whose child a failed parent and
+a held outcome both keep, a parent that sleeps past its child's window, whose child a live
+parent keeps, a failed task an operator revives, and a task an operator cancels. They make
+253 tasks.
+
+- Each pass takes exactly the units the model lets go, and leaves every table as the
+  model leaves it. The model's answer for a pass is the oracle applied until it lets
+  nothing more go, because the purge of a parent lets its child go. The week's pass is
+  core's walk, which is the pass an operator's `purge` runs, so the one pass of lag the
+  bound allows is a pass of the command.
+- At each day boundary after hour 48, every counted table (`tasks`, `runs`,
+  `checkpoints`, `waits` and `events`, read as `sizes` reads them) holds at most the
+  control's rows of the units the model still held after the pass an hour before: one pass
+  of lag. At the end of day 7 the purged week holds 43 tasks, 44 runs, 74 checkpoints and
+  39 completion events, which is the bound exactly, where the control holds 253, 278, 443
+  and 249.
+- The bound is no empty claim. At the end of day 7 the control holds at least three times
+  the bound, and at least three times what the purged week holds, in each of the four
+  tables an ended unit holds rows in. The first ratio fails when the policy lets nothing
+  go, and the second when the purge deletes nothing. Both are 5.8 for tasks, 6.3 for runs,
+  5.9 for checkpoints and 6.3 for completion events. A ratio is asked only of a control
+  above zero: a table the control holds no rows of fails the check by name.
+- Waits are counted and held to the bound, and they do not grow with the week in either
+  run, because the engine deletes a run's waits when the run ends. So for waits the week
+  holds what is true of them: every wait read belongs to a live run, a parent parked on
+  its child, and no purged unit held one.
+- The outcomes sampled before each pass are the control's, the history checkers find
+  nothing on any simulated day in either run, all 168 arrivals end in the state and at the
+  instant their seed assigns, and once the longest window has passed the queue holds
+  nothing.
+- The purges take 253 task rows, 279 runs, 447 checkpoints and 253 completion events. The
+  passes keep 62 units by their parent, 29 of them by their parent alone and 33 by a held
+  outcome as well, and every unit by its age before its window ends.
+- A unit of the first kind holds one task, one run, two checkpoints, no wait and one
+  completion event, which is what BUILD.md's exit test line 44 builds its bound from.
+
+Every number is the same on the three dialects, because the week runs under fake time and
+names its tasks by the hour they arrived in. Each hold is shown failing, on libSQL, over a
+week that does what the hold forbids (`conformance/test/retention-soak-reds.test.ts`): a
+purge that deletes nothing, a policy that lets nothing go, a purge that reads a shorter
+age than the policy names, a driver stopped for a simulated day, and a store that leaves a
+wait behind when it ends a run. The week under a policy that lets nothing go keeps no unit
+by its parent and none by a held outcome, so it is the control of those two counts as well.
+
+A week runs inside one fixture, and on libSQL none of its batches lets the event loop turn:
+measured, a pending timer fired once in a week that ran for 8 to 13 seconds. A test worker
+whose loop does not turn for a minute fails its run with every test passing. So the week
+asks its fixture for a turn at each simulated day. The member of the fixture contract it
+asks through, `turn`, is one every fixture implements, as a turn of the event loop from a
+zero-delay timer, so the shared suite calls nothing a dialect may leave out. A case on every
+selected dialect holds that a timer armed to fire again and again fires at least once in
+each of the nine days the passes run for. It can fail on libSQL alone: a batch of PostgreSQL
+or MySQL crosses a socket, so the loop turns at every one of them, with the fixture's turn
+or without it.
+
+The bound is over the units the policy lets go. It excludes what no purge takes: a live
+task, whatever its age; a caller's event, which no purge deletes; a failed task under a
+policy that names no failed window, which is kept for ever; and the children of a failed
+parent, which are kept until the parent's own unit goes, and so for ever under such a
+policy. A queue whose tasks fail and are never revived grows by those units under the
+default of keeping failed tasks, and `--failed-after` is what bounds it.
 
 **Schema version 12.** Two of retention's reads had no index to go by, and on MySQL its
 deletes had none to find their keys by. The version adds indexes and nothing else.
@@ -7111,7 +7410,7 @@ executable twin: the ones the invariant library has, the three conditions of
 `retentionViolations`, which `engineHistoryViolations` runs behind every
 surface that judges a history, the cases of the purge in the `retention`
 surface (`conformance/src/retention-purge.ts`), which the table names by their
-titles, and the one PR5.2d adds.
+titles, and the simulated week (`conformance/src/retention-soak.ts`).
 
 | Property | What it says | Executable twin |
 |---|---|---|
@@ -7122,7 +7421,7 @@ titles, and the one PR5.2d adds.
 | `CarrierKeepsEvent` | a run that carries an outcome has its event | `payload/event-missing` |
 | `RevivalSeesWholeUnit` | `retryTask` revives only a whole unit | the crash and duplicate cells of `purge-unit` in the fault matrix, and the case `takes a child and its parent, each whole, and the same purge sent again takes nothing` |
 | `AwaitOnPurgedIsRefused` | an await of a purged task is refused | the race `a purge beside an await of the same child`, and the case `a unit that is gone` |
-| `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week's floors (PR5.2d) |
+| `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week: the case `once the longest window has passed, the queue holds nothing`, with the floors of what the passes kept and took |
 | `TypeOK` | the variables keep their types | none needed |
 
 `WholeUnit` has two halves. The invariant library holds one: no run,

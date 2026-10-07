@@ -1,6 +1,7 @@
 import {
   MAX_EPOCH_MS,
   MAX_PURGE_UNIT_CHECKPOINTS,
+  type PurgeBarrierCondition,
   type PurgeUnitTarget,
   type RetentionPolicy,
   type SqlRow,
@@ -49,9 +50,19 @@ export type KeptBy = (typeof KEPT_BY)[number]
 export const UNIT_TABLES = ['tasks', 'runs', 'checkpoints', 'waits', 'events'] as const
 export type UnitTable = (typeof UNIT_TABLES)[number]
 
+/**
+ * What the model says of each condition the barrier names, read from the dump: the second
+ * statement of what a read of the barrier must answer. The record is keyed by core's list
+ * of the conditions, so a condition the barrier gains has no reading here and stops the
+ * build. What each one means is written here, from the model, and not taken from core.
+ */
+export type ModelHolds = Readonly<Record<PurgeBarrierCondition, boolean>>
+
 export interface PurgeOracle {
   /** Every condition that keeps the unit. Empty when the model lets it go. */
   readonly keptBy: readonly KeptBy[]
+  /** Whether each condition of the barrier holds of the unit, or null when no such task is in the queue. */
+  readonly holds: ModelHolds | null
   /** How many rows of each table the unit holds, which is what a purge of it deletes. */
   readonly rows: Readonly<Record<UnitTable, number>>
   /** Every table as the purge must leave it: less the unit when it goes, untouched when it is kept. */
@@ -100,7 +111,7 @@ export function purgeOracle(
 ): PurgeOracle {
   const none = { tasks: 0, runs: 0, checkpoints: 0, waits: 0, events: 0 }
   const task = dump.tasks.find((row) => row.task_id === unit.taskId && row.queue === queue)
-  if (task === undefined) return { keptBy: ['no-such-task'], rows: none, after: dump }
+  if (task === undefined) return { keptBy: ['no-such-task'], holds: null, rows: none, after: dump }
 
   const eventName = taskDoneEventName(unit.taskId)
   const itsRuns = dump.runs.filter((row) => row.task_id === unit.taskId)
@@ -141,19 +152,36 @@ export function purgeOracle(
   // The spawning parent is found by its id in every queue. A key in the reserved
   // namespace that names nobody keeps the unit: it is not known whose child the task is.
   const storedKey = text(task.idempotency_key)
-  if (storedKey?.startsWith(CHILD_KEY_PREFIX)) {
-    const named = parseChildSpawnKey(storedKey)
-    const parent = dump.tasks.find((row) => row.task_id === named?.parentTaskId)
-    if (named === null || (parent !== undefined && !canNoLongerRun(parent))) keptBy.add('parent')
-  }
+  if (parentKeeps(dump, storedKey)) keptBy.add('parent')
   if ((unit.idempotencyKey ?? null) !== storedKey) keptBy.add('key')
   if (itsRuns.length !== inQueue.length) keptBy.add('foreign-run')
   if (rows.checkpoints > MAX_PURGE_UNIT_CHECKPOINTS) keptBy.add('cap')
 
+  // Each condition as a read of the barrier answers it. Three are read otherwise than the
+  // reasons above. The age is compared wherever the stamp is a number, in range or not:
+  // a stamp below every instant reads as older than any window, and only the proof of the
+  // stamp keeps such a unit. And the parent is read from the key the caller names, as the
+  // purge reads it: that the key is the task's own is a condition of its own.
+  const storedStamp =
+    typeof task.fence_at_ms === 'bigint' ? Number(task.fence_at_ms) : task.fence_at_ms
+  const namedKey = unit.idempotencyKey ?? null
+  const holds: ModelHolds = {
+    endedAWindowAgo:
+      window !== null && typeof storedStamp === 'number' && storedStamp <= nowMs - window,
+    stampInRange: stamped !== null,
+    noLiveRun: !keptBy.has('live-run'),
+    noRunHoldsTheOutcome: !keptBy.has('carry'),
+    noWaitOnTheOutcome: !keptBy.has('wait'),
+    parentCannotRunAgain: !parentKeeps(dump, namedKey),
+    spawnedUnderThisKey: !keptBy.has('key'),
+    ownsEveryRun: !keptBy.has('foreign-run'),
+    withinTheCheckpointCap: !keptBy.has('cap'),
+  }
   const kept = KEPT_BY.filter((condition) => keptBy.has(condition))
-  if (kept.length > 0) return { keptBy: kept, rows, after: dump }
+  if (kept.length > 0) return { keptBy: kept, holds, rows, after: dump }
   return {
     keptBy: [],
+    holds,
     rows,
     after: {
       ...dump,
@@ -162,6 +190,18 @@ export function purgeOracle(
       ),
     } as ProtocolSnapshot,
   }
+}
+
+/**
+ * Whether the task a key names as the spawning parent keeps its child: the parent is in
+ * some queue and can still run, or the key is in the reserved namespace and names nobody.
+ * A key that is no child's names no parent, and keeps nothing.
+ */
+function parentKeeps(dump: ProtocolSnapshot, key: string | null): boolean {
+  if (key === null || !key.startsWith(CHILD_KEY_PREFIX)) return false
+  const named = parseChildSpawnKey(key)
+  const parent = dump.tasks.find((row) => row.task_id === named?.parentTaskId)
+  return named === null || (parent !== undefined && !canNoLongerRun(parent))
 }
 
 /** ParentAllows: a parent that completed or was cancelled never runs its code again. */

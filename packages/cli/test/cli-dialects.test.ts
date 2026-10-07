@@ -15,6 +15,8 @@ import { OWED_AT_MS, owedQueue } from './queue-seeds.js'
 import {
   BIN,
   NOW_MS,
+  PURGE_EVERY_STATE,
+  PURGE_WINDOWS,
   QUEUE,
   ROOT,
   SELECTED,
@@ -106,6 +108,42 @@ function owedAnswersOn(dialect: (typeof SELECTED)[number]) {
   return answers
 }
 
+/** A purge's command lines over the seeded tasks, by name, without the flags every write takes. */
+const PURGE_LINES: readonly (readonly [string, readonly string[]])[] = (() => {
+  const windows = PURGE_EVERY_STATE
+  return [
+    ['a dry run', windows],
+    ['a purge of at most two units', [...windows, '--limit', '2', '--execute']],
+    ['a purge of the rest', [...windows, '--execute']],
+    ['a purge with nothing left to take', [...windows, '--execute']],
+  ] as const
+})()
+
+/** What each of those lines exits with and prints on one dialect, asked once. */
+const purgeAsked = new Map<string, Promise<ReadonlyMap<string, { exit: number; stdout: string }>>>()
+function purgeAnswersOn(dialect: (typeof SELECTED)[number]) {
+  const ask = async () => {
+    const db = await openCliDb(dialect, 'purge-json')
+    try {
+      await seedTasks(db)
+      await seedSagas(db)
+      // A purge refuses under a test clock. Cleared, every seeded ending is years old.
+      await db.admin.setFakeNowEpochMs(null)
+      const printed = new Map<string, { exit: number; stdout: string }>()
+      for (const [name, flags] of PURGE_LINES) {
+        const run = await runCli(['purge', ...flags, ...writeFlags(db), '--json'], db.env)
+        printed.set(name, { exit: run.exit, stdout: run.stdout })
+      }
+      return printed
+    } finally {
+      await db.close()
+    }
+  }
+  const answers = purgeAsked.get(dialect) ?? ask()
+  purgeAsked.set(dialect, answers)
+  return answers
+}
+
 /**
  * Exit test line 32 on every selected dialect. libSQL needs no server, so it is the
  * reference on every run, and a run narrowed to one server dialect still compares it with
@@ -125,6 +163,25 @@ describe('the CLI on every selected dialect', () => {
         ])
         expect(withoutDialect(stdout), `${dialect}: ${line}`).toEqual(
           withoutDialect(reference.get(line) ?? '{}'),
+        )
+      }
+    }
+  }, 120_000)
+
+  it('purge prints the JSON libSQL prints for a dry run and for each purge, and exits as it exits', async () => {
+    const reference = await purgeAnswersOn('libsql')
+    // The reference is no empty answer: the dry run lists what the purges then take.
+    const listed = JSON.parse(reference.get('a dry run')?.stdout ?? '{}') as {
+      wouldPurge?: unknown[]
+    }
+    expect(listed.wouldPurge).toHaveLength(5)
+    for (const dialect of SELECTED) {
+      const answers = await purgeAnswersOn(dialect)
+      for (const [name] of PURGE_LINES) {
+        const answer = answers.get(name)
+        expect({ dialect, name, exit: answer?.exit }).toEqual({ dialect, name, exit: 0 })
+        expect(withoutDialect(answer?.stdout ?? '{}'), `${dialect}: ${name}`).toEqual(
+          withoutDialect(reference.get(name)?.stdout ?? '{}'),
         )
       }
     }
@@ -460,8 +517,13 @@ describe('the CLI on every selected dialect', () => {
       it('bin/durablerun.ts exits with the code the exit table names for each outcome', async () => {
         const db = await openCliDb(dialect, 'bin')
         const older = await openCliDb(dialect, 'bin-null-payload', 9)
+        // A database whose test clock is cleared, which is the one a purge takes.
+        const cleared = await openCliDb(dialect, 'bin-purge')
         try {
           const seeded = await seedTasks(db)
+          await seedTasks(cleared)
+          await cleared.admin.setFakeNowEpochMs(null)
+          const windows = PURGE_WINDOWS
           // A task that is due from this instant, for `stuck` to find.
           await db.store.spawn(QUEUE, 'report', '{}')
           await plantNullPayload(older)
@@ -500,6 +562,12 @@ describe('the CLI on every selected dialect', () => {
             ['refused', db.env, ['retry', seeded.completed, '--yes', ...named]],
             ['done', db.env, ['sweep', ...named]],
             ['usage', db.env, ['sweep', '--queue', QUEUE, '--target', 'not-its-store']],
+            // A purge is refused under the test clock, and with a window left out. On the
+            // database whose clock is cleared, a dry run and a purge each exit 0.
+            ['usage', db.env, ['purge', ...windows, ...named]],
+            ['usage', db.env, ['purge', '--completed-after', '1h', ...named]],
+            ['done', cleared.env, ['purge', ...windows, ...writeFlags(cleared)]],
+            ['done', cleared.env, ['purge', ...windows, '--execute', ...writeFlags(cleared)]],
           ]
           const seen: string[] = []
           for (const [exit, env, argv] of cases) {
@@ -527,6 +595,7 @@ describe('the CLI on every selected dialect', () => {
           expect(newer.status).toBe(exitCode('schema'))
           expect(new Set([...seen, 'schema']).size).toBe(8)
         } finally {
+          await cleared.close()
           await older.close()
           await db.close()
         }

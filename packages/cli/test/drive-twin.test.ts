@@ -1,20 +1,17 @@
 import { isDeepStrictEqual } from 'node:util'
-import type { IdSource, SchedulerStore, SqlExecutor } from '@durablerun/core'
+import type { SchedulerStore, SqlExecutor } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import {
   CURRENT_SCHEMA_VERSION,
   LibsqlSchedulerStore,
   READABLE_SCHEMA_WINDOW,
-  SCHEMA_VERSION_NOTES,
-  operatorReads,
 } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
-import type { StoreFixture } from '../../conformance/src/fixture.js'
 import { runFuzzScenario } from '../../conformance/src/fuzz.js'
 import { makeLibsqlFixture } from '../../conformance/test/fixture-libsql.js'
 import { COMMANDS, SWEEP_DEFAULT_LIMIT, VERBS } from '../src/commands.js'
 import { type ExitName, exitCode } from '../src/exit.js'
-import { type StoreOpener, storeTarget } from '../src/open-store.js'
+import { storeTarget } from '../src/open-store.js'
 import { parkedOnAnEvent } from './explain-seeds.js'
 import { owedToASweep } from './queue-seeds.js'
 import {
@@ -27,6 +24,7 @@ import {
   type StartingSchema,
   dumpOf,
   openCliDb,
+  openerOver,
   recordingOpener,
   rollingBack,
   runCli,
@@ -381,9 +379,14 @@ async function compared(
 describe('a drive verb is its port call and nothing else', () => {
   it('holds a twin for every command of the table that writes rows through a store', () => {
     // A command that joins the table as a write joins the calls above, or this fails.
+    // `purge` writes through the retention port, and its twin is in purge-twin.test.ts.
     expect(
       VERBS.filter(
-        (verb) => COMMANDS[verb].opensStore && COMMANDS[verb].writes && verb !== 'migrate',
+        (verb) =>
+          COMMANDS[verb].opensStore &&
+          COMMANDS[verb].writes &&
+          verb !== 'migrate' &&
+          verb !== 'purge',
       ),
     ).toEqual(WRITE_VERBS)
     for (const verb of WRITE_VERBS) {
@@ -518,19 +521,6 @@ const FLOORS = {
   emitted: 15,
 }
 
-/** A store opener over a fixture's own database, so `main` drives the state a walk left. */
-const over =
-  (fixture: StoreFixture): StoreOpener =>
-  async (_url, _token, ids: IdSource) => ({
-    scheme: 'file:',
-    window: READABLE_SCHEMA_WINDOW,
-    notes: SCHEMA_VERSION_NOTES,
-    admin: fixture.admin,
-    scheduler: new LibsqlSchedulerStore(fixture.raw, ids),
-    operator: operatorReads(fixture.raw),
-    close: async () => undefined,
-  })
-
 async function column(raw: SqlExecutor, sql: string): Promise<string[]> {
   const [read] = await raw.batch('fixture:walk-read', [{ sql, args: [] }], 'read')
   return (read?.rows ?? []).map((row) => String(row.value))
@@ -605,7 +595,7 @@ describe('a drive verb over the states a walk of the engine leaves, on libSQL', 
             const run = await runCli(
               [...call.line, ...writeFlags({ target }), '--json'],
               env,
-              over(subject),
+              openerOver(subject),
               testIdSource(seed),
             )
             const ported = await call.port(new LibsqlSchedulerStore(twin.raw, testIdSource(seed)))

@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util'
-import { MAX_DURATION_MS, OPERATOR_LIST_CAP } from '@durablerun/core'
+import { MAX_DURATION_MS, MIN_RETENTION_SECONDS, OPERATOR_LIST_CAP } from '@durablerun/core'
 import type { ExitName } from './exit.js'
 
 /**
@@ -25,6 +25,7 @@ export const VERBS = [
   'cancel',
   'retry',
   'sweep',
+  'purge',
   'tick',
 ] as const
 export type Verb = (typeof VERBS)[number]
@@ -63,6 +64,9 @@ export interface PortUse {
     | 'operator.eventState'
     | 'operator.eventPayload'
     | 'operator.taskAdmission'
+    | 'retention.purgeCandidates'
+    | 'retention.purgeUnit'
+    | 'retention.purgeAdmission'
   /** A label ending in `<N>` stands for what comes before it followed by a whole number. */
   readonly labels: readonly string[]
 }
@@ -185,6 +189,12 @@ const SWEEP: PortUse = {
   labels: ['sweep:scan', 'sweep:cancel', 'sweep:lost-launch', 'sweep:claim-timeout'],
 }
 const NEXT_WAKE: PortUse = { call: 'scheduler.nextWakeAtEpochMs', labels: ['next-wake'] }
+const PURGE_CANDIDATES: PortUse = {
+  call: 'retention.purgeCandidates',
+  labels: ['purge-candidates'],
+}
+const PURGE_UNIT: PortUse = { call: 'retention.purgeUnit', labels: ['purge-unit'] }
+const PURGE_ADMISSION: PortUse = { call: 'retention.purgeAdmission', labels: ['purge-admission'] }
 
 /** Both crashes exit 6, and a batch delivered twice ends as a run without a fault does. */
 const READ_FAULTS = {
@@ -220,6 +230,9 @@ export const STUCK_DEFAULT_LIMIT = 20
  * of `stuck` lists, so a sweep with no flag takes what a `stuck` with no flag showed.
  */
 export const SWEEP_DEFAULT_LIMIT = STUCK_DEFAULT_LIMIT
+
+/** How many units one `purge` takes at most, or lists as ones it would take, when `--limit` is not given. */
+export const PURGE_DEFAULT_LIMIT = 100
 
 /** How long `tick` waits for the deployment's answer when `--timeout` is not given. */
 export const TICK_DEFAULT_TIMEOUT_SECONDS = 60
@@ -539,6 +552,53 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     exits: DRIVE_EXITS,
     faults: DRIVE_FAULTS,
   },
+  purge: {
+    verb: 'purge',
+    summary:
+      'delete whole units of ended tasks older than the windows named, each only if the barrier lets it go: a dry run that writes nothing unless --execute',
+    positionals: [],
+    flags: {
+      ...DRIVE_FLAGS,
+      'completed-after': {
+        type: 'string',
+        required: true,
+        value: 'D',
+        description: `how long a completed task is kept after it ended: a whole number and s, m, h or d, as in 12h, of at least ${MIN_RETENTION_SECONDS} seconds`,
+        missing: 'a purge has no default window: name how long a completed task is kept',
+      },
+      'cancelled-after': {
+        type: 'string',
+        required: true,
+        value: 'D',
+        description: 'how long a cancelled task is kept after it ended, written the same way',
+        missing: 'a purge has no default window: name how long a cancelled task is kept',
+      },
+      'failed-after': {
+        type: 'string',
+        value: 'D',
+        description:
+          'how long a failed task is kept after it ended, written the same way; when not given, failed tasks are kept, because retry can revive one',
+      },
+      limit: {
+        type: 'string',
+        value: 'N',
+        description: `the most units the command purges, or lists as ones it would purge, from 1 to ${OPERATOR_LIST_CAP}; ${PURGE_DEFAULT_LIMIT} when not given`,
+      },
+      execute: {
+        type: 'boolean',
+        description:
+          'purge; without it nothing is deleted, and the command lists each candidate with what the barrier says of it as of that read',
+      },
+    },
+    opensStore: true,
+    writes: true,
+    repeat: 'settles',
+    // The queue's status is read for one fact, whether the test clock is set. A unit's
+    // conditions are read for a dry run, and after a purge the port answered kept.
+    ports: [SCHEMA_VERSION, QUEUE_STATUS, PURGE_CANDIDATES, PURGE_UNIT, PURGE_ADMISSION],
+    exits: DRIVE_EXITS,
+    faults: DRIVE_FAULTS,
+  },
   tick: {
     verb: 'tick',
     summary:
@@ -662,11 +722,25 @@ export function parseInvocation(argv: readonly string[]): Invocation {
       ),
       allowPositionals: true,
       strict: true,
+      tokens: true,
     })
   } catch (error) {
     throw new UsageError(
       `${error instanceof Error ? error.message : String(error)}\nusage: ${usage(spec)}`,
     )
+  }
+  // A flag given twice is refused, whatever its values: the parser would keep the last, and
+  // a command line that names a window as a hundred years and then as an hour is not one
+  // anybody meant. Every spelling of a flag is one token here, so each is counted once.
+  const given = new Set<string>()
+  for (const token of parsed.tokens ?? []) {
+    if (token.kind !== 'option') continue
+    if (given.has(token.name)) {
+      throw new UsageError(
+        `--${token.name} is given twice: a command line names each flag once\nusage: ${usage(spec)}`,
+      )
+    }
+    given.add(token.name)
   }
   // An argument a flag stands in for is not taken when the flag is given.
   const instead = alternativeOf(spec)

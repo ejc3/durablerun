@@ -792,33 +792,71 @@ accepts it.
     port, the batch, the cap's measurement and each property's twin.
 43. PR5.2d: table size stays bounded over a simulated week, and can fail. A
     `retention-soak` surface runs on the three dialects through the one
-    enrollment door. It takes 168 hourly arrivals of a seeded mix: plain tasks;
-    a parent with an awaited child that completes; a parent that fails after its
-    child's completion woke it, which blocks the child's unit by parent and by
-    carry until the parent's own 48-hour window; a parent that sleeps past its
-    child's window, which blocks by parent; a failed task later retried; and a
-    cancelled task. A purge pass runs every simulated hour under windows of 12
-    hours completed, 12 cancelled and 48 failed, with fake now moved to
-    `nextWakeAtEpochMs`. A control run of the same seed with retention off gives
-    exact rows per unit. At each day boundary after hour 48, every counted table
-    (tasks, runs, checkpoints, waits, and events named `$task-done:`, read by
-    `sizes --queue`) is at most the bound built from the control's rows for the
-    units the policy still holds, plus one pass of lag. The control must exceed
-    that bound by at least three times by day 7, or the line fails as vacuous.
-    Outcomes sampled before each purge equal the control's, each pass's purged
-    set equals the oracle's set, and `engineHistoryViolations` is empty each
-    simulated day. Floors, measured and recorded in the PR: purged units above
-    zero for every table class; blocked-by-parent, blocked-by-carry and
-    blocked-by-age each above zero, reached by the cells named above; and all
-    168 arrivals at the terminal state their seed assigns, by the database
-    clock. The `purge` verb is a dry run unless `--execute`, refuses under an
-    active fake clock, refuses windows under 3,600 seconds, and for each unit
-    removed prints the task id, name, state, terminal instant, the idempotency
-    key's sha256, and rows per table. After a purge, `retry` of a purged failed
-    task answers `not-found` and says the task may have been retained out. Red:
-    a purge that deletes nothing fails the bound and the vacuity check, one that
-    drops the age conjunct fails set equality, and a driver stopped for a
-    simulated day fails the completion floor. NOT MET.
+    enrollment door. It takes 168 hourly arrivals of a seeded mix: plain tasks
+    of the shape of one period of a recurring workflow; a parent with an awaited
+    child that completes; a parent that fails after its child's completion woke
+    it, which blocks the child's unit by parent and by carry until the parent's
+    own 48-hour window; a parent that sleeps past its child's window, which
+    blocks by parent; a failed task later retried; and a cancelled task. A purge
+    pass runs every simulated hour under windows of 12 hours completed, 12
+    cancelled and 48 failed, with fake now moved to `nextWakeAtEpochMs`. A
+    control run of the same seed with retention off gives exact rows per unit.
+    At each day boundary after hour 48, every counted table (tasks, runs,
+    checkpoints, waits, and events named `$task-done:`, read through the read
+    `sizes --queue` prints) is at most the bound built from the control's rows
+    for the units the model still holds, plus one pass of lag. The bound must be
+    no empty claim, or the line fails as vacuous: at the end of day 7 the
+    control exceeds the bound by at least three times, and exceeds what the
+    purged week holds by at least three times, in each of the four tables an
+    ended unit holds rows in, which are tasks, runs, checkpoints and completion
+    events. Waits are not among them. Every batch that ends or parks a run
+    deletes that run's waits, so an ended unit holds none, the control's waits
+    do not grow with the week, and no purge of a correct store takes one. For
+    waits the surface holds what is true and can fail: every wait read belongs
+    to a live run, and no purged unit held one. Outcomes sampled before each
+    purge equal the control's, each pass's purged set equals the oracle's set,
+    applied until it lets nothing more go, and `engineHistoryViolations` is
+    empty each simulated day. Floors, measured and recorded in the PR: purged
+    rows above zero for each of those four tables; blocked-by-parent,
+    blocked-by-carry and blocked-by-age each above zero, reached by the cells
+    named above; and all 168 arrivals at the terminal state their seed assigns,
+    at the instant it assigns, by the database clock. The `purge` verb is a dry
+    run unless `--execute`, refuses under an active fake clock, refuses windows
+    under 3,600 seconds, and for each unit removed prints the task id, name,
+    state, terminal instant, the idempotency key's sha256, and rows per table,
+    waits included. After a purge, `retry` of a purged failed task answers
+    `not-found` and says the task may have been retained out. Red: a purge that
+    deletes nothing fails the bound and the vacuity check, one that drops the
+    age conjunct fails set equality, and a driver stopped for a simulated day
+    fails the completion floor. This is met. `retentionSoakConformance`
+    (`conformance/src/retention-soak.ts`) runs as the `retention-soak` surface
+    on the three dialects, eleven cases under `the simulated week`, with the
+    same numbers on each: the seed draws 23, 23, 33, 29, 26 and 34 arrivals of
+    the six kinds, which make 253 tasks; 131 passes purge 253 units, and after
+    the last window the queue holds nothing; the purges take 253 task rows, 279
+    runs, 447 checkpoints, 253 completion events and no wait; 62 units are kept
+    by their parent, 29 of them by their parent alone and 33 by a held outcome
+    as well, and all 253 by their age; at the end of day 7 the purged week holds
+    43 tasks, 44 runs, 74 checkpoints and 39 completion events, which is the
+    bound, where the control holds 253, 278, 443 and 249, so both ratios are
+    5.8, 6.3, 5.9 and 6.3; 5,790 sampled outcomes equal the control's; and a
+    unit of the first kind holds one task, one run, two checkpoints, no wait and
+    one completion event, the rows per unit line 44 uses. Both weeks together
+    took 19 seconds on libSQL, 35 on PostgreSQL and 21 on MySQL, in one run of
+    its final form on a loaded machine, under a limit of 600, as the comment
+    at `SOAK_TIMEOUT_MS` states. Seen failing by name on libSQL, each as a
+    case of `each hold of the simulated week can fail`
+    (`conformance/test/retention-soak-reds.test.ts`): a purge that deletes
+    nothing is over the bound in every table at every day boundary and fails
+    the vacuity check by its second ratio, a policy that lets nothing go fails
+    the vacuity check alone, a purge that reads a shorter age takes units the
+    model keeps, a driver stopped from hour 96 to hour 120 leaves 40 of the 253
+    tasks ending otherwise than assigned, and a store that leaves a wait behind
+    at an ending is named. With the age conjunct dropped in core, six of the
+    eleven cases fail, the case of the passes among them, and that mutation and
+    two that delete nothing are registered against three of the cases. The verb
+    is held by `cli/test/purge.test.ts` and `cli/test/purge-twin.test.ts`:
+    DESIGN.md section 3.11 says what each holds.
 44. PR5.4: the recurring workflow, alpha.1 in the loop, and the receipt checker.
     A `periodic-digest` task registered in examples/vercel-turso/src/tasks.ts
     runs one task per period under the idempotency key `digest-<period>`, makes
@@ -856,7 +894,9 @@ accepts it.
     a receipt with no selftest record. The bound for each counted table is the
     start sample's count, plus (the completed window in hours plus 25) times the
     rows per digest unit that line 43's soak measured for this task's shape,
-    plus the rows of the failed units the dry-run purge reports kept. A period
+    plus the rows of the failed units, which a policy with no failed window
+    keeps: a dry-run purge lists a failed unit only under a failed window, so
+    the receipt's dry run names one, and it writes nothing. A period
     counts as found from the union of the per-day `purge --execute` reports,
     which carry each removed unit's key sha256, and live `taskIdByKey` lookups,
     and a fixture that drops one day's purge report fails the period count. Red:
@@ -869,7 +909,7 @@ branch or snapshot of the production database, and its output goes in the
 receipt. An external cron runs `pnpm cli enqueue periodic-digest --key
 digest-<period> --queue digest --target <host>` hourly, on a queue of its own
 that the redeployed host drives, and `pnpm cli purge --queue digest --target
-<host> --completed-after <window> --cancelled-after <window> --execute --yes`
+<host> --completed-after <window> --cancelled-after <window> --execute`
 runs at least daily with the windows of the maintainer's policy. `stats --json
 --queue digest` and `sizes --json --queue digest` are recorded at the start,
 once a day and at the end, each at or below line 44's bound. A second person
@@ -6357,12 +6397,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     PR5.3c, whose `stats` reads the flag in its one read batch by design, and `taskFacts`
     follows it then. PR5.3c did not build it, and its entry says why and names the trigger
     now.
-  - Option for `inspect --key`, not built, with its trigger: find the task by its key and
-    read its facts in one batch. Today they are two reads. Only a purge deletes a task
-    between them, and then a key that found a task answers exit 8, as a CLI case holds
-    for a task purged before either read. PR5.2c2 did not build it, because nothing an
-    operator runs calls a purge yet. Trigger: PR5.2d, whose `purge` verb can run beside
-    an `inspect --key`.
+  - The option for `inspect --key`, settled by PR5.2d and withdrawn: find the task by its
+    key and read its facts in one batch. Its trigger fired, because the `purge` verb can
+    run beside an `inspect --key`. What was built instead is what the two reads say. When
+    a key found a task and the next read finds none, `inspect --key` and `explain --key`
+    exit 8 and say that the key named the task and that the task is gone as of the next
+    read and may have been retained out. A CLI case purges the task between the two reads
+    and holds that answer for both commands, and holds that a key that names no task is
+    answered as before. The one batch was not built: it would add three statement shapes
+    to `task-facts` on three dialects to hold a property no line of an exit test asks
+    for, `explain --key` would read twice whatever was built, and what an operator needs
+    from the race is to be told which of two things happened. Nothing of it is kept as an
+    option.
   - Option for the event's instant, not built, with its trigger: a schema version that sets
     `events.emitted_at_ms` NOT NULL on the three dialects, as version 10 did for `payload`.
     `PERSISTED_TEMPORAL_FIELDS` and `STORE_TABLE_COLUMNS` record the column as nullable
@@ -7057,6 +7103,142 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (the entry of PR5.2c1), because the new batch ends no task. The remedy for a cycle of
     runs that hold each other's outcomes (the entry of PR5.2a) stays an option: its
     trigger is a unit seen kept that way, and no purge has run over a live history.
+- **PR5.2d the purge verb and the simulated week**: DONE. Exit test line 43 of the
+  operable alpha milestone, and the first command by which an operator deletes durable
+  state. `pnpm cli purge` is the retention port's calls and nothing else: a dry run unless
+  `--execute`, with two required windows and no default, the store named again with
+  `--target`, and refusals of a schema version that is not the build's and of a database
+  whose test clock is set. The `retention-soak` surface runs a simulated week of 168 hourly
+  arrivals under an hourly purge, beside the same week with none, on the three dialects.
+  DESIGN.md sections 3.11 and 3.12 hold both, with what each test holds.
+  - The retention port gained a third method, `purgeAdmission`, for the reasons a dry run
+    gives: what each of the barrier's nine conditions says of one unit, in the read batch
+    `purge-admission`. The read is built from the functions the compare-and-set is built
+    from, and on every dialect the barrier grid holds it in each of its 780 cells against
+    the oracle's own reading of each condition.
+  - What the branch's own checks found, each before any reader of the branch did.
+    The first run of the new read was refused by the statement grammar: a read may not
+    compare a state with a bound value, and two conditions of the barrier bound the live
+    states. Both now write those states into the statement's text, in the compare-and-set
+    as in the read, so the SQL of `purge-unit` changed, its corpus entries were
+    regenerated, PostgreSQL reaches the same rows through the same indexes with fewer
+    binds, and the three registered mutations that quote those lines were re-aimed. The
+    registry's self-test then refused the verb as it was first written, for two entries of
+    main's: the handler repeated a line of `stuck` that a registered mutation finds by its
+    text, and the change to what `retry` says of a task that is not there moved the lines
+    another finds. A purge's limit is now read beside its windows, and that second
+    mutation is re-aimed. The first whole mutation audit of the branch then caught 1466 of
+    1468 mutations by their own verdicts, and two of the branch's new mutants failed on
+    another path: one did not build, and one also stopped the count a purge holds its
+    limit by. Both are rewritten, and each was seen failing by its own marker. Last, a
+    measurement that issue 105 asked for found that a week on libSQL gives the event
+    loop no turn, a pending timer firing once in 8 to 13 seconds. The week now asks its
+    fixture for a turn at each simulated day, through a member of the fixture contract,
+    `turn`, which every fixture implements, and a case that was seen failing first holds
+    it.
+  - Corrections of the plan, each as built. Line 43 asked for purged rows above zero in
+    every counted table, and for the control to exceed the bound three times in each. Every
+    batch that ends or parks a run deletes that run's waits, so an ended unit holds none
+    and the control's waits do not grow with the week: the floor and the vacuity check
+    range over tasks, runs, checkpoints and completion events, and for waits the week
+    holds that none outlives its run. The vacuity check is two ratios, the control over the
+    bound and the control over what the purged week holds, because a bound built from the
+    model does not move when the purge deletes nothing. `purge` takes no `--yes`:
+    `--execute` is its one confirmation, and the receipt paragraph writes the command so.
+    Line 44's bound named the failed units a dry-run purge reports kept, and a dry run
+    lists a failed unit only under a failed window, so that clause is reworded. The option
+    for `inspect --key` in one batch is settled where it stands, in the entry of PR5.3b1.
+  - The walk of a purge is one function of core, `purgeWalk`, which the verb, the
+    simulated week and the fault matrix run. It had been written four
+    times, each with a page and a stopping rule of its own, and the pass the week showed
+    was not the pass the verb ran: the verb kept the child of a failed parent that it
+    purged later in the same run, and ended finished with nothing more to do. One walk is
+    one pass, which takes what it frees. DESIGN.md sections 3.11 and 3.12 state its one
+    bound, what a run costs, and what `finished` and `more` mean.
+  - Option for a bound on the candidates one run examines, with a place to resume from,
+    not built, with its trigger. One run walks every candidate from the oldest, and a
+    candidate the barrier keeps costs a purge batch and a read on every run for as long as
+    it is kept. Trigger: a queue on which `purge` reports more kept units than purged ones
+    on two runs in a row, or a run an operator reports as slow for that reason. The bound
+    and the cursor were built in this pull request, as a cap of 1,000 candidates a run
+    with `purge --after <cursor>`, and taken out again, because both went wrong in ways
+    the next builder must close. A resumed run must return to the kept units a later take
+    freed: the one built here did no second tries once its bound stopped it, so a chain of
+    resumed runs ended finished, with no more to do, and a unit standing that the barrier
+    would let go. And a fixed command line must not starve behind kept units: the one
+    built here examined the same thousand kept units on every run from the oldest and
+    exited 0 having purged nothing, where the walk without a bound goes past them. What
+    stands in its place: a page is no longer the limit, so the run that sent 32 listings
+    to purge one unit behind 30 kept ones sends one, and DESIGN.md section 3.11 states
+    what a run costs, which nothing bounds but the queue.
+  - What holds the verb's purge is the model. The verb's test ran the walk on a second
+    database and compared the two, which compared the walk with the walk once the verb ran
+    it too. It now applies the oracle of line 42 to a dump taken before each command: the
+    oracle must let go each unit the command printed, with its rows, and leave the dump
+    taken after, and a run that says no more remain may leave no unit the model lets go.
+    The fault matrix arms a fault at the listing or at a purge in the walk that purges,
+    runs that walk again, and holds what the report says of the unit in doubt.
+  - Option for a second try of only the units a take could have freed by a held outcome,
+    not built, with its trigger. A unit kept only by a held outcome or a wait is tried
+    again after any take at all, because the walk does not know whose outcome a run holds.
+    Measured over a port held in memory: 600 units whose outcome a standing run holds and
+    one free unit behind them cost one walk 7 listings, 1,201 purges and 1,200 reads of the
+    barrier, where 601 and 600 are needed. It sends more batches and takes nothing wrong.
+    Trigger: a run an operator reports as slow on a queue of units kept by a held outcome.
+  - Option for text output that no value can forge a line of, not built, with its trigger.
+    In text mode a string prints as it is, so a line break in a value an operator typed
+    writes lines of the report: `sizes --queue` with a queue name of three lines prints
+    `finished: true` and `more: false` as lines of their own, and `inspect` of a task id
+    with a line break prints its second line as a field, on stderr. `--json` is not
+    affected. The cursor of `purge --after` was a third such value, and went with the flag.
+    Escaping in the one text printer is not a few lines, because the message of a usage
+    error carries a line break by design and prints through it. Trigger: a text report
+    that a program reads, or a value that reaches a report from anyone but the operator
+    who typed the command line.
+  - The case of a week's turns runs a control week of its own on each dialect, because a
+    control is shared within one test file and the case is in a file of its own, where it
+    runs on every selected dialect. Its one test took 8.3 seconds on libSQL, 14.6 on
+    PostgreSQL and 8.5 on MySQL. Sharing the control needs state across test files or a
+    libSQL special case in the shared suite, so the time is recorded and the control is
+    not shared.
+  - What else the verb and the parser now do: a unit whose purge was sent and not answered
+    is printed whole under `outcomeNotKnown`; a failure before any unit was reached prints
+    as any failure does; a flag given twice is refused by the parser, for every command;
+    the list of the barrier's conditions is frozen; and `inspect --key` and `explain
+    --key` say that a task the key found may have been retained out, and no more.
+  - The rewordings of exit test line 43, each with its reason. (1) Waits are out of the
+    floor of purged rows and of the vacuity check: every batch that ends or parks a run
+    deletes that run's waits, so an ended unit holds none and no purge of a correct store
+    takes one. This was confirmed on 2026-10-06, while the work was under way. (2) The
+    vacuity check is two ratios: a bound built from the model does not move when the purge
+    deletes nothing, so the control over the bound cannot fail then, and the control over
+    what the purged week holds does. This was confirmed the same day. (3) "The units the
+    policy still holds" became "the units the model still holds": the bound must count the
+    units the barrier keeps, a child under a parent that can run again and a unit whose
+    outcome a run holds, and a policy alone does not say which those are. The model, the
+    oracle of line 42, does. (4) "Applied until it lets nothing more go" was added to the
+    set equality of a pass: the purge of a parent lets its child go, so one application of
+    the oracle is not what a pass takes. That is true of the verb as well as of the week,
+    because both run core's one walk.
+  - Option for a read of the test clock's flag alone, not built, with its trigger: `purge`
+    reads `queueStatus` for one fact, whether the test clock is set, and that read counts a
+    queue's runs and tasks up to its caps. Trigger: a second command that needs the flag
+    and nothing else of the queue, or a `purge` whose time is measured to be that read's.
+  - The registry holds 1482 mutations where main held 1448: three caught by cases of the
+    simulated week, one by the case of the barrier read, fifteen by cases of the verb, one
+    by the case of a read by key whose task is gone between its two reads, and fourteen
+    for the one walk and what came with it. Of those fourteen, six are caught by core's
+    cases of the walk over a port held in memory, two by cases of the verb, one by the
+    case that holds the verb to the model, and one each by the case of a flag given twice,
+    of the frozen lists, of a control that holds nothing, of what a dry run lists, and of
+    a week's turns of the event loop. Seven of the verb's fifteen were aimed again when
+    the walk moved into core: three find lines of core's walk, three of the command's
+    handler, and one of the command's reading of its windows.
+- **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: NOT
+  STARTED. Exit test line 44. One thing PR5.2d hands it: the week's count of periods must
+  read a unit that a purge printed under `outcomeNotKnown`, by the sha256 of its key, as
+  it reads a unit a purge printed as purged. A purge whose answer was lost may have taken
+  the unit, and no later run lists a unit that went.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

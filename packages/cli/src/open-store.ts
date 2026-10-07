@@ -3,8 +3,13 @@ import type {
   AgedTasksOptions,
   CancelOptions,
   HeldOperatorReads,
+  HeldRetention,
   IdSource,
   OperatorReads,
+  PurgeCandidatesOptions,
+  PurgeUnitTarget,
+  Retention,
+  RetentionPolicy,
   SchedulerStore,
   SpawnOptions,
   SqlExecutor,
@@ -59,6 +64,13 @@ export type CliOperator = Pick<
   | 'taskAdmission'
 >
 
+/**
+ * The retention calls a command may make, which is every one the port has: the listing of
+ * what a purge may take, the purge of one unit, and the read of what the barrier says of
+ * one. `purge` is the one command that calls them.
+ */
+export type CliRetention = Pick<Retention, 'purgeCandidates' | 'purgeUnit' | 'purgeAdmission'>
+
 /** What an operator should know before a migration crosses a version, as a store says it. */
 export type SchemaVersionNotes = Readonly<Record<number, string>>
 
@@ -70,6 +82,7 @@ export interface OpenedStore {
   readonly admin: CliAdmin
   readonly scheduler: CliScheduler
   readonly operator: CliOperator
+  readonly retention: CliRetention
   close(): Promise<void>
 }
 
@@ -117,6 +130,7 @@ interface Opened {
   admin(db: SqlExecutor): StoreAdmin
   scheduler(db: SqlExecutor, ids: IdSource): SchedulerStore
   operator(db: SqlExecutor): HeldOperatorReads
+  retention(db: SqlExecutor, ids: IdSource): HeldRetention
   close(): Promise<void>
 }
 
@@ -145,6 +159,7 @@ const libsql: Loader = async (url, token, mayCreate, target) => {
     admin: (db) => new store.LibsqlStoreAdmin(db),
     scheduler: (db, ids) => new store.LibsqlSchedulerStore(db, ids),
     operator: store.operatorReads,
+    retention: store.retention,
     close: async () => executor.close(),
   }
 }
@@ -160,6 +175,7 @@ const postgres: Loader = async (url, token) => {
     admin: (db) => new store.PostgresStoreAdmin(db),
     scheduler: (db, ids) => new store.PostgresSchedulerStore(db, ids),
     operator: store.operatorReads,
+    retention: store.retention,
     close: () => executor.close(),
   }
 }
@@ -175,6 +191,7 @@ const mysql: Loader = async (url, token) => {
     admin: (db) => new store.MysqlStoreAdmin(db),
     scheduler: (db, ids) => new store.MysqlSchedulerStore(db, ids),
     operator: store.operatorReads,
+    retention: store.retention,
     close: () => executor.close(),
   }
 }
@@ -312,6 +329,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   const admin = opened.admin(db)
   const scheduler = opened.scheduler(db, ids)
   const operator = opened.operator(db)
+  const retention = opened.retention(db, ids)
   return {
     scheme,
     window: opened.window,
@@ -347,6 +365,14 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       eventWaiters: (queue: string, eventName: string) => operator.eventWaiters(queue, eventName),
       eventPayload: (queue: string, eventName: string) => operator.eventPayload(queue, eventName),
       taskAdmission: (queue: string, taskId: string) => operator.taskAdmission(queue, taskId),
+    }),
+    retention: Object.freeze({
+      purgeCandidates: (queue: string, policy: RetentionPolicy, page: PurgeCandidatesOptions) =>
+        retention.purgeCandidates(queue, policy, page),
+      purgeUnit: (queue: string, unit: PurgeUnitTarget, policy: RetentionPolicy) =>
+        retention.purgeUnit(queue, unit, policy),
+      purgeAdmission: (queue: string, unit: PurgeUnitTarget, policy: RetentionPolicy) =>
+        retention.purgeAdmission(queue, unit, policy),
     }),
     close: () => opened.close(),
   }

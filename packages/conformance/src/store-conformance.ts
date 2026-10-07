@@ -39,6 +39,7 @@ import {
   uncoveredConditionIds,
   unknownCoveredConditionIds,
 } from './poison-matrix.js'
+import { retentionSoakConformance } from './retention-soak.js'
 import { retentionConformance } from './retention.js'
 import { sagaConformance } from './sagas.js'
 import { schemaAdminConformance } from './schema-admin.js'
@@ -1425,4 +1426,5 @@ export const storeConformance = bindStoreConformanceSurfaces([
     },
   },
   { id: 'retention', run: retentionConformance },
+  { id: 'retention-soak', run: retentionSoakConformance },
 ] as const)

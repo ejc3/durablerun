@@ -415,6 +415,7 @@ export type RetentionMethod = keyof Retention
 export const RETENTION_STRINGS = frozenThroughout({
   purgeCandidates: ['queue', null, { after: { '?': { taskId: 'taskId' } } }],
   purgeUnit: ['queue', { taskId: 'taskId', idempotencyKey: { '?': 'idempotencyKey' } }, null],
+  purgeAdmission: ['queue', { taskId: 'taskId', idempotencyKey: { '?': 'idempotencyKey' } }, null],
 } as const satisfies PortStringsOf<Retention>)
 
 /** Every method the retention table names, which is every method of that port. */

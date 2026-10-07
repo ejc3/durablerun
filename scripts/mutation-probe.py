@@ -20392,8 +20392,8 @@ MUTATION_SPECS.extend(
         (
             "cli-retry-changes-nothing-without-yes",
             "packages/cli/src/main.ts",
-            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noSuchTask(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
-            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noSuchTask(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
+            "  if (invocation.booleans.yes !== true) {\n    if (before === null) return noTaskToRevive(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
+            "  if (false) { // MUTATION: retry writes without --yes\n    if (before === null) return noTaskToRevive(queue, taskId)\n    const forecast = retryForecast(taskId, before)\n",
             "retry revives a failed task with no confirmation",
         ),
         (
@@ -21419,7 +21419,7 @@ MUTATION_SPECS.extend(
         (
             "purge-keeps-the-child-of-a-live-parent",
             "packages/core/src/statements/purge.ts",
-            "              parent('parent.state', 'in', [...LIVE_STATES]),\n",
+            "              parent('parent.state', 'in', LIVE_STATE_LITERALS),\n",
             "              parent('parent.state', '=', literalValue('failed')),\n",
             "a purge takes the child of a parent that is live, and the parent's replay of its spawn creates a second child",
         ),
@@ -21427,7 +21427,7 @@ MUTATION_SPECS.extend(
             "purge-keeps-the-child-of-a-failed-parent",
             "packages/core/src/statements/purge.ts",
             "              parent('parent.state', '=', literalValue('failed')),\n",
-            "              parent('parent.state', 'in', [...LIVE_STATES]),\n",
+            "              parent('parent.state', 'in', LIVE_STATE_LITERALS),\n",
             "a purge takes the child of a failed parent, and a revival of the parent spawns a second child",
         ),
         (
@@ -21510,7 +21510,7 @@ MUTATION_SPECS.extend(
         (
             "purge-keeps-a-unit-with-a-live-run",
             "packages/core/src/statements/purge.ts",
-            "          .where('live.state', 'in', [...LIVE_STATES]),\n",
+            "          .where('live.state', 'in', LIVE_STATE_LITERALS),\n",
             "          .where('live.task_id', '<>', binds.taskId),\n",
             "a purge takes a unit one of whose runs is live, and a worker's write then finds no run",
         ),
@@ -21793,6 +21793,505 @@ VERDICTS.update(
             "packages/conformance/src/retention-purge.ts",
         ),
     }
+)
+
+# The simulated week (DESIGN.md §3.12, BUILD.md exit test line 43): the age a pass reads a
+# unit by, the bound on a queue's rows, and the check that the bound is no empty claim,
+# each caught by its own case of the week on libSQL.
+MUTATION_SPECS.extend(
+    (
+        (
+            "retention-soak-holds-each-pass-to-the-age-of-its-units",
+            "packages/core/src/statements/purge.ts",
+            "  return eb(stampedAt, '<=', eb(nowValue, '-', eb.val(windowMs) as Expression<number>))\n",
+            "  return eb(stampedAt, '<=', eb(nowValue, '-', eb.val(windowMs && 0) as Expression<number>))\n",
+            "the age conjunct is dropped: a task of a state the policy names is listed and purged the moment it ends, and a failed task goes before its operator revives it",
+        ),
+        (
+            "retention-soak-holds-the-rows-of-a-queue-to-the-bound",
+            "packages/core/src/retention.ts",
+            "  const candidates = listed.slice(0, limit)\n",
+            "  const candidates = listed.slice(0, 0)\n",
+            "a listing of purge candidates lists nothing, so no pass purges and a queue's tables grow with every arrival",
+        ),
+        (
+            "retention-soak-fails-as-vacuous-when-nothing-is-purged",
+            "packages/core/src/retention.ts",
+            "  if (!spawningParent(idempotencyKey).known) return null\n",
+            "  if (spawningParent(idempotencyKey).known) return null\n",
+            "a purge answers that the barrier kept every unit whose key it can read and sends nothing, so retention deletes nothing",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "retention-soak-holds-each-pass-to-the-age-of-its-units": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the simulated week [libsql] each hourly pass takes exactly the units the model lets go, and leaves every table as the model leaves it",
+            "mutation-verdict:behavior:retention-soak-holds-each-pass-to-the-age-of-its-units",
+            "packages/conformance/src/retention-soak.ts",
+        ),
+        "retention-soak-holds-the-rows-of-a-queue-to-the-bound": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the simulated week [libsql] at each day boundary after hour 48, every counted table holds at most the control's rows of the units the model still holds",
+            "mutation-verdict:behavior:retention-soak-holds-the-rows-of-a-queue-to-the-bound",
+            "packages/conformance/src/retention-soak.ts",
+        ),
+        "retention-soak-fails-as-vacuous-when-nothing-is-purged": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/libsql.test.ts",
+            "the simulated week [libsql] by day 7 the control holds at least three times the bound, and three times what the purged week holds, in every table an ended unit holds rows in",
+            "mutation-verdict:behavior:retention-soak-fails-as-vacuous-when-nothing-is-purged",
+            "packages/conformance/src/retention-soak.ts",
+        ),
+    }
+)
+
+# The read of what the barrier says of one unit (DESIGN.md §3.12): each condition is a flag
+# of its own, built by the function the purge's compare-and-set builds it by.
+MUTATION_SPECS.extend(
+    (
+        (
+            "purge-admission-reads-each-condition-as-its-own-flag",
+            "packages/core/src/statements/purge.ts",
+            "          .when(holds(ofTheTask, binds))\n",
+            "          .when(ofTheTask.and([holds(ofTheTask, binds), PURGE_BARRIER.endedAWindowAgo(ofTheTask, binds)]))\n",
+            "the read of the barrier answers each condition only where the age holds too, so a unit under a longer window reads as kept by every condition",
+        ),
+    )
+)
+VERDICTS["purge-admission-reads-each-condition-as-its-own-flag"] = ExpectedVerdict(
+    "behavior",
+    "packages/conformance/test/libsql.test.ts",
+    "what a read of the barrier says of a unit [libsql] answers each condition by a flag of its own: a child a window old under a live parent is kept by its parent alone, under a longer window by its age too, and a task that is not there has no answer",
+    "mutation-verdict:behavior:purge-admission-reads-each-condition-as-its-own-flag",
+    "packages/conformance/src/retention-purge.ts",
+)
+
+# The purge verb of the operator CLI (DESIGN.md §3.11, BUILD.md exit test line 43): what it
+# must not do, each refusal and the dry run, and that it is the retention port's calls and
+# nothing else.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-purge-deletes-nothing-without-execute",
+            "packages/core/src/retention-walk.ts",
+            "    if (execute) {\n      let purged: PurgedUnit | null\n",
+            "    if (!execute) {\n      let purged: PurgedUnit | null\n",
+            "a dry run sends the purge of every candidate, and a purge with --execute sends none",
+        ),
+        (
+            "cli-purge-prints-a-key-only-as-its-digest",
+            "packages/cli/src/purge.ts",
+            "        : userValue(candidate.idempotencyKey, false).sha256,\n",
+            "        : candidate.idempotencyKey,\n",
+            "a purge prints the idempotency key of a unit as it is, in a report that is kept",
+        ),
+        (
+            "cli-purge-refuses-under-a-test-clock",
+            "packages/cli/src/main.ts",
+            "  if (status.fakeClock) {\n",
+            "  if (status.fakeClock && queue === undefined) {\n",
+            "purge does not refuse under a test clock, and takes every unit that is a window old by that clock",
+        ),
+        (
+            "cli-purge-refuses-a-schema-that-is-not-the-builds",
+            "packages/cli/src/main.ts",
+            "  if (recorded !== store.window.newest) {\n",
+            "  if (windowProblem(recorded, store.window) !== null) {\n",
+            "purge takes a database at any version its store's reads accept, and deletes on a schema that lacks the indexes its statements read",
+        ),
+        (
+            "cli-purge-names-its-store",
+            "packages/cli/src/commands.ts",
+            "    writes: true,\n    repeat: 'settles',\n    // The queue's status is read for one fact",
+            "    writes: false,\n    repeat: 'settles',\n    // The queue's status is read for one fact",
+            "purge is not held to name its store again, and a --target that names another store purges this one",
+        ),
+        (
+            "cli-purge-refuses-a-window-under-the-floor",
+            "packages/cli/src/purge.ts",
+            "    if (seconds < MIN_RETENTION_SECONDS) {\n",
+            "    if (seconds < 0) {\n",
+            "the command hands a window under an hour to the port, and the refusal comes after its reads were sent, as the engine's and not as a usage error",
+        ),
+        (
+            "cli-purge-holds-its-limit",
+            "packages/cli/src/purge.ts",
+            "  if (text === undefined) return { limit: PURGE_DEFAULT_LIMIT }\n",
+            "  if (text !== undefined) return { limit: PURGE_DEFAULT_LIMIT }\n",
+            "purge ignores --limit and takes up to its default",
+        ),
+        (
+            "cli-purge-walks-past-the-units-the-barrier-keeps",
+            "packages/core/src/retention-walk.ts",
+            "      if (failed !== null) break list\n",
+            "      if (failed !== null || kept.size > 0) break list\n",
+            "the walk stops at the first unit the barrier keeps, so a queue whose oldest candidates are all kept is never purged",
+        ),
+        (
+            "cli-purge-stops-at-its-limit-inside-a-page",
+            "packages/core/src/retention-walk.ts",
+            "      if (atTheLimit()) {\n        unread = true\n        break list\n      }\n",
+            "",
+            "the walk takes every candidate of the page it is in after its limit is reached",
+        ),
+        (
+            "cli-purge-names-the-condition-that-keeps-a-unit",
+            "packages/cli/src/purge.ts",
+            "  parentCannotRunAgain: 'parent-can-run-again',\n",
+            "  parentCannotRunAgain: 'outcome-held',\n",
+            "a unit its parent keeps is reported as kept by a held outcome",
+        ),
+        (
+            "cli-purge-reports-what-went-before-an-outage",
+            "packages/cli/src/main.ts",
+            "        ...report,\n        finished: false,\n",
+            "        finished: false,\n",
+            "a purge that meets an outage prints nothing of the units that went",
+        ),
+        (
+            "cli-retry-says-a-task-may-have-been-retained-out",
+            "packages/cli/src/main.ts",
+            "  if (admission === null) return noTaskToRevive(queue, taskId)\n",
+            "  if (admission === null) return noSuchTask(queue, taskId)\n",
+            "a confirmed retry of a task that is not there does not say that a purge may have retained it out",
+        ),
+        (
+            "cli-purge-is-the-retention-port-and-nothing-else",
+            "packages/cli/src/main.ts",
+            "  const walked = await purgeWalk(store.retention, queue, policy, { limit, execute })\n",
+            "  const walked = await purgeWalk(store.retention, queue, policy, { limit, execute: false })\n",
+            "purge with --execute hands the walk no leave to purge, and leaves every unit the port takes",
+        ),
+        (
+            "cli-purge-prints-exactly-the-units-that-went",
+            "packages/cli/src/main.ts",
+            "      rows === null ? unitView(candidate) : { ...unitView(candidate), rows },\n",
+            "      rows === null ? unitView(candidate) : unitView(candidate),\n",
+            "purge deletes a unit and prints it without the rows that went",
+        ),
+        (
+            "cli-purge-is-the-retention-port-over-a-walk",
+            "packages/cli/src/purge.ts",
+            "      ...(failedSeconds === undefined ? {} : { failedSeconds }),\n",
+            "      ...(failedSeconds === undefined ? {} : {}),\n",
+            "purge drops the window a command line names for failed tasks, and keeps every failed task the port takes",
+        ),
+    )
+)
+VERDICTS.update(
+    {
+        "cli-purge-deletes-nothing-without-execute": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "purge on libSQL without --execute it lists each candidate with what the barrier says of it, sends only read batches, and leaves every table as it was",
+            "mutation-verdict:behavior:cli-purge-deletes-nothing-without-execute",
+        ),
+        "cli-purge-prints-a-key-only-as-its-digest": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "purge on libSQL prints an idempotency key as its sha256 and never as itself, with --reveal or without, in a dry run and in a purge",
+            "mutation-verdict:behavior:cli-purge-prints-a-key-only-as-its-digest",
+        ),
+        "cli-purge-refuses-under-a-test-clock": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses under a test clock, though every unit is a window old by that clock, and purges once the clock is cleared",
+            "mutation-verdict:behavior:cli-purge-refuses-under-a-test-clock",
+        ),
+        "cli-purge-refuses-a-schema-that-is-not-the-builds": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses a database that is not at the build's schema version, at every older version its store's reads accept, and names both versions",
+            "mutation-verdict:behavior:cli-purge-refuses-a-schema-that-is-not-the-builds",
+        ),
+        "cli-purge-names-its-store": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses a --target that is not its store, or none, before anything opens",
+            "mutation-verdict:behavior:cli-purge-names-its-store",
+        ),
+        "cli-purge-refuses-a-window-under-the-floor": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "what purge refuses, each beside the command that is not refused refuses a window under an hour, a window it cannot read and a missing window, and sends nothing",
+            "mutation-verdict:behavior:cli-purge-refuses-a-window-under-the-floor",
+        ),
+        "cli-purge-holds-its-limit": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "how far one purge goes takes at most --limit units, oldest first, and says whether more remain",
+            "mutation-verdict:behavior:cli-purge-holds-its-limit",
+        ),
+        "cli-purge-walks-past-the-units-the-barrier-keeps": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "how far one purge goes goes past the units the barrier keeps: a queue whose oldest candidates are all kept still purges what stands behind them",
+            "mutation-verdict:behavior:cli-purge-walks-past-the-units-the-barrier-keeps",
+        ),
+        "cli-purge-stops-at-its-limit-inside-a-page": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "how far one purge goes goes past the units the barrier keeps: a queue whose oldest candidates are all kept still purges what stands behind them",
+            "mutation-verdict:behavior:cli-purge-stops-at-its-limit-inside-a-page",
+        ),
+        "cli-purge-names-the-condition-that-keeps-a-unit": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "a unit the barrier keeps is named by the condition that is false, as of the read names each planted unit by the one condition that keeps it, in a dry run and in a purge, for every condition of the barrier",
+            "mutation-verdict:behavior:cli-purge-names-the-condition-that-keeps-a-unit",
+        ),
+        "cli-purge-reports-what-went-before-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "a purge whose store answers otherwise than a clean run prints the units that went before an outage, exits 6 and says where it stopped, and run again purges what is left",
+            "mutation-verdict:behavior:cli-purge-reports-what-went-before-an-outage",
+        ),
+        "cli-retry-says-a-task-may-have-been-retained-out": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge.test.ts",
+            "after a purge retry of a purged failed task answers not-found, and says the task may have been retained out",
+            "mutation-verdict:behavior:cli-retry-says-a-task-may-have-been-retained-out",
+        ),
+        "cli-purge-is-the-retention-port-and-nothing-else": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge-twin.test.ts",
+            "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
+            "mutation-verdict:behavior:cli-purge-is-the-retention-port-and-nothing-else",
+        ),
+        "cli-purge-prints-exactly-the-units-that-went": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge-twin.test.ts",
+            "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
+            "mutation-verdict:behavior:cli-purge-prints-exactly-the-units-that-went",
+        ),
+        "cli-purge-is-the-retention-port-over-a-walk": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/purge-twin.test.ts",
+            "purge over the states a walk of the engine leaves, on libSQL takes what the model lets go at every command, leaves nothing the model lets go when repeated until it says no more remain, and then keeps the same units for the same reasons",
+            "mutation-verdict:behavior:cli-purge-is-the-retention-port-over-a-walk",
+        ),
+    }
+)
+
+# A read by key reads twice, and a purge can take the task between the two (DESIGN.md §3.11).
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-a-read-by-key-says-its-task-is-gone",
+            "packages/cli/src/main.ts",
+            "  if (byKey) {\n",
+            "  if (byKey && queue === undefined) {\n",
+            "a key that found a task a purge then took is answered as a task that never was, with nothing of the key having named one",
+        ),
+    )
+)
+VERDICTS["cli-a-read-by-key-says-its-task-is-gone"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge.test.ts",
+    "after a purge inspect and explain by a key whose task a purge takes between their two reads answer not-found, and say the task the key named is gone",
+    "mutation-verdict:behavior:cli-a-read-by-key-says-its-task-is-gone",
+)
+
+# The one walk of a purge and what came with it (DESIGN.md §3.11 and §3.12): the pass and its
+# second tries, its two bounds and the place it stops, a unit in doubt, an outage with no
+# unit, a flag given twice, the frozen list of conditions, a control that holds nothing,
+# what a dry run lists, and the turn of the event loop a week asks for.
+MUTATION_SPECS.extend(
+    (
+        (
+            "purge-walk-tries-again-a-unit-its-take-frees",
+            "packages/core/src/retention-walk.ts",
+            "    return at !== undefined && at >= asOf\n",
+            "    return at !== undefined && at < asOf\n",
+            "the walk never tries again a child whose parent it took, so the child of a failed parent is left behind in the run that purged the parent",
+        ),
+        (
+            "purge-walk-tries-again-what-a-held-outcome-kept",
+            "packages/core/src/retention-walk.ts",
+            "    if (admission.holds.parentCannotRunAgain) return taken.length > asOf\n",
+            "    if (admission.holds.parentCannotRunAgain) return false\n",
+            "the walk never tries again a unit that only a held outcome or a wait kept, though it took the unit that held it",
+        ),
+        (
+            "purge-walk-sends-no-listing-to-learn-more",
+            "packages/core/src/retention-walk.ts",
+            "    if (atTheLimit()) {\n      unread = true\n      break\n    }\n",
+            "",
+            "a walk whose limit is met at the end of a page sends another listing only to learn that a candidate follows",
+        ),
+        (
+            "purge-walk-says-more-when-a-try-is-owed",
+            "packages/core/src/retention-walk.ts",
+            "          owing = true\n",
+            "          owing = false\n",
+            "a walk that took a parent at its limit says no more remain, though the child it kept would now go",
+        ),
+        (
+            "purge-walk-reports-a-purge-in-doubt",
+            "packages/core/src/retention-walk.ts",
+            "        outcomeNotKnown.push(candidate)\n",
+            "",
+            "a unit whose purge was sent and not answered is in no list of the walk's report",
+        ),
+        (
+            "cli-purge-prints-a-unit-whose-answer-was-lost",
+            "packages/cli/src/main.ts",
+            "    outcomeNotKnown: walked.outcomeNotKnown.map(unitView),\n",
+            "    outcomeNotKnown: [],\n",
+            "purge prints nothing of a unit whose purge was sent and not answered, so the digest of its key is in no report",
+        ),
+        (
+            "cli-purge-prints-an-empty-outage-as-a-failure",
+            "packages/cli/src/main.ts",
+            "    if (!holdsAUnit) return answer\n",
+            "",
+            "an outage before any unit was reached prints a report of nothing on stdout, and nothing on stderr",
+        ),
+        (
+            "cli-refuses-a-flag-given-twice",
+            "packages/cli/src/commands.ts",
+            "    if (given.has(token.name)) {\n",
+            "    if (given.has(token.name) && token.name === '') {\n",
+            "a flag given twice is taken and its last value wins, so a purge whose window is named twice purges under the second",
+        ),
+        (
+            "purge-barrier-conditions-are-frozen",
+            "packages/core/src/types.ts",
+            "export const PURGE_BARRIER_CONDITIONS = Object.freeze([\n",
+            "export const PURGE_BARRIER_CONDITIONS = Array.from([\n",
+            "the list of the barrier's conditions can be emptied by an importer, and a read of the barrier then says nothing keeps a unit",
+        ),
+        (
+            "retention-soak-fails-a-control-that-holds-nothing",
+            "packages/conformance/src/retention-soak.ts",
+            "    ...empty.map((table) => `the control holds no rows of ${table}`),\n",
+            "",
+            "a week whose control holds no rows passes the vacuity check, which then says nothing",
+        ),
+        (
+            "cli-purge-would-purge-is-what-the-port-lets-go",
+            "packages/core/src/retention-walk.ts",
+            "    } else if (!execute && letsGo(admission)) taken.push({ candidate, rows: null })\n",
+            "    } else if (!execute) taken.push({ candidate, rows: null })\n",
+            "a dry run lists every candidate as one a purge would take, the units the barrier keeps among them",
+        ),
+        (
+            "retention-soak-turns-the-event-loop-each-day",
+            "packages/conformance/src/retention-soak.ts",
+            "      await f.turn()\n",
+            "",
+            "a week on libSQL gives the event loop no turn, and a test worker whose loop does not turn for a minute fails its run",
+        ),
+    )
+)
+VERDICTS["purge-walk-tries-again-a-unit-its-take-frees"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "one walk is one pass takes a unit that a unit it took had kept, and a unit that one had kept, and a repeat does nothing",
+    "mutation-verdict:behavior:purge-walk-tries-again-a-unit-its-take-frees",
+)
+VERDICTS["purge-walk-tries-again-what-a-held-outcome-kept"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "one walk is one pass tries a unit again only when a unit taken since could be what kept it",
+    "mutation-verdict:behavior:purge-walk-tries-again-what-a-held-outcome-kept",
+)
+VERDICTS["purge-walk-sends-no-listing-to-learn-more"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "what bounds a walk stops inside a page when its limit is met, and sends no listing to learn whether more remain",
+    "mutation-verdict:behavior:purge-walk-sends-no-listing-to-learn-more",
+)
+VERDICTS["purge-walk-says-more-when-a-try-is-owed"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "what bounds a walk says more when a kept unit is owed a try that its limit left no room for",
+    "mutation-verdict:behavior:purge-walk-says-more-when-a-try-is-owed",
+)
+VERDICTS["purge-walk-reports-a-purge-in-doubt"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "a call of the port that fails ends the walk, which answers what it had reached and the call it stopped at, and throws nothing",
+    "mutation-verdict:behavior:purge-walk-reports-a-purge-in-doubt",
+)
+VERDICTS["cli-purge-prints-a-unit-whose-answer-was-lost"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge.test.ts",
+    "a purge whose answer was lost prints the unit whole, with the digest of its key, as one whose outcome is not known, and a repeat says which it was",
+    "mutation-verdict:behavior:cli-purge-prints-a-unit-whose-answer-was-lost",
+)
+VERDICTS["cli-purge-prints-an-empty-outage-as-a-failure"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge.test.ts",
+    "an outage with no unit in the report prints as any failure does: in text on stderr with nothing on stdout, and with --json as the failure alone",
+    "mutation-verdict:behavior:cli-purge-prints-an-empty-outage-as-a-failure",
+)
+VERDICTS["cli-refuses-a-flag-given-twice"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/flag-twice.test.ts",
+    "a flag given twice is refused by name for every flag of every command, in every spelling, and a flag given once is not",
+    "mutation-verdict:behavior:cli-refuses-a-flag-given-twice",
+)
+VERDICTS["purge-barrier-conditions-are-frozen"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention.test.ts",
+    "the lists the retention port reads are frozen, each of them: a caller that imports one cannot empty it under the port",
+    "mutation-verdict:behavior:purge-barrier-conditions-are-frozen",
+)
+VERDICTS["retention-soak-fails-a-control-that-holds-nothing"] = ExpectedVerdict(
+    "behavior",
+    "packages/conformance/test/retention-soak-reds.test.ts",
+    "a week whose control holds nothing is vacuous, and says which table the control holds no rows of",
+    "mutation-verdict:behavior:retention-soak-fails-a-control-that-holds-nothing",
+)
+VERDICTS["cli-purge-would-purge-is-what-the-port-lets-go"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge-twin.test.ts",
+    "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
+    "mutation-verdict:behavior:cli-purge-would-purge-is-what-the-port-lets-go",
+)
+VERDICTS["retention-soak-turns-the-event-loop-each-day"] = ExpectedVerdict(
+    "behavior",
+    "packages/conformance/test/retention-soak-turns.test.ts",
+    "a week's turns of the event loop [libsql] lets a pending timer fire in each of its simulated days",
+    "mutation-verdict:behavior:retention-soak-turns-the-event-loop-each-day",
+)
+
+# What a run of the purge leaves, held to the model, and a second try whose look is lost
+# (DESIGN.md §3.11 and §3.12).
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-purge-keeps-no-unit-its-run-freed",
+            "packages/core/src/retention-walk.ts",
+            "  if (execute && failed === null) {\n    rounds: for (;;) {\n",
+            "  if (execute && failed !== null) {\n    rounds: for (;;) {\n",
+            "the walk never tries a kept unit again, so a run ends with no more to do and a unit standing that only a unit it purged had kept",
+        ),
+        (
+            "purge-walk-keeps-a-unit-whose-second-look-is-lost",
+            "packages/core/src/retention-walk.ts",
+            "      // A unit under a second try stays listed as kept, as it last read.\n      return { call: 'purgeAdmission', taskId, error }\n",
+            "      kept.delete(taskId)\n      return { call: 'purgeAdmission', taskId, error }\n",
+            "a unit under a second try whose read of the barrier is lost is in no list of the walk's report",
+        ),
+    )
+)
+VERDICTS["cli-purge-keeps-no-unit-its-run-freed"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge-twin.test.ts",
+    "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
+    "mutation-verdict:behavior:cli-purge-keeps-no-unit-its-run-freed",
+)
+VERDICTS["purge-walk-keeps-a-unit-whose-second-look-is-lost"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "a second try whose look is lost keeps the unit in the report: as it last read when the read of the barrier is lost, and as one whose outcome is not known when its purge is",
+    "mutation-verdict:behavior:purge-walk-keeps-a-unit-whose-second-look-is-lost",
 )
 
 MUTATIONS = [
@@ -23128,6 +23627,21 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "cli-purge-keeps-no-unit-its-run-freed": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
+    "cli-purge-would-purge-is-what-the-port-lets-go": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
+    "retention-soak-turns-the-event-loop-each-day": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
+    "cli-purge-is-the-retention-port-and-nothing-else": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
+    "cli-purge-prints-exactly-the-units-that-went": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
     "cli-retry-names-the-conjunct-that-refuses": (
         "the case runs once for each conjunct of the retry guard, and its title carries the conjunct and the state planted for it"
     ),
@@ -25724,7 +26238,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1448:
+        if len(MUTATIONS) != 1482:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
