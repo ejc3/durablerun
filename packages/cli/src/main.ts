@@ -67,6 +67,7 @@ import {
 } from './http.js'
 import { corruptView, factsView, stateView, whatIsNotReadable } from './inspect.js'
 import {
+  type CliRetention,
   MissingDatabaseError,
   type OpenedStore,
   type SchemaWindow,
@@ -1172,12 +1173,13 @@ const sweep: Handler = async (context) => {
   }
 }
 
-/** The batch each call of the retention port sends, by which a failure names the call it stopped at. */
-const PURGE_CALL_LABEL = {
-  purgeCandidates: 'purge-candidates',
-  purgeUnit: 'purge-unit',
-  purgeAdmission: 'purge-admission',
-} as const
+/**
+ * The batch a call of the retention port sends, by which a failure names the call it
+ * stopped at. The command table declares each call the verb makes with its label, and this
+ * reads that one declaration.
+ */
+const purgeLabel = (call: keyof CliRetention): string =>
+  COMMANDS.purge.ports.find((port) => port.call === `retention.${call}`)?.labels[0] ?? call
 
 /**
  * Purge the units of a queue's ended tasks that are older than the windows named. It is
@@ -1274,7 +1276,7 @@ const purge: Handler = async (context) => {
         ...report,
         finished: false,
         stoppedAt: {
-          call: PURGE_CALL_LABEL[failed.call],
+          call: purgeLabel(failed.call),
           ...(failed.taskId === undefined ? {} : { taskId: failed.taskId }),
         },
         ...answer.view,
