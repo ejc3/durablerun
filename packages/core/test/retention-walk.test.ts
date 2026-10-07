@@ -468,3 +468,57 @@ describe('a call of the port that fails', () => {
     })
   })
 })
+
+describe('a second try whose look is lost', () => {
+  it('keeps the unit in the report: as it last read when the read of the barrier is lost, and as one whose outcome is not known when its purge is', async () => {
+    // `held` is kept while `holder` stands, and `holder` is kept for good. The take of
+    // `free` owes `held` a second try, and its purge keeps it again.
+    const units = (): Unit[] => [
+      {
+        taskId: 'held',
+        endedAtMs: 1,
+        keptBy: (there) => (there.has('holder') ? ['noRunHoldsTheOutcome'] : []),
+      },
+      stuck('holder', 2),
+      free('free', 3),
+    ]
+    const shown = async (lost: Lost) => {
+      const queue = queueOf(units(), lost)
+      const walked = await purgeWalk(queue.port, Q, POLICY, { limit: 10, execute: true })
+      return {
+        taken: walked.taken.map(({ candidate }) => candidate.taskId),
+        kept: walked.kept.map(({ candidate, admission }) => [
+          candidate.taskId,
+          PURGE_BARRIER_CONDITIONS.filter((condition) => !admission.holds[condition]),
+        ]),
+        notKnown: walked.outcomeNotKnown.map(({ taskId }) => taskId),
+        failed: [walked.failed?.call, walked.failed?.taskId],
+        more: walked.more,
+      }
+    }
+    expect({
+      // The third read of the barrier is the one of the second try.
+      barrier: await shown({ call: 'purgeAdmission', occurrence: 3 }),
+      // The fourth purge is the one of the second try.
+      purge: await shown({ call: 'purgeUnit', occurrence: 4 }),
+    }).toEqual({
+      barrier: {
+        taken: ['free'],
+        kept: [
+          ['held', ['noRunHoldsTheOutcome']],
+          ['holder', ['noLiveRun']],
+        ],
+        notKnown: [],
+        failed: ['purgeAdmission', 'held'],
+        more: true,
+      },
+      purge: {
+        taken: ['free'],
+        kept: [['holder', ['noLiveRun']]],
+        notKnown: ['held'],
+        failed: ['purgeUnit', 'held'],
+        more: true,
+      },
+    })
+  })
+})
