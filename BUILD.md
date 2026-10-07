@@ -7133,9 +7133,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     limit by. Both are rewritten, and each was seen failing by its own marker. Last, a
     measurement that issue 105 asked for found that a week on libSQL gives the event
     loop no turn, a pending timer firing once in 8 to 13 seconds. The week now asks its
-    fixture for a turn at each simulated day, through an optional member of the fixture
-    contract that the libSQL fixture alone implements, and a case that was seen failing
-    first holds it.
+    fixture for a turn at each simulated day, through a member of the fixture contract,
+    `turn`, which every fixture implements, and a case that was seen failing first holds
+    it.
   - Corrections of the plan, each as built. Line 43 asked for purged rows above zero in
     every counted table, and for the control to exceed the bound three times in each. Every
     batch that ends or parks a run deletes that run's waits, so an ended unit holds none
@@ -7149,7 +7149,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     lists a failed unit only under a failed window, so that clause is reworded. The option
     for `inspect --key` in one batch is settled where it stands, in the entry of PR5.3b1.
   - The walk of a purge is one function of core, `purgeWalk`, which the verb, the
-    simulated week, the verb's twin and the fault matrix run. It had been written four
+    simulated week and the fault matrix run. It had been written four
     times, each with a page and a stopping rule of its own, and the pass the week showed
     was not the pass the verb ran: the verb kept the child of a failed parent that it
     purged later in the same run, and ended finished with nothing more to do. One walk is
@@ -7171,6 +7171,36 @@ these three things; nothing else in the system does I/O, time, or randomness.
     stands in its place: a page is no longer the limit, so the run that sent 32 listings
     to purge one unit behind 30 kept ones sends one, and DESIGN.md section 3.11 states
     what a run costs, which nothing bounds but the queue.
+  - What holds the verb's purge is the model. The verb's test ran the walk on a second
+    database and compared the two, which compared the walk with the walk once the verb ran
+    it too. It now applies the oracle of line 42 to a dump taken before each command: the
+    oracle must let go each unit the command printed, with its rows, and leave the dump
+    taken after, and a run that says no more remain may leave no unit the model lets go.
+    The fault matrix arms a fault at the listing or at a purge in the walk that purges,
+    runs that walk again, and holds what the report says of the unit in doubt.
+  - Option for a second try of only the units a take could have freed by a held outcome,
+    not built, with its trigger. A unit kept only by a held outcome or a wait is tried
+    again after any take at all, because the walk does not know whose outcome a run holds.
+    Measured over a port held in memory: 600 units whose outcome a standing run holds and
+    one free unit behind them cost one walk 7 listings, 1,201 purges and 1,200 reads of the
+    barrier, where 601 and 600 are needed. It sends more batches and takes nothing wrong.
+    Trigger: a run an operator reports as slow on a queue of units kept by a held outcome.
+  - Option for text output that no value can forge a line of, not built, with its trigger.
+    In text mode a string prints as it is, so a line break in a value an operator typed
+    writes lines of the report: `sizes --queue` with a queue name of three lines prints
+    `finished: true` and `more: false` as lines of their own, and `inspect` of a task id
+    with a line break prints its second line as a field, on stderr. `--json` is not
+    affected. The cursor of `purge --after` was a third such value, and went with the flag.
+    Escaping in the one text printer is not a few lines, because the message of a usage
+    error carries a line break by design and prints through it. Trigger: a text report
+    that a program reads, or a value that reaches a report from anyone but the operator
+    who typed the command line.
+  - The case of a week's turns runs a control week of its own on each dialect, because a
+    control is shared within one test file and the case is in a file of its own, where it
+    runs on every selected dialect. Its one test took 8.3 seconds on libSQL, 14.6 on
+    PostgreSQL and 8.5 on MySQL. Sharing the control needs state across test files or a
+    libSQL special case in the shared suite, so the time is recorded and the control is
+    not shared.
   - What else the verb and the parser now do: a unit whose purge was sent and not answered
     is printed whole under `outcomeNotKnown`; a failure before any unit was reached prints
     as any failure does; a flag given twice is refused by the parser, for every command;

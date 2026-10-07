@@ -6681,8 +6681,9 @@ then takes what the first left. So when a run ends with `finished: true` and `mo
 the same command line run again at once, on a database nothing else changed, purges nothing
 and lists the same units as kept for the same reasons. And a command line repeated until it
 says `more: false` leaves no unit the barrier would let go. Cases hold that for a child, the
-failed parent that kept it and two tasks behind them at a limit of 1, and for 150 children
-listed before the parent that holds their outcome, past the limit.
+failed parent that kept it and two tasks behind them at a limit of 1, for 150 children listed
+before the parent that holds their outcome, past the limit, and over the states ten walks of
+the engine leave (below).
 
 Besides a command line it cannot read, the command refuses three things before it reads a
 candidate. A `--target` that does not name the store exits 2 before anything opens, as for
@@ -6707,21 +6708,30 @@ list when no later run names it. A failure before any unit was reached has no re
 print, and prints as any failure does: on stderr in text, and with `--json` as the failure
 alone.
 
-`test/purge-twin.test.ts` holds that the command is the port and nothing else. The command
-runs through `main` against one database, and core's walk runs over the port against a twin
-built by the same calls with the same seeded ids. After a dry run, a purge under a limit, a
-purge that keeps failed tasks, a purge of the rest and a purge with nothing left, a dump of
-every table of the one equals the dump of the other, and the units the command printed are
-the units the walk answered for, each with its rows. A dry run is held to the port itself
-and not to the walk: the test lists every candidate from the port and reads what the barrier
-says of each, and the command lists as ones a purge would take exactly the units every
-condition holds of, and as kept exactly the others. That holds on every dialect over seeded
-tasks, two sagas and a child the barrier keeps, and on libSQL over the states ten walks of
-the engine leave: 50 commands there purged 102 units, 29 completed, 22 failed and 51
-cancelled, with 42 checkpoints, under floors below those counts. Over those states the last
-command of each walk repeats the one before it, which had no more to do, and it purges
-nothing and keeps the same units for the same reasons. What the walk does with the port's
-answers is held in core, over a port held in memory (section 3.12).
+`test/purge-twin.test.ts` holds that the command is the port and nothing else, and it holds
+that against the model of the barrier and not against the walk, which the command runs. The
+command runs through `main` against a database, and a dump of every table is taken before
+each command and after it. The oracle of the retention surface (section 3.12), which states
+each condition a second time, from the model, is applied to the first dump in the order the
+command printed its units: it must let each go, with the rows the command printed for it,
+and what it leaves must be the second dump. No command may take more than its limit. When a
+run says no more remain, no unit may stand that the model lets go, and every unit it printed
+as kept must be one the model keeps as the database stands. A dry run is held to the port
+itself: the test lists every candidate from the port and reads what the barrier says of
+each, and the command lists as ones a purge would take exactly the units every condition
+holds of, and as kept exactly the others. That holds on every dialect over seeded tasks, two
+sagas, a child the barrier keeps and a child only its failed parent keeps, through a dry
+run, a purge under a limit, a purge that keeps failed tasks, a purge of the rest and a purge
+with nothing left, which purges nothing and keeps the same unit for the same reason as the
+run before it. It holds on libSQL over the states ten walks of the engine leave, each with a
+unit the barrier keeps written into it, because no walk of those seeds leaves one. There the
+same command line, three units at a time, is repeated until it says no more remain, first
+keeping failed tasks and then naming every state, and is then run once more: 73 commands
+purged 102 units, 29 completed, 22 failed and 51 cancelled, with 42 checkpoints, and printed
+55 units as kept, in 20 chains of 43 runs, under floors below those counts. Each of the 20
+repeats purges nothing and keeps the same units for the same reasons, and a repeat that
+keeps no unit fails the test, because it compares nothing. What the walk does with the
+port's answers is held in core, over a port held in memory (section 3.12).
 
 **The schema window for a write.** A drive verb is held to the window a read is held to. It
 exits 5 outside it and prints the recorded version and the versions the build reads. On
@@ -7108,9 +7118,10 @@ maintainer approved the two contract changes at the end of this section on
   an operator's read.
 - **The walk.** `purgeWalk(retention, queue, policy, { limit, execute? })` is
   the one way a caller goes through a queue's candidates, in core beside the
-  port. The verb, the simulated week, the verb's twin and the fault matrix run
-  it, where each had written the walk for itself with a page and a stopping rule
-  of its own. Core's entry exports it, where it exports no builder of a purge,
+  port. The verb, the simulated week and the fault matrix run it, where each had
+  written the walk for itself with a page and a stopping rule of its own. The
+  verb's test had a fourth, and now holds the verb to the model (section 3.11).
+  Core's entry exports it, where it exports no builder of a purge,
   because it takes the port and calls nothing but the port's three methods: a
   caller it is handed to has no way round the barrier. One walk is one pass from
   the oldest candidate. It lists the candidates `PURGE_WALK_PAGE` (100) to a
@@ -7132,7 +7143,12 @@ maintainer approved the two contract changes at the end of this section on
   `outcomeNotKnown` the unit whose purge was sent and not answered. A unit under
   a second try stays listed as kept, as it last read, when the read of the
   barrier in that try is lost. `core/test/retention-walk.test.ts` holds each of
-  these over a port held in memory.
+  these over a port held in memory. The fault matrix runs the walk as a dry run
+  and as a purge, and arms each fault in the walk it is about: at the read of
+  the barrier in the dry run, and at the listing or at a purge in the walk that
+  purges, which is then run again, as an operator would run it. A cell fails
+  when a purge that was sent and not answered does not name its unit under
+  `outcomeNotKnown`, or a walk that failed at another call names one.
 - **The cap.** A unit with more than `MAX_PURGE_UNIT_CHECKPOINTS` checkpoints,
   200,000, is kept: a purge deletes a unit whole in one batch, and a batch holds
   the database's writer for as long as it runs. The cap is the largest unit
