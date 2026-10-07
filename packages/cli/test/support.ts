@@ -806,3 +806,27 @@ export async function childrenOfARunningParent(db: CliDb, count: number): Promis
   }
   return children
 }
+
+/**
+ * A child that completed under a parent of one attempt, which failed a second later. The
+ * child is listed before its parent, and nothing keeps it but that parent, which can be
+ * revived. It leaves the test clock a second on.
+ */
+export async function childOfAFailedParent(db: CliDb): Promise<{ parent: string; child: string }> {
+  const parent = await db.store.spawn(QUEUE, 'parent', '{}', { maxAttempts: 1 })
+  const running = await claimActivated(db, 'failing-parent', parent.taskId)
+  const child = await db.store.spawn(QUEUE, 'child', '{}', {
+    childOf: {
+      parentQueue: QUEUE,
+      parentTaskId: parent.taskId,
+      runId: running.runId,
+      claimToken: running.claimToken,
+      replayKey: 'child#0',
+    },
+  })
+  const worked = await claimActivated(db, 'its-child', child.taskId)
+  await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
+  await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
+  await db.store.fail(QUEUE, running.runId, running.claimToken, '{"name":"E"}', null)
+  return { parent: parent.taskId, child: child.taskId }
+}

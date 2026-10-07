@@ -431,12 +431,15 @@ describe('a second try whose look is lost', () => {
         more: walked.more,
       }
     }
-    expect({
-      // The third read of the barrier is the one of the second try.
-      barrier: await shown({ call: 'purgeAdmission', occurrence: 3 }),
-      // The fourth purge is the one of the second try.
-      purge: await shown({ call: 'purgeUnit', occurrence: 4 }),
-    }).toEqual({
+    expect(
+      {
+        // The third read of the barrier is the one of the second try.
+        barrier: await shown({ call: 'purgeAdmission', occurrence: 3 }),
+        // The fourth purge is the one of the second try.
+        purge: await shown({ call: 'purgeUnit', occurrence: 4 }),
+      },
+      'mutation-verdict:behavior:purge-walk-keeps-a-unit-whose-second-look-is-lost',
+    ).toEqual({
       barrier: {
         taken: ['free'],
         kept: [

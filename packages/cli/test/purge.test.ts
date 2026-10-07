@@ -31,6 +31,7 @@ import {
   SENTINEL,
   type SeededTasks,
   changedBy,
+  childOfAFailedParent,
   childrenOfARunningParent,
   claimActivated,
   faulting,
@@ -311,12 +312,22 @@ describe('purge on libSQL', () => {
       expect(gone.exit).toBe(exitCode('not-found'))
       // Run again, it finds the kept unit alone, takes nothing, and exits 0.
       const again = await changedBy(db, () => purge(db, [...PURGE_EVERY_STATE, '--execute']))
+      const keptWithReasons = (units: PurgeAnswer['kept']) =>
+        (units ?? []).map(({ taskId, reasons }) => [taskId, reasons])
       expect({
         exit: again.out.exit,
         unchanged: again.unchanged,
         purged: again.out.answer.purged,
-        kept: idsOf(again.out.answer.kept),
-      }).toEqual({ exit: 0, unchanged: true, purged: [], kept: [child] })
+        kept: keptWithReasons(again.out.answer.kept),
+        // The same unit for the same reason as the run before it printed.
+        keptBefore: keptWithReasons(answer.kept),
+      }).toEqual({
+        exit: 0,
+        unchanged: true,
+        purged: [],
+        kept: [[child, ['parent-can-run-again']]],
+        keptBefore: [[child, ['parent-can-run-again']]],
+      })
     }))
 
   it('prints what it purged on stdout in human text, each unit with the rows that went', () =>
@@ -1229,55 +1240,53 @@ describe('after a purge', () => {
 })
 
 describe('one invocation is one pass, within its bounds', () => {
-  /** A parent of one attempt that failed a second after its child completed, both then years old. */
-  async function childOfAFailedParent(db: CliDb, tasksBehind = 0) {
-    const parent = await db.store.spawn(QUEUE, 'parent', '{}', { maxAttempts: 1 })
-    const running = await claimActivated(db, 'failing-parent', parent.taskId)
-    const child = await db.store.spawn(QUEUE, 'child', '{}', {
-      childOf: {
-        parentQueue: QUEUE,
-        parentTaskId: parent.taskId,
-        runId: running.runId,
-        claimToken: running.claimToken,
-        replayKey: 'child#0',
-      },
-    })
-    const worked = await claimActivated(db, 'its-child', child.taskId)
-    await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
-    await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
-    await db.store.fail(QUEUE, running.runId, running.claimToken, '{"name":"E"}', null)
-    // Plain tasks that complete a second after the parent failed, and so are listed last.
+  /**
+   * A parent of one attempt that failed a second after its child completed, and plain
+   * tasks that completed a second after that and so are listed last, all then years old.
+   */
+  async function failedParentAndChild(db: CliDb, tasksBehind = 0) {
+    const pair = await childOfAFailedParent(db)
     await db.admin.setFakeNowEpochMs(NOW_MS + 2_000)
     const behind = await completedTasks(db, tasksBehind, 'job')
     await aged(db)
-    return { parent: parent.taskId, child: child.taskId, behind }
+    return { ...pair, behind }
   }
 
   it('takes a unit that a unit it took had kept: the child of a failed parent goes with its parent, and a repeat takes nothing', () =>
     onDb('purge-pass-failed-parent', async (db) => {
-      const { parent, child } = await childOfAFailedParent(db)
+      // A child of a running parent stands beside them. The barrier keeps it for good, so
+      // the repeat below compares a kept unit and its reason, and not two empty lists.
+      const [stays] = await childrenOfARunningParent(db, 1)
+      const { parent, child } = await failedParentAndChild(db)
       const dry = await purge(db, PURGE_EVERY_STATE)
       const first = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
       const left = await tasksLeft(db)
       const again = await purge(db, [...PURGE_EVERY_STATE, '--execute'])
       const said = ({ answer }: { answer: PurgeAnswer }) => ({
         taken: idsOf(answer.purged ?? answer.wouldPurge),
-        kept: (answer.kept ?? []).map(({ taskId, reasons }) => [taskId, reasons]),
+        kept: (answer.kept ?? []).map(({ taskId, reasons }) => [taskId, reasons]).sort(),
         more: answer.more,
         finished: answer.finished,
       })
-      expect({ dry: said(dry), first: said(first), left, again: said(again) }).toEqual({
+      const keptForGood = [String(stays), ['parent-can-run-again']]
+      expect({
+        dry: said(dry),
+        first: said(first),
+        pairLeft: left.filter((taskId) => taskId === parent || taskId === child),
+        again: said(again),
+      }).toEqual({
         // A dry run deletes nothing, so the child is read under a parent that is still there.
         dry: {
           taken: [parent],
-          kept: [[child, ['parent-can-run-again']]],
+          kept: [[child, ['parent-can-run-again']], keptForGood].sort(),
           more: false,
           finished: true,
         },
         // The child is listed first and kept, its parent goes, and the child is tried again.
-        first: { taken: [parent, child], kept: [], more: false, finished: true },
-        left: [],
-        again: { taken: [], kept: [], more: false, finished: true },
+        first: { taken: [parent, child], kept: [keptForGood], more: false, finished: true },
+        pairLeft: [],
+        // The repeat takes nothing, and keeps the same unit for the same reason.
+        again: { taken: [], kept: [keptForGood], more: false, finished: true },
       })
     }))
 
@@ -1333,7 +1342,7 @@ describe('one invocation is one pass, within its bounds', () => {
 
   it('repeated until it says no more remain, leaves no unit the barrier would let go: a child, the failed parent that kept it and two tasks behind them, at a limit of 1', () =>
     onDb('purge-pass-chain', async (db) => {
-      const { parent, child, behind } = await childOfAFailedParent(db, 2)
+      const { parent, child, behind } = await failedParentAndChild(db, 2)
       const runs: unknown[] = []
       for (let run = 0; run < 10; run++) {
         const { answer } = await purge(db, [...PURGE_EVERY_STATE, '--limit', '1', '--execute'])

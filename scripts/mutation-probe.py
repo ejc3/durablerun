@@ -22059,19 +22059,19 @@ VERDICTS.update(
         "cli-purge-is-the-retention-port-and-nothing-else": ExpectedVerdict(
             "behavior",
             "packages/cli/test/purge-twin.test.ts",
-            "purge is the retention port and nothing else [libsql] after each command a dump of every table equals the dump the port's calls leave on a twin, and the units it printed are the units that went",
+            "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
             "mutation-verdict:behavior:cli-purge-is-the-retention-port-and-nothing-else",
         ),
         "cli-purge-prints-exactly-the-units-that-went": ExpectedVerdict(
             "behavior",
             "packages/cli/test/purge-twin.test.ts",
-            "purge is the retention port and nothing else [libsql] after each command a dump of every table equals the dump the port's calls leave on a twin, and the units it printed are the units that went",
+            "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
             "mutation-verdict:behavior:cli-purge-prints-exactly-the-units-that-went",
         ),
         "cli-purge-is-the-retention-port-over-a-walk": ExpectedVerdict(
             "behavior",
             "packages/cli/test/purge-twin.test.ts",
-            "purge over the states a walk of the engine leaves, on libSQL leaves the dump the port leaves on a twin the same walk built, after every command, and prints the units that went",
+            "purge over the states a walk of the engine leaves, on libSQL takes what the model lets go at every command, leaves nothing the model lets go when repeated until it says no more remain, and then keeps the same units for the same reasons",
             "mutation-verdict:behavior:cli-purge-is-the-retention-port-over-a-walk",
         ),
     }
@@ -22251,7 +22251,7 @@ VERDICTS["retention-soak-fails-a-control-that-holds-nothing"] = ExpectedVerdict(
 VERDICTS["cli-purge-would-purge-is-what-the-port-lets-go"] = ExpectedVerdict(
     "behavior",
     "packages/cli/test/purge-twin.test.ts",
-    "purge is the retention port and nothing else [libsql] after each command a dump of every table equals the dump the port's calls leave on a twin, and the units it printed are the units that went",
+    "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
     "mutation-verdict:behavior:cli-purge-would-purge-is-what-the-port-lets-go",
 )
 VERDICTS["retention-soak-turns-the-event-loop-each-day"] = ExpectedVerdict(
@@ -22259,6 +22259,39 @@ VERDICTS["retention-soak-turns-the-event-loop-each-day"] = ExpectedVerdict(
     "packages/conformance/test/retention-soak-turns.test.ts",
     "a week's turns of the event loop [libsql] lets a pending timer fire in each of its simulated days",
     "mutation-verdict:behavior:retention-soak-turns-the-event-loop-each-day",
+)
+
+# What a run of the purge leaves, held to the model, and a second try whose look is lost
+# (DESIGN.md §3.11 and §3.12).
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-purge-keeps-no-unit-its-run-freed",
+            "packages/core/src/retention-walk.ts",
+            "  if (execute && failed === null) {\n    rounds: for (;;) {\n",
+            "  if (execute && failed !== null) {\n    rounds: for (;;) {\n",
+            "the walk never tries a kept unit again, so a run ends with no more to do and a unit standing that only a unit it purged had kept",
+        ),
+        (
+            "purge-walk-keeps-a-unit-whose-second-look-is-lost",
+            "packages/core/src/retention-walk.ts",
+            "      // A unit under a second try stays listed as kept, as it last read.\n      return { call: 'purgeAdmission', taskId, error }\n",
+            "      kept.delete(taskId)\n      return { call: 'purgeAdmission', taskId, error }\n",
+            "a unit under a second try whose read of the barrier is lost is in no list of the walk's report",
+        ),
+    )
+)
+VERDICTS["cli-purge-keeps-no-unit-its-run-freed"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/purge-twin.test.ts",
+    "purge is the retention port and nothing else [libsql] after each command the units it printed are the units the model lets go, each gone whole with its rows, and nothing else changed",
+    "mutation-verdict:behavior:cli-purge-keeps-no-unit-its-run-freed",
+)
+VERDICTS["purge-walk-keeps-a-unit-whose-second-look-is-lost"] = ExpectedVerdict(
+    "behavior",
+    "packages/core/test/retention-walk.test.ts",
+    "a second try whose look is lost keeps the unit in the report: as it last read when the read of the barrier is lost, and as one whose outcome is not known when its purge is",
+    "mutation-verdict:behavior:purge-walk-keeps-a-unit-whose-second-look-is-lost",
 )
 
 MUTATIONS = [
@@ -23594,6 +23627,9 @@ STATIC_VERDICT_TITLE_LIVE_ENROLLMENT_FAULT = (
 )
 
 DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
+    "cli-purge-keeps-no-unit-its-run-freed": (
+        "the case runs once for each selected dialect, and its title carries the dialect"
+    ),
     "cli-purge-would-purge-is-what-the-port-lets-go": (
         "the case runs once for each selected dialect, and its title carries the dialect"
     ),
@@ -26202,7 +26238,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1480:
+        if len(MUTATIONS) != 1482:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

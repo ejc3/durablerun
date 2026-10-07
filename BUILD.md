@@ -7194,15 +7194,16 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads `queueStatus` for one fact, whether the test clock is set, and that read counts a
     queue's runs and tasks up to its caps. Trigger: a second command that needs the flag
     and nothing else of the queue, or a `purge` whose time is measured to be that read's.
-  - The registry holds 1480 mutations where main held 1448: three caught by cases of the
+  - The registry holds 1482 mutations where main held 1448: three caught by cases of the
     simulated week, one by the case of the barrier read, fifteen by cases of the verb, one
-    by the case of a read by key whose task is gone between its two reads, and twelve for
-    the one walk and what came with it. Of those twelve, five are caught by core's cases
-    of the walk over a port held in memory, two by cases of the verb, and one each by the
-    case of a flag given twice, of the frozen lists, of a control that holds nothing, of
-    what a dry run lists, and of a week's turns of the event loop. Seven of the verb's
-    fifteen were aimed again when the walk moved into core: three find lines of core's
-    walk, three of the command's handler, and one of the command's reading of its windows.
+    by the case of a read by key whose task is gone between its two reads, and fourteen
+    for the one walk and what came with it. Of those fourteen, six are caught by core's
+    cases of the walk over a port held in memory, two by cases of the verb, one by the
+    case that holds the verb to the model, and one each by the case of a flag given twice,
+    of the frozen lists, of a control that holds nothing, of what a dry run lists, and of
+    a week's turns of the event loop. Seven of the verb's fifteen were aimed again when
+    the walk moved into core: three find lines of core's walk, three of the command's
+    handler, and one of the command's reading of its windows.
 - **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: NOT
   STARTED. Exit test line 44. One thing PR5.2d hands it: the week's count of periods must
   read a unit that a purge printed under `outcomeNotKnown`, by the sha256 of its key, as
