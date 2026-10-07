@@ -6588,7 +6588,7 @@ that contradicts itself is not one anybody meant. `test/flag-twice.test.ts` gene
 cases from the command table, for every flag of every command.
 
 **The purge verb.** `purge --queue Q --target T --completed-after D --cancelled-after D
-[--failed-after D] [--limit N] [--after C] [--execute]` is the one command by which an
+[--failed-after D] [--limit N] [--execute]` is the one command by which an
 operator deletes durable state, and the one command that calls the retention port (section
 3.12). It is that port's calls and nothing else: it runs core's one walk over the port
 (`purgeWalk`, section 3.12), which the simulated week and the tests run too.
@@ -6657,34 +6657,32 @@ operator finds such a task by `inspect`, which prints its state and when its run
 The two reasons `not-ended-a-window-ago` and `unstamped` are therefore reached only when a
 row moves between the listing and the read of the barrier, which the test plants.
 
-One run is one pass, within two bounds. A pass takes what it frees: a unit kept only by a
-unit the same run then purges, as a child is by a failed parent that is listed after it, is
-tried again and goes in that run, so a run does not end with a unit standing for a reason
-that is no longer true. `--limit` is the most units one run purges, or lists as ones it
-would purge, 100 by default and at most 1,000. Whatever the limit, one run examines at most
-1,000 candidates (`PURGE_WALK_EXAMINED`), a first look and a second try each counted, and
-lists them 100 to a page (`PURGE_WALK_PAGE`). So one run sends at most 10 listings, 1,000
-purge batches and 1,000 reads of the barrier, and prints at most 1,000 units: a candidate
-the run purges costs one batch, and one the barrier keeps costs two, the purge and the read
-of why. With 30 kept children in front of two tasks, a run at a limit of 1 sends one
-listing, 31 purges and 30 reads, and at a limit of 100 one listing, 32 purges and 30 reads,
-which a case counts. `examined` is the number of looks the run took.
+One run is one pass from the oldest candidate, and `--limit` is its one bound. A pass takes
+what it frees: a unit kept only by a unit the same run then purges, as a child is by a
+failed parent that is listed after it, is tried again and goes in that run. `--limit` is the
+most units one run purges, or lists as ones it would purge, 100 by default and at most
+1,000. Nothing bounds the candidates a run examines but the queue. One run sends a listing
+for every 100 candidates (`PURGE_WALK_PAGE`), a purge for every candidate it reaches, and a
+read of the barrier for every one it keeps, so a queue whose kept units grow costs each run
+more: under a policy with no `--failed-after`, the children of failed parents are candidates
+for as long as they stand, and every run purges at and reads each of them again. The answer
+prints, as `examined`, how many candidates the run looked at, a second try counted with a
+first look, so that cost is in every report. With 30 kept children in front of two tasks, a
+run at a limit of 1 sends one listing, 31 purges and 30 reads, and at a limit of 100 one
+listing, 32 purges and 30 reads, which a case counts. A bound on what a run examines, with a
+place to resume from, was built and taken out again, and BUILD.md records it as an option
+with what building it taught.
 
 `finished` says that every call the run made was answered. `more` is false only when the run
-reached its end: every candidate from where it began was examined, and no kept unit was owed
-another try. It is true when the run stopped at its limit or at the candidates it may
-examine with work behind it, and when it stopped at a failure. So when a run ends with
-`finished: true` and `more: false`, the same command line run again at once, on a database
-nothing else changed, purges nothing and lists the same units as kept for the same reasons.
-A case holds that for the child of a failed parent, and another over the states ten walks of
-the engine leave. When candidates stand unread behind the place a run stopped, it prints
-that place as `resumeAfter`: the instant the last unit it examined ended, a colon, and that
-task's id. `--after` takes it back and begins the next run there, so a queue whose first
-thousand candidates the barrier keeps is still purged behind them, by runs that each say
-where the next begins. After `--after`, `more: false` speaks of the candidates from that
-place on. A run from the oldest, which a scheduled purge is, says it of the whole queue. An
-`--after` that is no such place is refused with exit 2 before anything is sent, and the
-refusal does not quote it.
+reached its end: every candidate was examined, and no kept unit was owed another try. It is
+true when the limit stopped the run with a candidate unread or with a kept unit owed another
+try, and when it stopped at a failure. The same command line run again, from the oldest,
+then takes what the first left. So when a run ends with `finished: true` and `more: false`,
+the same command line run again at once, on a database nothing else changed, purges nothing
+and lists the same units as kept for the same reasons. And a command line repeated until it
+says `more: false` leaves no unit the barrier would let go. Cases hold that for a child, the
+failed parent that kept it and two tasks behind them at a limit of 1, and for 150 children
+listed before the parent that holds their outcome, past the limit.
 
 Besides a command line it cannot read, the command refuses three things before it reads a
 candidate. A `--target` that does not name the store exits 2 before anything opens, as for
@@ -7108,35 +7106,33 @@ maintainer approved the two contract changes at the end of this section on
   cursor whose instant is no epoch-ms in range, is a `PortRefusalError`. A
   limit that is no whole number from 1 to 1,000 is a `RangeError`, as it is for
   an operator's read.
-- **The walk.** `purgeWalk(retention, queue, policy, { limit, execute?,
-  examine?, after? })` is the one way a caller goes through a queue's
-  candidates, in core beside the port. The verb, the simulated week, the verb's
-  twin and the fault matrix run it, where each had written the walk for itself
-  with a page and a stopping rule of its own. Core's entry exports it, where it
-  exports no builder of a purge, because it takes the port and calls nothing but
-  the port's three methods: a caller it is handed to has no way round the
-  barrier. One walk is one pass. It lists the candidates oldest first,
-  `PURGE_WALK_PAGE` (100) to a page, and looks at each once: with `execute` it
-  sends the unit's purge and reads what the barrier says of a unit the purge
-  kept, and without it only reads. A pass is applied until it lets nothing more
-  go. A kept unit is tried again when a unit the walk took since could be what
-  kept it: every condition that is false of it must be one a purge can make
-  hold, which B3, B4 and B5 are, and where its parent is what keeps it, the walk
-  must have taken the task its key names. That is repeated until a round finds
-  none, and a round is owed only after a take, so the rounds end. A walk without
-  `execute` deletes nothing and tries nothing again. Two numbers bound a walk:
-  `limit`, the most units it takes, and `examine`, the most candidates it looks
-  at, first looks and second tries together, which is at most and by default
-  `PURGE_WALK_EXAMINED` (1,000, the most rows any read of the operator's lists).
-  A walk that stops with candidates unread answers the place it stopped as
-  `resumeAfter`, and a walk given that place as `after` examines only what
-  follows it. `more` is false only when the walk reached its end: every
-  candidate from where it began was looked at, and no kept unit was owed another
-  try. A call of the port that fails ends the walk, which throws nothing: it
-  answers what it had reached, the call that failed, and under `outcomeNotKnown`
-  the unit whose purge was sent and not answered.
-  `core/test/retention-walk.test.ts` holds each of these over a port held in
-  memory.
+- **The walk.** `purgeWalk(retention, queue, policy, { limit, execute? })` is
+  the one way a caller goes through a queue's candidates, in core beside the
+  port. The verb, the simulated week, the verb's twin and the fault matrix run
+  it, where each had written the walk for itself with a page and a stopping rule
+  of its own. Core's entry exports it, where it exports no builder of a purge,
+  because it takes the port and calls nothing but the port's three methods: a
+  caller it is handed to has no way round the barrier. One walk is one pass from
+  the oldest candidate. It lists the candidates `PURGE_WALK_PAGE` (100) to a
+  page and looks at each once: with `execute` it sends the unit's purge and
+  reads what the barrier says of a unit the purge kept, and without it only
+  reads. A pass is applied until it lets nothing more go. A kept unit is tried
+  again when a unit the walk took since could be what kept it: every condition
+  that is false of it must be one a purge can make hold, which B3, B4 and B5
+  are, and where its parent is what keeps it, the walk must have taken the task
+  its key names. That is repeated until a round finds none, and a round is owed
+  only after a take, so the rounds end. A walk without `execute` deletes nothing
+  and tries nothing again. One number bounds a walk: `limit`, the most units it
+  takes. Nothing bounds the candidates it looks at but the queue, and `examined`
+  says how many looks it took. `more` is false only when the walk reached its
+  end: every candidate was looked at, and no kept unit was owed another try. A
+  walk that its limit stopped says `more`, and the same walk run again takes
+  what it left. A call of the port that fails ends the walk, which throws
+  nothing: it answers what it had reached, the call that failed, and under
+  `outcomeNotKnown` the unit whose purge was sent and not answered. A unit under
+  a second try stays listed as kept, as it last read, when the read of the
+  barrier in that try is lost. `core/test/retention-walk.test.ts` holds each of
+  these over a port held in memory.
 - **The cap.** A unit with more than `MAX_PURGE_UNIT_CHECKPOINTS` checkpoints,
   200,000, is kept: a purge deletes a unit whole in one batch, and a batch holds
   the database's writer for as long as it runs. The cap is the largest unit

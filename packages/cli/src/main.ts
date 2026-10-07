@@ -75,7 +75,7 @@ import {
   openStore,
   storeTarget,
 } from './open-store.js'
-import { cursorOf, cursorText, keptView, limitOf, policyOf, policyView, unitView } from './purge.js'
+import { keptView, limitOf, policyOf, policyView, unitView } from './purge.js'
 import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 import { userValue } from './render.js'
@@ -1192,14 +1192,13 @@ const PURGE_CALL_LABEL = {
  * what keeps it is then read, and it is listed as kept, or as gone when no task is there at
  * that read, which is a unit another purge took or this call delivered twice.
  *
- * One run is one pass, within two bounds. A pass takes what it frees: a unit kept only by
- * a unit the same run then purges is tried again and goes with it. `--limit` is the most
- * units a run takes, and it examines at most `PURGE_WALK_EXAMINED` candidates whatever the
- * limit, so the batches one run sends and the entries it prints are bounded. `finished`
- * says every call was answered. `more` is false only when the run reached its end: every
- * candidate from where it began was examined and no kept unit was owed another try. When
- * candidates stand unread behind the place a run stopped, it prints that place as
- * `resumeAfter`, and `--after` begins the next run there, past the units the barrier keeps.
+ * One run is one pass from the oldest candidate. A pass takes what it frees: a unit kept
+ * only by a unit the same run then purges is tried again and goes with it. `--limit` is the
+ * most units a run takes, and its one bound: nothing bounds the candidates it examines but
+ * the queue, and `examined` prints how many it looked at. `finished` says every call was
+ * answered. `more` is false only when the run reached its end: every candidate was
+ * examined and no kept unit was owed another try. When the limit stopped it short, the
+ * same command line run again takes what it left.
  *
  * It refuses, before any candidate is read, a schema version that is not the build's, whose
  * indexes the purge's statements read, and a database whose test clock is set, because a
@@ -1218,18 +1217,9 @@ const purge: Handler = async (context) => {
   const bound = limitOf(strings.limit)
   if ('refused' in bound) return flagRefused(bound.refused)
   const { limit } = bound
-  const from = cursorOf(strings.after)
-  if ('refused' in from) return flagRefused(from.refused)
-  const { after } = from
   const queue = strings.queue ?? ''
   const execute = booleans.execute === true
-  const named = {
-    queue,
-    execute,
-    policy: policyView(policy),
-    limit,
-    after: after === null ? null : cursorText(after),
-  }
+  const named = { queue, execute, policy: policyView(policy), limit }
   const recorded = await store.admin.schemaVersion()
   if (recorded !== store.window.newest) {
     const message =
@@ -1254,11 +1244,7 @@ const purge: Handler = async (context) => {
       },
     }
   }
-  const walked = await purgeWalk(store.retention, queue, policy, {
-    limit,
-    execute,
-    ...(after === null ? {} : { after }),
-  })
+  const walked = await purgeWalk(store.retention, queue, policy, { limit, execute })
   const report = {
     ...named,
     examined: walked.examined,
@@ -1269,7 +1255,6 @@ const purge: Handler = async (context) => {
     gone: walked.gone.map(unitView),
     outcomeNotKnown: walked.outcomeNotKnown.map(unitView),
     more: walked.more,
-    resumeAfter: walked.resumeAfter === null ? null : cursorText(walked.resumeAfter),
   }
   const { failed } = walked
   if (failed !== null) {

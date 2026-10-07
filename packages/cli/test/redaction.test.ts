@@ -194,7 +194,6 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
         // Refusals: a window and a limit that cannot be read, a window left out, and --yes.
         ['purge', '--completed-after', SENTINEL, '--cancelled-after', '1h', ...writeFlags(db)],
         ['purge', ...windows, '--limit', SENTINEL, ...writeFlags(db)],
-        ['purge', ...windows, '--after', SENTINEL, ...writeFlags(db)],
         ['purge', '--completed-after', '1h', ...writeFlags(db)],
         ['purge', ...windows, '--yes', ...writeFlags(db)],
       ]

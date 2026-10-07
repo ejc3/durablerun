@@ -1,14 +1,11 @@
 import {
-  MAX_EPOCH_MS,
   MIN_RETENTION_SECONDS,
   OPERATOR_LIST_CAP,
   PURGE_BARRIER_CONDITIONS,
   type PurgeAdmission,
   type PurgeBarrierCondition,
   type PurgeCandidate,
-  type PurgeCursor,
   type RetentionPolicy,
-  requirePortString,
 } from '@durablerun/core'
 import { PURGE_DEFAULT_LIMIT, durationSeconds, wholeNumber } from './commands.js'
 import { userValue } from './render.js'
@@ -87,39 +84,6 @@ export function limitOf(
     return { refused: `--limit takes a whole number from 1 to ${OPERATOR_LIST_CAP}` }
   }
   return { limit }
-}
-
-/**
- * A place in a queue's candidates as the command prints it and takes it back: the instant
- * its task ended, a colon, and the task's id. An id is minted by the engine and is no value
- * a user wrote.
- */
-export const cursorText = (cursor: PurgeCursor): string => `${cursor.endedAtMs}:${cursor.taskId}`
-
-/**
- * The place `--after` names, or why the flag cannot be read. It is refused here, before
- * anything is sent, and the refusal does not quote it.
- */
-export function cursorOf(
-  text: string | undefined,
-): { readonly after: PurgeCursor | null } | { readonly refused: string } {
-  if (text === undefined) return { after: null }
-  const refused = {
-    refused:
-      '--after takes the place an earlier purge printed as resumeAfter: an instant and a task id joined by a colon',
-  }
-  const colon = text.indexOf(':')
-  if (colon < 1 || !/^(0|[1-9][0-9]{0,15})$/.test(text.slice(0, colon))) return refused
-  const endedAtMs = Number(text.slice(0, colon))
-  const taskId = text.slice(colon + 1)
-  if (endedAtMs > MAX_EPOCH_MS || taskId === '') return refused
-  // The port's own check of a task id, so a place the port would refuse is refused here.
-  try {
-    requirePortString('taskId', taskId)
-  } catch {
-    return refused
-  }
-  return { after: { endedAtMs, taskId } }
 }
 
 /**

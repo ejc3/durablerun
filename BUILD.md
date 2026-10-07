@@ -7153,15 +7153,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     times, each with a page and a stopping rule of its own, and the pass the week showed
     was not the pass the verb ran: the verb kept the child of a failed parent that it
     purged later in the same run, and ended finished with nothing more to do. One walk is
-    one pass, which takes what it frees. DESIGN.md sections 3.11 and 3.12 state its two
-    bounds and what `finished` and `more` mean.
-  - The cursor an operator hands back is built: `purge --after <cursor>`, with the place a
-    run stopped printed as `resumeAfter`. It was recorded here as an option, and a
-    measurement met its trigger: with 30 kept children in front of two tasks, a run at a
-    limit of 1 sent 32 listings, 31 purges and 30 reads of the barrier to purge one unit,
-    because a page was the limit. One run now examines at most 1,000 candidates whatever
-    its limit and lists them 100 to a page, and the same run sends one listing, 31 purges
-    and 30 reads.
+    one pass, which takes what it frees. DESIGN.md sections 3.11 and 3.12 state its one
+    bound, what a run costs, and what `finished` and `more` mean.
+  - Option for a bound on the candidates one run examines, with a place to resume from,
+    not built, with its trigger. One run walks every candidate from the oldest, and a
+    candidate the barrier keeps costs a purge batch and a read on every run for as long as
+    it is kept. Trigger: a queue on which `purge` reports more kept units than purged ones
+    on two runs in a row, or a run an operator reports as slow for that reason. The bound
+    and the cursor were built in this pull request, as a cap of 1,000 candidates a run
+    with `purge --after <cursor>`, and taken out again, because both went wrong in ways
+    the next builder must close. A resumed run must return to the kept units a later take
+    freed: the one built here did no second tries once its bound stopped it, so a chain of
+    resumed runs ended finished, with no more to do, and a unit standing that the barrier
+    would let go. And a fixed command line must not starve behind kept units: the one
+    built here examined the same thousand kept units on every run from the oldest and
+    exited 0 having purged nothing, where the walk without a bound goes past them. What
+    stands in its place: a page is no longer the limit, so the run that sent 32 listings
+    to purge one unit behind 30 kept ones sends one, and DESIGN.md section 3.11 states
+    what a run costs, which nothing bounds but the queue.
   - What else the verb and the parser now do: a unit whose purge was sent and not answered
     is printed whole under `outcomeNotKnown`; a failure before any unit was reached prints
     as any failure does; a flag given twice is refused by the parser, for every command;
@@ -7185,14 +7194,15 @@ these three things; nothing else in the system does I/O, time, or randomness.
     reads `queueStatus` for one fact, whether the test clock is set, and that read counts a
     queue's runs and tasks up to its caps. Trigger: a second command that needs the flag
     and nothing else of the queue, or a `purge` whose time is measured to be that read's.
-  - The registry holds 1484 mutations where main held 1448: three caught by cases of the
+  - The registry holds 1480 mutations where main held 1448: three caught by cases of the
     simulated week, one by the case of the barrier read, fifteen by cases of the verb, one
-    by the case of a read by key whose task is gone between its two reads, and sixteen for
-    the one walk and what came with it. Of those sixteen, seven are caught by core's cases
-    of the walk over a port held in memory, four by cases of the verb, and one each by the
+    by the case of a read by key whose task is gone between its two reads, and twelve for
+    the one walk and what came with it. Of those twelve, five are caught by core's cases
+    of the walk over a port held in memory, two by cases of the verb, and one each by the
     case of a flag given twice, of the frozen lists, of a control that holds nothing, of
-    what a dry run lists, and of a week's turns of the event loop. Seven entries the verb
-    had registered are aimed at the walk's lines, where the lines they found went.
+    what a dry run lists, and of a week's turns of the event loop. Seven of the verb's
+    fifteen were aimed again when the walk moved into core: three find lines of core's
+    walk, three of the command's handler, and one of the command's reading of its windows.
 - **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: NOT
   STARTED. Exit test line 44. One thing PR5.2d hands it: the week's count of periods must
   read a unit that a purge printed under `outcomeNotKnown`, by the sha256 of its key, as

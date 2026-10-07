@@ -309,9 +309,8 @@ describe("what core's entry exports of retention", () => {
     const exported = Object.keys(inside)
       .filter((name) => name in entry)
       .sort()
-    // The walk and its two bounds are exported: the walk calls only the port.
+    // The walk and the size of its page are exported: the walk calls only the port.
     expect(exported, 'mutation-verdict:behavior:entry-exports-no-builder-of-a-purge').toEqual([
-      'PURGE_WALK_EXAMINED',
       'PURGE_WALK_PAGE',
       'createRetention',
       'purgeWalk',

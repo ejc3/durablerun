@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   PURGE_BARRIER_CONDITIONS,
-  PURGE_WALK_EXAMINED,
   PURGE_WALK_PAGE,
   type PurgeAdmission,
   type PurgeBarrierCondition,
   type PurgeCandidate,
-  type PurgeCursor,
   type PurgeWalkReport,
   type Retention,
   type RetentionPolicy,
@@ -139,7 +137,6 @@ const said = (report: PurgeWalkReport) => ({
   gone: report.gone.map(({ taskId }) => taskId),
   examined: report.examined,
   more: report.more,
-  resumeAfter: report.resumeAfter,
 })
 const ids = (count: number, prefix: string): string[] =>
   Array.from({ length: count }, (_, index) => `${prefix}-${String(index).padStart(4, '0')}`)
@@ -167,7 +164,6 @@ describe('one walk is one pass', () => {
         gone: [],
         examined: 6,
         more: false,
-        resumeAfter: null,
       },
       calls: { purgeCandidates: 1, purgeUnit: 6, purgeAdmission: 3 },
       again: {
@@ -176,7 +172,6 @@ describe('one walk is one pass', () => {
         gone: [],
         examined: 1,
         more: false,
-        resumeAfter: null,
       },
     })
   })
@@ -196,7 +191,6 @@ describe('one walk is one pass', () => {
         gone: [],
         examined: 2,
         more: false,
-        resumeAfter: null,
       },
       rows: [null],
       calls: { purgeCandidates: 1, purgeUnit: 0, purgeAdmission: 2 },
@@ -237,7 +231,6 @@ describe('one walk is one pass', () => {
       gone: [],
       examined: 6,
       more: false,
-      resumeAfter: null,
       // What an outcome's holder kept is tried again after a take. What its age keeps is
       // not, though its parent went, and neither is the child of a parent that stands.
       tried: { held: 2, 'young-child': 1, 'under-a-live-parent': 1, holder: 1, parent: 1 },
@@ -260,81 +253,29 @@ describe('one walk is one pass', () => {
       gone: ['a'],
       examined: 2,
       more: false,
-      resumeAfter: null,
     })
   })
 })
 
 describe('what bounds a walk', () => {
-  it('stops at the candidates it may examine, says where, and walks resumed there reach what stands behind with one look at each unit', async () => {
+  it('walks every candidate from the oldest, a page at a time, whatever the barrier keeps in front of what it lets go', async () => {
     const kept = ids(250, 'kept')
     const behind = ids(3, 'zfree')
     const queue = queueOf([
       ...kept.map((taskId, index) => stuck(taskId, index)),
       ...behind.map((taskId, index) => free(taskId, 1_000 + index)),
     ])
-    const walks: unknown[] = []
-    let after: PurgeCursor | undefined
-    for (let walk = 0; walk < 5; walk++) {
-      const walked = await purgeWalk(queue.port, Q, POLICY, {
-        limit: 10,
-        examine: 120,
-        execute: true,
-        ...(after === undefined ? {} : { after }),
-      })
-      walks.push([walked.examined, walked.kept.length, walked.taken.length, walked.more])
-      if (walked.resumeAfter === null) break
-      after = walked.resumeAfter
-    }
-    expect(
-      {
-        walks,
-        listings: queue.calls.purgeCandidates,
-        mostLooksAtOneUnit: Math.max(...queue.tried.values()),
-        left: queue.there.size,
-      },
-      'mutation-verdict:behavior:purge-walk-holds-the-candidates-it-examines',
-    ).toEqual({
-      walks: [
-        [120, 120, 0, true],
-        [120, 120, 0, true],
-        [13, 10, 3, false],
-      ],
-      // Two pages for each walk that read 120 candidates, and one for the last.
-      listings: 5,
-      mostLooksAtOneUnit: 1,
-      left: 250,
-    })
-  })
-
-  it('examines no more than its cap when no bound is named, and a page is not the limit', async () => {
-    const queue = queueOf([
-      ...ids(PURGE_WALK_EXAMINED + 1, 'kept').map((taskId, index) => stuck(taskId, index)),
-      free('zfree', 5_000),
-    ])
-    const first = await purgeWalk(queue.port, Q, POLICY, { limit: 1, execute: true })
-    const listings = queue.calls.purgeCandidates
-    const next = await purgeWalk(queue.port, Q, POLICY, {
-      limit: 1,
-      execute: true,
-      ...(first.resumeAfter === null ? {} : { after: first.resumeAfter }),
-    })
-    expect(
-      {
-        first: [first.examined, first.taken.length, first.more, first.resumeAfter?.taskId],
-        listings,
-        next: [next.examined, said(next).taken, next.more, next.resumeAfter],
-      },
-      'mutation-verdict:behavior:purge-walk-answers-where-it-stopped',
-    ).toEqual({
-      first: [
-        PURGE_WALK_EXAMINED,
-        0,
-        true,
-        `kept-${String(PURGE_WALK_EXAMINED - 1).padStart(4, '0')}`,
-      ],
-      listings: PURGE_WALK_EXAMINED / PURGE_WALK_PAGE,
-      next: [2, ['zfree'], false, null],
+    const walked = await purgeWalk(queue.port, Q, POLICY, { limit: 10, execute: true })
+    const again = await purgeWalk(queue.port, Q, POLICY, { limit: 10, execute: true })
+    expect({
+      walked: [walked.examined, walked.kept.length, said(walked).taken, walked.more],
+      // Each walk reads every candidate again: three pages the first time, and three more.
+      listings: queue.calls.purgeCandidates,
+      again: [again.examined, again.kept.length, again.taken.length, again.more],
+    }).toEqual({
+      walked: [253, 250, behind, false],
+      listings: 6,
+      again: [250, 250, 0, false],
     })
   })
 
@@ -349,17 +290,17 @@ describe('what bounds a walk', () => {
     const two = await purgeWalk(inside.port, Q, POLICY, { limit: 2, execute: true })
     expect(
       {
-        all: [all.taken.length, all.more, all.resumeAfter, exact.calls.purgeCandidates],
-        page: [page.taken.length, page.more, page.resumeAfter?.taskId, over.calls.purgeCandidates],
-        two: [said(two).taken, two.more, two.resumeAfter?.taskId, inside.calls.purgeCandidates],
+        all: [all.taken.length, all.more, exact.calls.purgeCandidates],
+        page: [page.taken.length, page.more, over.calls.purgeCandidates],
+        two: [said(two).taken, two.more, inside.calls.purgeCandidates],
       },
       'mutation-verdict:behavior:purge-walk-sends-no-listing-to-learn-more',
     ).toEqual({
       // The limit is exactly what there was: nothing follows the page, so no more remain.
-      all: [PURGE_WALK_PAGE, false, null, 1],
+      all: [PURGE_WALK_PAGE, false, 1],
       // One unit follows the page, which the page itself says.
-      page: [PURGE_WALK_PAGE, true, 'free-0099', 1],
-      two: [['free-0000', 'free-0001'], true, 'free-0001', 1],
+      page: [PURGE_WALK_PAGE, true, 1],
+      two: [['free-0000', 'free-0001'], true, 1],
     })
   })
 
@@ -377,21 +318,15 @@ describe('what bounds a walk', () => {
         gone: [],
         examined: 2,
         more: true,
-        resumeAfter: null,
       },
-      { taken: ['child'], kept: [], gone: [], examined: 1, more: false, resumeAfter: null },
+      { taken: ['child'], kept: [], gone: [], examined: 1, more: false },
     ])
   })
 
-  it('refuses a limit or a number to examine that is no positive whole number, and one over the cap', async () => {
+  it('refuses a limit that is no positive whole number, before any call', async () => {
     const { port, calls } = queueOf([free('a', 1)])
     const refused: string[] = []
-    for (const bounds of [
-      { limit: 0 },
-      { limit: 1.5 },
-      { limit: 1, examine: 0 },
-      { limit: 1, examine: PURGE_WALK_EXAMINED + 1 },
-    ]) {
+    for (const bounds of [{ limit: 0 }, { limit: 1.5 }, { limit: -1 }]) {
       await purgeWalk(port, Q, POLICY, bounds).then(
         () => refused.push(`taken: ${JSON.stringify(bounds)}`),
         () => undefined,
@@ -417,7 +352,7 @@ describe('a call of the port that fails', () => {
         left: [...queue.there.keys()],
       }
     }
-    const stopped = { gone: [], more: true, resumeAfter: null }
+    const stopped = { gone: [], more: true }
     expect(
       {
         listing: await shown({ call: 'purgeCandidates', occurrence: 1 }),
@@ -519,6 +454,58 @@ describe('a second try whose look is lost', () => {
         failed: ['purgeUnit', 'held'],
         more: true,
       },
+    })
+  })
+})
+
+describe('the same walk run again until it says no more remain', () => {
+  /** Run the walk at `limit` until it answers `more: false`: what each run took, and whether it said more. */
+  async function chain(queue: ReturnType<typeof queueOf>, limit: number) {
+    const runs: [string[] | number, boolean][] = []
+    for (let run = 0; run < 20; run++) {
+      const walked = await purgeWalk(queue.port, Q, POLICY, { limit, execute: true })
+      const taken = said(walked).taken
+      runs.push([taken.length > 3 ? taken.length : taken, walked.more])
+      if (!walked.more) break
+    }
+    return { runs, left: [...queue.there.keys()] }
+  }
+
+  it('leaves no unit the barrier would let go: a child, the parent that kept it and two tasks behind them, at a limit of 1', async () => {
+    const queue = queueOf([
+      childOf('parent', 'child', 1),
+      free('parent', 2),
+      free('task-a', 3),
+      free('task-b', 4),
+    ])
+    expect(await chain(queue, 1)).toEqual({
+      runs: [
+        // The child is listed first and kept, its parent is taken, and the limit is met.
+        [['parent'], true],
+        [['child'], true],
+        [['task-a'], true],
+        [['task-b'], false],
+      ],
+      left: [],
+    })
+  })
+
+  it('leaves no unit the barrier would let go: 150 children listed before the parent that holds their outcome, past the limit', async () => {
+    const children = ids(150, 'child').map(
+      (taskId, index): Unit => ({
+        taskId,
+        endedAtMs: index,
+        keptBy: (there) => (there.has('parent') ? ['noRunHoldsTheOutcome'] : []),
+      }),
+    )
+    const queue = queueOf([...children, free('parent', 1_000)])
+    expect(await chain(queue, 100)).toEqual({
+      // The parent and 99 of the children it freed, then the 51 that were owed a try.
+      runs: [
+        [100, true],
+        [51, false],
+      ],
+      left: [],
     })
   })
 })

@@ -76,7 +76,6 @@ type PurgeAnswer = JsonAnswer & {
   readonly outcomeNotKnown?: readonly Unit[]
   readonly examined?: number
   readonly more?: boolean
-  readonly resumeAfter?: string | null
   readonly finished?: boolean
   readonly stoppedAt?: { readonly call: string; readonly taskId?: string }
 }
@@ -622,46 +621,6 @@ describe('what purge refuses, each beside the command that is not refused', () =
         ['--limit many', 2, true, 0],
       ])
       expect(await control(db, [...PURGE_EVERY_STATE, '--execute', '--limit', '1000'])).toEqual({
-        exit: 0,
-        unchanged: false,
-      })
-    }))
-
-  it('refuses an --after that is no place a purge printed, before anything is sent, and takes one that is', () =>
-    onDb('purge-cursor', async (db) => {
-      await completedTasks(db, 2, 'job')
-      await aged(db)
-      const places = [
-        'nowhere',
-        '12',
-        ':a-task',
-        '5:',
-        '1e3:a-task',
-        '1.5:a-task',
-        '007:a-task',
-        // Past the last instant the engine stores, in sixteen digits and in seventeen.
-        '9999999999999999:a-task',
-        '99999999999999999:a-task',
-        `1:${'x'.repeat(300)}`,
-      ]
-      const answered: unknown[] = []
-      for (const place of places) {
-        const asked = await refused(db, [...PURGE_WINDOWS, '--execute', '--after', place])
-        // The refusal does not quote what it was given.
-        answered.push([
-          asked.exit,
-          asked.kind,
-          asked.unchanged,
-          asked.labels.length,
-          asked.message.includes(place),
-        ])
-      }
-      expect(
-        answered,
-        'mutation-verdict:behavior:cli-purge-refuses-a-cursor-it-cannot-read',
-      ).toEqual(places.map(() => [2, 'usage', true, 0, false]))
-      // The control: a place before every task is taken, and the purge begins there.
-      expect(await control(db, [...PURGE_WINDOWS, '--execute', '--after', '0:a-task'])).toEqual({
         exit: 0,
         unchanged: false,
       })
@@ -1271,7 +1230,7 @@ describe('after a purge', () => {
 
 describe('one invocation is one pass, within its bounds', () => {
   /** A parent of one attempt that failed a second after its child completed, both then years old. */
-  async function childOfAFailedParent(db: CliDb) {
+  async function childOfAFailedParent(db: CliDb, tasksBehind = 0) {
     const parent = await db.store.spawn(QUEUE, 'parent', '{}', { maxAttempts: 1 })
     const running = await claimActivated(db, 'failing-parent', parent.taskId)
     const child = await db.store.spawn(QUEUE, 'child', '{}', {
@@ -1287,8 +1246,11 @@ describe('one invocation is one pass, within its bounds', () => {
     await db.store.complete(QUEUE, worked.runId, worked.claimToken, '{}')
     await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
     await db.store.fail(QUEUE, running.runId, running.claimToken, '{"name":"E"}', null)
+    // Plain tasks that complete a second after the parent failed, and so are listed last.
+    await db.admin.setFakeNowEpochMs(NOW_MS + 2_000)
+    const behind = await completedTasks(db, tasksBehind, 'job')
     await aged(db)
-    return { parent: parent.taskId, child: child.taskId }
+    return { parent: parent.taskId, child: child.taskId, behind }
   }
 
   it('takes a unit that a unit it took had kept: the child of a failed parent goes with its parent, and a repeat takes nothing', () =>
@@ -1321,99 +1283,75 @@ describe('one invocation is one pass, within its bounds', () => {
 
   it('sends one listing, a purge for each candidate it reaches and a read of the barrier for each it keeps: 30 kept children in front of two tasks, at a limit of 1 and of 100', async () => {
     const reached: unknown[] = []
+    const expected: unknown[] = []
     for (const limit of [1, 100]) {
       await onDb(`purge-pass-kept-${limit}`, async (db) => {
-        await childrenOfARunningParent(db, 30)
+        const kept = await childrenOfARunningParent(db, 30)
         await db.admin.setFakeNowEpochMs(NOW_MS + 1_000)
         const behind = await completedTasks(db, 2, 'job')
         await aged(db)
-        const counted = async (flags: readonly string[]) => {
-          const recorded = recordingOpener()
-          const { exit, answer } = await purge(db, flags, recorded.opener)
-          const labels = recorded.sent().map((batch) => batch.label)
-          const count = (label: string) => labels.filter((sent) => sent === label).length
-          return {
-            exit,
-            purged: idsOf(answer.purged),
-            kept: (answer.kept ?? []).length,
-            examined: answer.examined,
-            more: answer.more,
-            resumes: typeof answer.resumeAfter === 'string',
-            listings: count('purge-candidates'),
-            purges: count('purge-unit'),
-            barrierReads: count('purge-admission'),
-            resumeAfter: answer.resumeAfter,
-          }
-        }
-        const { resumeAfter, ...first } = await counted([
-          ...PURGE_WINDOWS,
-          '--limit',
-          String(limit),
-          '--execute',
-        ])
-        // Where the first stopped with more behind it, the next begins: it reaches what
-        // stands behind the kept units without reading one of them again.
-        const { resumeAfter: _next, ...resumed } =
-          typeof resumeAfter === 'string'
-            ? await counted([...PURGE_WINDOWS, '--after', resumeAfter, '--execute'])
-            : { resumeAfter: null }
-        reached.push({ limit, behind: behind.length, first, resumed })
+        const recorded = recordingOpener()
+        const { exit, answer } = await purge(
+          db,
+          [...PURGE_WINDOWS, '--limit', String(limit), '--execute'],
+          recorded.opener,
+        )
+        const labels = recorded.sent().map((batch) => batch.label)
+        const count = (label: string) => labels.filter((sent) => sent === label).length
+        const left = await tasksLeft(db)
+        reached.push({
+          limit,
+          exit,
+          purged: idsOf(answer.purged),
+          kept: idsOf(answer.kept).sort(),
+          examined: answer.examined,
+          more: answer.more,
+          listings: count('purge-candidates'),
+          purges: count('purge-unit'),
+          barrierReads: count('purge-admission'),
+          behindLeft: behind.filter((taskId) => left.includes(taskId)),
+        })
+        // The older of the two tasks behind the kept units goes at a limit of 1, and both
+        // go at 100. Every kept child is purged at and read once either way.
+        const went = behind.slice(0, limit)
+        expected.push({
+          limit,
+          exit: 0,
+          purged: went,
+          kept: [...kept].sort(),
+          examined: 30 + went.length,
+          more: went.length < behind.length,
+          listings: 1,
+          purges: 30 + went.length,
+          barrierReads: 30,
+          behindLeft: behind.slice(went.length),
+        })
       })
     }
-    const [one, two] = [reached[0], reached[1]] as {
-      first: { purged: string[] }
-      resumed: { purged?: string[] }
-    }[]
-    expect(reached, 'mutation-verdict:behavior:cli-purge-resumes-after-its-cursor').toEqual([
-      {
-        limit: 1,
-        behind: 2,
-        first: {
-          exit: 0,
-          purged: one?.first.purged,
-          kept: 30,
-          examined: 31,
-          more: true,
-          resumes: true,
-          listings: 1,
-          purges: 31,
-          barrierReads: 30,
-        },
-        resumed: {
-          exit: 0,
-          purged: one?.resumed.purged,
-          kept: 0,
-          examined: 1,
-          more: false,
-          resumes: false,
-          listings: 1,
-          purges: 1,
-          barrierReads: 0,
-        },
-      },
-      {
-        limit: 100,
-        behind: 2,
-        first: {
-          exit: 0,
-          purged: two?.first.purged,
-          kept: 30,
-          examined: 32,
-          more: false,
-          resumes: false,
-          listings: 1,
-          purges: 32,
-          barrierReads: 30,
-        },
-        resumed: {},
-      },
-    ])
-    expect([
-      one?.first.purged.length,
-      one?.resumed.purged?.length,
-      two?.first.purged.length,
-    ]).toEqual([1, 1, 2])
+    expect(reached).toEqual(expected)
   }, 120_000)
+
+  it('repeated until it says no more remain, leaves no unit the barrier would let go: a child, the failed parent that kept it and two tasks behind them, at a limit of 1', () =>
+    onDb('purge-pass-chain', async (db) => {
+      const { parent, child, behind } = await childOfAFailedParent(db, 2)
+      const runs: unknown[] = []
+      for (let run = 0; run < 10; run++) {
+        const { answer } = await purge(db, [...PURGE_EVERY_STATE, '--limit', '1', '--execute'])
+        runs.push([idsOf(answer.purged), idsOf(answer.kept), answer.more, answer.finished])
+        if (answer.more !== true) break
+      }
+      expect({ runs, left: await tasksLeft(db) }).toEqual({
+        runs: [
+          // The child is listed first and kept, its parent goes, and the limit is met: the
+          // child is owed another try, and the run says more.
+          [[parent], [child], true, true],
+          [[child], [], true, true],
+          [[behind[0]], [], true, true],
+          [[behind[1]], [], false, true],
+        ],
+        left: [],
+      })
+    }))
 })
 
 describe('a purge whose answer was lost', () => {

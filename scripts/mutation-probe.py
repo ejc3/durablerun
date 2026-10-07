@@ -21934,7 +21934,7 @@ MUTATION_SPECS.extend(
         (
             "cli-purge-stops-at-its-limit-inside-a-page",
             "packages/core/src/retention-walk.ts",
-            "      if (atABound()) {\n        unread = true\n        break list\n      }\n",
+            "      if (atTheLimit()) {\n        unread = true\n        break list\n      }\n",
             "",
             "the walk takes every candidate of the page it is in after its limit is reached",
         ),
@@ -21962,8 +21962,8 @@ MUTATION_SPECS.extend(
         (
             "cli-purge-is-the-retention-port-and-nothing-else",
             "packages/cli/src/main.ts",
-            "    limit,\n    execute,\n    ...(after === null ? {} : { after }),\n",
-            "    limit,\n    execute: false,\n    ...(after === null ? {} : { after }),\n",
+            "  const walked = await purgeWalk(store.retention, queue, policy, { limit, execute })\n",
+            "  const walked = await purgeWalk(store.retention, queue, policy, { limit, execute: false })\n",
             "purge with --execute hands the walk no leave to purge, and leaves every unit the port takes",
         ),
         (
@@ -22117,23 +22117,9 @@ MUTATION_SPECS.extend(
             "the walk never tries again a unit that only a held outcome or a wait kept, though it took the unit that held it",
         ),
         (
-            "purge-walk-holds-the-candidates-it-examines",
-            "packages/core/src/retention-walk.ts",
-            "  const atABound = (): boolean => taken.length === limit || examined === examine\n",
-            "  const atABound = (): boolean => taken.length === limit\n",
-            "the walk examines every candidate of a queue whatever it may examine, so kept units cost one run without bound",
-        ),
-        (
-            "purge-walk-answers-where-it-stopped",
-            "packages/core/src/retention-walk.ts",
-            "    resumeAfter: failed === null && unread ? cursor : null,\n",
-            "    resumeAfter: failed === null && unread ? null : null,\n",
-            "a walk that stops with candidates unread answers no place to resume from, so what stands behind kept units is never reached",
-        ),
-        (
             "purge-walk-sends-no-listing-to-learn-more",
             "packages/core/src/retention-walk.ts",
-            "    if (atABound()) {\n      unread = true\n      break\n    }\n",
+            "    if (atTheLimit()) {\n      unread = true\n      break\n    }\n",
             "",
             "a walk whose limit is met at the end of a page sends another listing only to learn that a candidate follows",
         ),
@@ -22180,20 +22166,6 @@ MUTATION_SPECS.extend(
             "the list of the barrier's conditions can be emptied by an importer, and a read of the barrier then says nothing keeps a unit",
         ),
         (
-            "cli-purge-resumes-after-its-cursor",
-            "packages/cli/src/main.ts",
-            "    ...(after === null ? {} : { after }),\n",
-            "    ...(after === null ? {} : {}),\n",
-            "purge ignores --after and begins at the oldest candidate, so a resumed run reads every kept unit again",
-        ),
-        (
-            "cli-purge-refuses-a-cursor-it-cannot-read",
-            "packages/cli/src/purge.ts",
-            "  if (colon < 1 || !/^(0|[1-9][0-9]{0,15})$/.test(text.slice(0, colon))) return refused\n",
-            "  if (colon < 1) return refused\n",
-            "purge takes an --after whose instant is no whole number of milliseconds, and begins somewhere its operator did not name",
-        ),
-        (
             "retention-soak-fails-a-control-that-holds-nothing",
             "packages/conformance/src/retention-soak.ts",
             "    ...empty.map((table) => `the control holds no rows of ${table}`),\n",
@@ -22203,8 +22175,8 @@ MUTATION_SPECS.extend(
         (
             "cli-purge-would-purge-is-what-the-port-lets-go",
             "packages/core/src/retention-walk.ts",
-            "    else if (!execute && letsGo(admission)) taken.push({ candidate, rows: null })\n",
-            "    else if (!execute) taken.push({ candidate, rows: null })\n",
+            "    } else if (!execute && letsGo(admission)) taken.push({ candidate, rows: null })\n",
+            "    } else if (!execute) taken.push({ candidate, rows: null })\n",
             "a dry run lists every candidate as one a purge would take, the units the barrier keeps among them",
         ),
         (
@@ -22227,18 +22199,6 @@ VERDICTS["purge-walk-tries-again-what-a-held-outcome-kept"] = ExpectedVerdict(
     "packages/core/test/retention-walk.test.ts",
     "one walk is one pass tries a unit again only when a unit taken since could be what kept it",
     "mutation-verdict:behavior:purge-walk-tries-again-what-a-held-outcome-kept",
-)
-VERDICTS["purge-walk-holds-the-candidates-it-examines"] = ExpectedVerdict(
-    "behavior",
-    "packages/core/test/retention-walk.test.ts",
-    "what bounds a walk stops at the candidates it may examine, says where, and walks resumed there reach what stands behind with one look at each unit",
-    "mutation-verdict:behavior:purge-walk-holds-the-candidates-it-examines",
-)
-VERDICTS["purge-walk-answers-where-it-stopped"] = ExpectedVerdict(
-    "behavior",
-    "packages/core/test/retention-walk.test.ts",
-    "what bounds a walk examines no more than its cap when no bound is named, and a page is not the limit",
-    "mutation-verdict:behavior:purge-walk-answers-where-it-stopped",
 )
 VERDICTS["purge-walk-sends-no-listing-to-learn-more"] = ExpectedVerdict(
     "behavior",
@@ -22281,18 +22241,6 @@ VERDICTS["purge-barrier-conditions-are-frozen"] = ExpectedVerdict(
     "packages/core/test/retention.test.ts",
     "the lists the retention port reads are frozen, each of them: a caller that imports one cannot empty it under the port",
     "mutation-verdict:behavior:purge-barrier-conditions-are-frozen",
-)
-VERDICTS["cli-purge-resumes-after-its-cursor"] = ExpectedVerdict(
-    "behavior",
-    "packages/cli/test/purge.test.ts",
-    "one invocation is one pass, within its bounds sends one listing, a purge for each candidate it reaches and a read of the barrier for each it keeps: 30 kept children in front of two tasks, at a limit of 1 and of 100",
-    "mutation-verdict:behavior:cli-purge-resumes-after-its-cursor",
-)
-VERDICTS["cli-purge-refuses-a-cursor-it-cannot-read"] = ExpectedVerdict(
-    "behavior",
-    "packages/cli/test/purge.test.ts",
-    "what purge refuses, each beside the command that is not refused refuses an --after that is no place a purge printed, before anything is sent, and takes one that is",
-    "mutation-verdict:behavior:cli-purge-refuses-a-cursor-it-cannot-read",
 )
 VERDICTS["retention-soak-fails-a-control-that-holds-nothing"] = ExpectedVerdict(
     "behavior",
@@ -26254,7 +26202,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1484:
+        if len(MUTATIONS) != 1480:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
