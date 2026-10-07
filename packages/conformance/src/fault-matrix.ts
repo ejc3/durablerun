@@ -621,6 +621,8 @@ export async function runFaultMatrixCase(
     // excuses it only while its row is cancelled.
     const endedByOlderBuild = new Set<string>()
 
+    /** What a purge's report said wrongly of a unit in doubt, read once the workload is done. */
+    const purgeReports: string[] = []
     world.actor('driver', async (simDb) => {
       const store = f.storeOver(simDb)
       const admin = f.adminOver(simDb)
@@ -925,13 +927,34 @@ export async function runFaultMatrixCase(
       now += SHORTEST_WINDOW_MS
       await go(() => admin.setFakeNowEpochMs(now))
       const retention = f.retentionOver(simDb)
-      // Core's one walk, twice. Without `execute` it reads what the barrier says of every
-      // candidate, and with it each unit is purged. A call a fault ends is where its walk
-      // stops: the walk answers the failure and throws nothing.
-      await go(() => purgeWalk(retention, Q, MATRIX_RETENTION_POLICY, { limit: 50 }))
-      await go(() => purgeWalk(retention, Q, MATRIX_RETENTION_POLICY, { limit: 50, execute: true }))
+      // Core's one walk, as a dry run that reads what the barrier says of every candidate
+      // and as a purge of each. A cell arms its fault in the walk it is about: a fault at
+      // the read of the barrier lands in the dry run, which runs first for that label, and
+      // a fault at the listing or at a purge lands in the purge, which runs first for
+      // every other. A call a fault ends is where its walk stops: the walk answers the
+      // failure and throws nothing. So the purge is run again, as an operator would run
+      // it, and the units a faulted purge left are purged after it.
+      const dry = () => go(() => purgeWalk(retention, Q, MATRIX_RETENTION_POLICY, { limit: 50 }))
+      const purge = () =>
+        go(() => purgeWalk(retention, Q, MATRIX_RETENTION_POLICY, { limit: 50, execute: true }))
+      if (label === 'purge-admission') await dry()
+      const purged = await purge()
+      if (purged !== null && purged.failed !== null) {
+        // What the report says of a unit in doubt: a purge that was sent and not answered
+        // names its unit, and a walk that failed at another call names none.
+        const inDoubt = purged.outcomeNotKnown.map(({ taskId }) => taskId)
+        const named = purged.failed.call === 'purgeUnit' ? [purged.failed.taskId] : []
+        if (JSON.stringify(inDoubt) !== JSON.stringify(named)) {
+          purgeReports.push(
+            `the purge that failed at ${purged.failed.call} lists ${JSON.stringify(inDoubt)} as in doubt, and its failed call was for ${JSON.stringify(named)}`,
+          )
+        }
+        await purge()
+      }
+      if (label !== 'purge-admission') await dry()
     })
     await world.run()
+    if (purgeReports.length > 0) throw new Error(`matrix ${cell}: ${purgeReports.join('; ')}`)
 
     await assertEdgePostcondition(f.raw, preState, world.trace, cell)
 
