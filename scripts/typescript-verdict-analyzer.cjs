@@ -139,7 +139,7 @@ function expectErrorDirectives(source) {
       ? [
           {
             type: ts.CommentDirectiveType.ExpectError,
-            range: { pos: comment.start, end: comment.end },
+            range: { pos: comment.end - line.length, end: comment.end },
           },
         ]
       : []

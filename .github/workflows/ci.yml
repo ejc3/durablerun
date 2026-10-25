@@ -241,9 +241,9 @@ jobs:
         # and so does a tree that leaves the file as the base has it. A tree that
         # changes the file to anything but the pinned head file is refused, so a later
         # edit to that file must re-pin it in the same reviewed change. A row is dead
-        # once its pull request is the base, and is deleted then. One row is live: the
-        # released-surface snapshot, to whose changed table this pull request adds an entry
-        # and in which it rewrites one.
+        # once its pull request is the base, and is deleted then. The native compiler adapter
+        # is pinned here so the older base checker can grade the candidate without a
+        # compatibility compiler. The existing surface snapshot bridge is unchanged.
         run: |
           python3 - <<'PY'
           import hashlib
@@ -251,6 +251,12 @@ jobs:
           from pathlib import Path
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
+              (
+                  'scripts/typescript-verdict-analyzer.cjs',
+                  '236eb4f9b92a48c9771d80dc2946bc0df3aeec310039b5be99611816fd6bddf9',
+                  'ce0425b0f3a71c08c5bbafe1390cd822521a9bffb4533bcfcdf78d8d28a57005',
+                  'the base checker uses the removed JavaScript compiler API; this reviewed native adapter preserves its verdict protocol',
+              ),
               (
                   'scripts/published-surface-v0.1.0-alpha.1.json',
                   'dad0f5ca4450cf395c5c161d9626c2a85d43afb577eee573b952beb3cdbfeb4f',
@@ -305,6 +311,10 @@ jobs:
                   raise SystemExit('pinned pairs control: the pinned head file was not installed.')
           print('pinned pairs controls: skipped twice, refused, and installed as pinned.')
           PY
+      - name: Verify the bridged compiler executes
+        env:
+          NODE_PATH: ${{ github.workspace }}/node_modules
+        run: node scripts/native-base-gate-probe.cjs /tmp/base/scripts/typescript-verdict-analyzer.cjs
       - name: Bridge the older base registry to this tree
         # A base registry's find strings must occur in this tree, and every verdict
         # marker in this tree's tests must be registered or exempted by it. Some

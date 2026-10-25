@@ -82,7 +82,11 @@ function storeSpecifiers(file: string, text: string): string[] {
   const specifiers: string[] = []
   const literal = (node: unknown): string | undefined => {
     if (!node || typeof node !== 'object') return undefined
-    const value = node as { value?: unknown; literal?: unknown }
+    const value = node as Node & { value?: unknown; literal?: unknown }
+    if (value.type === 'TemplateLiteral')
+      return value.expressions.length === 0
+        ? (value.quasis[0]?.value.cooked ?? undefined)
+        : undefined
     return typeof value.value === 'string' ? value.value : literal(value.literal)
   }
   const visit = (node: Node) => {
