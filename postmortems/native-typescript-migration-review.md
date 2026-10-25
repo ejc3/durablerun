@@ -20,9 +20,9 @@ The independent whole-system review found findings 1 and 2. The separate native-
 
 | Detector | Findings | Ours? |
 |----------|----------|-------|
-| Whole-system independent review | 1, 2 | No |
-| Independent native-verifier review | 3 | No |
-| Candidate checks | None of the three escapes | Yes |
+| Whole-system independent review | 2 | No |
+| Independent native-verifier review | 1 | No |
+| Candidate checks | 0 | Yes |
 
 Self-catch rate: 0 of 3, or 0%. The previous recorded purge-port review also reported 0 of 3, or 0%. The escaped-defect detection rate has not improved. Passing existing tests did not establish parser equivalence.
 
