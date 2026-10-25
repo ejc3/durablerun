@@ -241,8 +241,8 @@ jobs:
         # and so does a tree that leaves the file as the base has it. A tree that
         # changes the file to anything but the pinned head file is refused, so a later
         # edit to that file must re-pin it in the same reviewed change. A row is dead
-        # once its pull request is the base, and is deleted then. The native compiler adapter
-        # is pinned here so the older base checker can grade the candidate without a
+        # once its pull request is the base, and is deleted then. Both native compiler adapters
+        # are pinned here so the older base checkers can grade the candidate without a
         # compatibility compiler. The existing surface snapshot bridge is unchanged.
         run: |
           python3 - <<'PY'
@@ -251,6 +251,12 @@ jobs:
           from pathlib import Path
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
+              (
+                  'scripts/package-surface.mjs',
+                  'c2ef1d0886a0e15c69fa672cbadc23a975168b77d0457ab3427e4e468f9d80eb',
+                  'c2b7f93b060c1f913827aa03bf96658d938a98bfcbc54535f740a6dd2ec0502e',
+                  'the base consumer-surface checker also uses the removed compiler API; preserve its published baseline with the reviewed native adapter',
+              ),
               (
                   'scripts/typescript-verdict-analyzer.cjs',
                   '236eb4f9b92a48c9771d80dc2946bc0df3aeec310039b5be99611816fd6bddf9',
