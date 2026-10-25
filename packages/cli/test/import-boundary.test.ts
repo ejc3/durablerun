@@ -12,7 +12,8 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import ts from 'typescript'
+import { type Node, parseSync, visitorKeys } from 'oxc-parser'
+import { ResolverFactory } from 'oxc-resolver'
 import { describe, expect, it } from 'vitest'
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
@@ -72,33 +73,58 @@ describe('the CLI reaches a store only through its opener', () => {
   })
 })
 
-const RESOLUTION: ts.CompilerOptions = {
-  module: ts.ModuleKind.NodeNext,
-  moduleResolution: ts.ModuleResolutionKind.NodeNext,
-}
+const resolver = new ResolverFactory({ tsconfig: { configFile: join(ROOT, 'tsconfig.base.json') } })
 
-/**
- * The specifiers a source file names that resolve into a store package's directory: every
- * import, import type, re-export, import() call and `typeof import(...)` TypeScript's own
- * scanner finds, each resolved as the compiler resolves it, through the workspace's links,
- * and a relative one that resolves to nothing by its path. biome's rule matches a
- * specifier's spelling, so a relative path into packages/store-* passes it; this reads
- * where each one goes.
- */
+/** Resolve every import spelling through workspace links, including relative store paths. */
 function storeSpecifiers(file: string, text: string): string[] {
-  return ts
-    .preProcessFile(text, true, true)
-    .importedFiles.map((imported) => imported.fileName)
-    .filter((specifier) => {
-      const found = ts.resolveModuleName(specifier, file, RESOLUTION, ts.sys).resolvedModule
-      const path =
-        found !== undefined
-          ? realpathSync(found.resolvedFileName)
-          : specifier.startsWith('.')
-            ? resolve(dirname(file), specifier)
-            : undefined
-      return path !== undefined && relative(ROOT, path).startsWith(`packages${sep}store-`)
-    })
+  const syntax = parseSync(file, text)
+  if (syntax.errors.length) throw new Error(syntax.errors[0]?.message)
+  const specifiers: string[] = []
+  const literal = (node: unknown): string | undefined => {
+    if (!node || typeof node !== 'object') return undefined
+    const value = node as { value?: unknown; literal?: unknown }
+    return typeof value.value === 'string' ? value.value : literal(value.literal)
+  }
+  const visit = (node: Node) => {
+    const record = node as unknown as Record<string, unknown>
+    let source: unknown
+    if (
+      [
+        'ImportDeclaration',
+        'ExportNamedDeclaration',
+        'ExportAllDeclaration',
+        'ImportExpression',
+      ].includes(node.type)
+    )
+      source = record.source
+    else if (node.type === 'TSImportType') source = record.source
+    else if (node.type === 'TSImportEqualsDeclaration')
+      source = (record.moduleReference as { expression?: unknown })?.expression
+    else if (node.type === 'CallExpression') {
+      const callee = record.callee as { type?: string; name?: string }
+      if (callee.type === 'Identifier' && callee.name === 'require')
+        source = (record.arguments as unknown[])[0]
+    }
+    const specifier = literal(source)
+    if (specifier !== undefined) specifiers.push(specifier)
+    for (const key of visitorKeys[node.type] ?? []) {
+      const child = record[key]
+      if (Array.isArray(child)) {
+        for (const each of child) if (each) visit(each as Node)
+      } else if (child) visit(child as Node)
+    }
+  }
+  visit(syntax.program)
+  return specifiers.filter((specifier) => {
+    const found = resolver.resolveDtsSync(file, specifier).path
+    const path =
+      found !== undefined
+        ? realpathSync(found)
+        : specifier.startsWith('.')
+          ? resolve(dirname(file), specifier)
+          : undefined
+    return path !== undefined && relative(ROOT, path).startsWith(`packages${sep}store-`)
+  })
 }
 
 function sourcesUnder(dir: string): string[] {

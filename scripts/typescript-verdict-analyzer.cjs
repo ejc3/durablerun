@@ -2,7 +2,149 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
-const ts = require('typescript')
+const ast = require('typescript/ast')
+const { API, ModuleKind, ModuleResolutionKind, SymbolFlags } = require('typescript/sync')
+const { parseSync } = require('oxc-parser')
+
+const ts = { ...ast, ModuleKind, ModuleResolutionKind, SymbolFlags }
+const K = ts.SyntaxKind
+const api = new API()
+const programBySource = new WeakMap()
+
+function bindFiles(files, options) {
+  const snapshot = api.createSnapshot({
+    fileSystem: { kind: 'layer', files: Object.fromEntries(files) },
+    createPrograms: [{ rootFiles: [...files.keys()], compilerOptions: options }],
+  })
+  return { snapshot, program: snapshot.operation.createdPrograms[0] }
+}
+
+function nativeSourceFile(program, fileName) {
+  const source = program.getSourceFile(fileName)
+  if (source) programBySource.set(source, program)
+  return source
+}
+
+function parseDiagnostics(source) {
+  const program = programBySource.get(source)
+  if (!program) throw new Error('native syntax program is missing')
+  return program.getSyntacticDiagnostics(source.fileName).map((diagnostic) => ({
+    start: diagnostic.pos,
+    messageText: diagnostic.text,
+  }))
+}
+
+function declarations(symbol) {
+  return (symbol.declarations ?? []).map((handle) => handle.resolve())
+}
+
+function isTypeElement(node) {
+  return [
+    K.ConstructSignature,
+    K.CallSignature,
+    K.PropertySignature,
+    K.MethodSignature,
+    K.IndexSignature,
+    K.GetAccessor,
+    K.SetAccessor,
+    K.NotEmittedTypeElement,
+  ].includes(node.kind)
+}
+
+function isTypeOnlyDeclaration(node) {
+  for (let current = node; current; current = current.parent) {
+    if (
+      [
+        K.ImportSpecifier,
+        K.ImportClause,
+        K.ImportEqualsDeclaration,
+        K.ExportSpecifier,
+        K.ExportDeclaration,
+      ].includes(current.kind) &&
+      current.isTypeOnly
+    )
+      return true
+  }
+  return false
+}
+
+function inExpressionContext(node) {
+  const parent = node.parent
+  if (!parent) return false
+  switch (parent.kind) {
+    case K.VariableDeclaration:
+    case K.Parameter:
+    case K.PropertyDeclaration:
+    case K.PropertySignature:
+    case K.EnumMember:
+    case K.PropertyAssignment:
+    case K.BindingElement:
+      return parent.initializer === node
+    case K.ExpressionStatement:
+    case K.IfStatement:
+    case K.DoStatement:
+    case K.WhileStatement:
+    case K.ReturnStatement:
+    case K.WithStatement:
+    case K.SwitchStatement:
+    case K.CaseClause:
+    case K.ThrowStatement:
+    case K.TypeAssertionExpression:
+    case K.AsExpression:
+    case K.TemplateSpan:
+    case K.ComputedPropertyName:
+    case K.SatisfiesExpression:
+      return parent.expression === node
+    case K.ForStatement:
+      return (
+        (parent.initializer === node && parent.initializer.kind !== K.VariableDeclarationList) ||
+        parent.condition === node ||
+        parent.incrementor === node
+      )
+    case K.ForInStatement:
+    case K.ForOfStatement:
+      return (
+        (parent.initializer === node && parent.initializer.kind !== K.VariableDeclarationList) ||
+        parent.expression === node
+      )
+    case K.Decorator:
+    case K.JsxExpression:
+    case K.JsxSpreadAttribute:
+    case K.SpreadAssignment:
+      return true
+    case K.ExpressionWithTypeArguments:
+      return (
+        parent.expression === node &&
+        !(
+          parent.parent?.kind === K.HeritageClause && parent.parent.token === K.ImplementsKeyword
+        ) &&
+        parent.parent?.kind !== K.TypeReference
+      )
+    case K.ShorthandPropertyAssignment:
+      return parent.objectAssignmentInitializer === node
+    case K.JsxOpeningElement:
+    case K.JsxClosingElement:
+    case K.JsxSelfClosingElement:
+      return parent.tagName === node
+    default:
+      return ts.isExpression(parent)
+  }
+}
+
+function expectErrorDirectives(source) {
+  return parseSync(source.fileName, source.text).comments.flatMap((comment) => {
+    const text = source.text.slice(comment.start, comment.end)
+    const line = text.split(/\r?\n/).at(-1)
+    return /^\s*(?:\/\/\/?|\/\*+|\*+)?\s*@ts-expect-error\b/.test(line)
+      ? [
+          {
+            type: ts.CommentDirectiveType.ExpectError,
+            range: { pos: comment.start, end: comment.end },
+          },
+        ]
+      : []
+  })
+}
 
 const VERDICT_HELPERS = new Set([
   'attributeExpectedFailure',
@@ -32,7 +174,7 @@ function unwrap(expression) {
   while (
     ts.isParenthesizedExpression(current) ||
     ts.isAsExpression(current) ||
-    ts.isTypeAssertionExpression(current) ||
+    ts.isTypeAssertion(current) ||
     ts.isNonNullExpression(current) ||
     ts.isSatisfiesExpression(current)
   ) {
@@ -54,7 +196,7 @@ function promiseModifier(node) {
     parent &&
     (ts.isParenthesizedExpression(parent) ||
       ts.isAsExpression(parent) ||
-      ts.isTypeAssertionExpression(parent) ||
+      ts.isTypeAssertion(parent) ||
       ts.isNonNullExpression(parent) ||
       ts.isSatisfiesExpression(parent))
   ) {
@@ -72,11 +214,11 @@ function promiseModifier(node) {
 function literalProperty(property) {
   if (!ts.isPropertyAssignment(property)) return undefined
   const name = property.name
-  const key = ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined
+  const key = ts.isIdentifier(name) || ts.isStringLiteralLikeNode(name) ? name.text : undefined
   const value = unwrap(property.initializer)
   if (
     key === undefined ||
-    (!ts.isStringLiteralLike(value) && !ts.isNoSubstitutionTemplateLiteral(value))
+    (!ts.isStringLiteralLikeNode(value) && !ts.isNoSubstitutionTemplateLiteral(value))
   ) {
     return undefined
   }
@@ -114,7 +256,7 @@ function importDeclaration(node) {
 function isCanonicalVerdictHelper(pathName, identifier, helperName, checker) {
   const symbol = checker.getSymbolAtLocation(identifier)
   if (!symbol) return false
-  return (symbol.declarations ?? []).some((declaration) => {
+  return declarations(symbol).some((declaration) => {
     if (!ts.isImportSpecifier(declaration)) return false
     const imported = declaration.propertyName?.text ?? declaration.name.text
     const statement = importDeclaration(declaration)
@@ -122,7 +264,7 @@ function isCanonicalVerdictHelper(pathName, identifier, helperName, checker) {
       imported !== helperName ||
       declaration.name.text !== helperName ||
       !statement ||
-      !ts.isStringLiteralLike(statement.moduleSpecifier)
+      !ts.isStringLiteralLikeNode(statement.moduleSpecifier)
     ) {
       return false
     }
@@ -137,14 +279,14 @@ function isCanonicalVerdictHelper(pathName, identifier, helperName, checker) {
 function canonicalVitestRegistration(identifier, checker) {
   const symbol = checker.getSymbolAtLocation(identifier)
   if (!symbol) return undefined
-  for (const declaration of symbol.declarations ?? []) {
+  for (const declaration of declarations(symbol)) {
     if (!ts.isImportSpecifier(declaration)) continue
     const imported = declaration.propertyName?.text ?? declaration.name.text
     const statement = importDeclaration(declaration)
     if (
       (imported !== 'describe' && imported !== 'it' && imported !== 'test') ||
       !statement ||
-      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      !ts.isStringLiteralLikeNode(statement.moduleSpecifier) ||
       statement.moduleSpecifier.text !== 'vitest'
     ) {
       continue
@@ -176,19 +318,16 @@ function vitestRegistration(expression, checker) {
 
 function staticTitle(argument) {
   const value = argument && unwrap(argument)
-  return value && (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value))
+  return value && (ts.isStringLiteralLikeNode(value) || ts.isNoSubstitutionTemplateLiteral(value))
     ? value.text
     : undefined
 }
 
 function analyze(path, sourceFile, checker) {
-  const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
+  const diagnostics = parseDiagnostics(sourceFile).map((diagnostic) => {
     const start = diagnostic.start ?? 0
     const location = sourceFile.getLineAndCharacterOfPosition(start)
-    return `${location.line}:${location.character + 1} ${ts.flattenDiagnosticMessageText(
-      diagnostic.messageText,
-      '\n',
-    )}`
+    return `${location.line}:${location.character + 1} ${diagnostic.messageText}`
   })
   const promiseMessageLines = new Set()
   const descriptors = new Map()
@@ -197,7 +336,7 @@ function analyze(path, sourceFile, checker) {
   const behaviorTitleOwners = new Map()
   const dynamicBehaviorTitleMarkers = new Set()
 
-  for (const directive of sourceFile.commentDirectives ?? []) {
+  for (const directive of expectErrorDirectives(sourceFile)) {
     if (directive.type !== ts.CommentDirectiveType.ExpectError) continue
     const comment = sourceFile.text.slice(directive.range.pos, directive.range.end)
     const directiveOffset = comment.indexOf('@ts-expect-error')
@@ -227,7 +366,7 @@ function analyze(path, sourceFile, checker) {
 
   function visit(node) {
     if (
-      (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      (ts.isStringLiteralLikeNode(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
       VERDICT_MARKER.test(node.text)
     ) {
       directMarkers.add(node.text)
@@ -252,14 +391,14 @@ function analyze(path, sourceFile, checker) {
         }
       }
     }
-    ts.forEachChild(node, visit)
+    node.forEachChild(visit)
   }
   visit(sourceFile)
 
   function recordBehaviorMarker(node, suites, test) {
     if (
       !test ||
-      (!ts.isStringLiteralLike(node) && !ts.isNoSubstitutionTemplateLiteral(node)) ||
+      (!ts.isStringLiteralLikeNode(node) && !ts.isNoSubstitutionTemplateLiteral(node)) ||
       !node.text.startsWith('mutation-verdict:behavior:') ||
       !VERDICT_MARKER.test(node.text)
     ) {
@@ -300,7 +439,7 @@ function analyze(path, sourceFile, checker) {
         }
       }
     }
-    ts.forEachChild(node, (child) => visitBehaviorOwners(child, suites, test))
+    node.forEachChild((child) => visitBehaviorOwners(child, suites, test))
   }
   visitBehaviorOwners(sourceFile, [], undefined)
 
@@ -338,14 +477,6 @@ function mutationScriptKind(pathName) {
 }
 
 function createMutationBindingAnalyzer(sources) {
-  if (typeof ts.isInExpressionContext !== 'function') {
-    throw new Error('installed TypeScript does not expose isInExpressionContext')
-  }
-  if (typeof ts.isPartOfTypeOnlyImportOrExportDeclaration !== 'function') {
-    throw new Error(
-      'installed TypeScript does not expose isPartOfTypeOnlyImportOrExportDeclaration',
-    )
-  }
   const currentSources = new Map()
   const originalSources = new Map()
   const versions = new Map()
@@ -364,26 +495,9 @@ function createMutationBindingAnalyzer(sources) {
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
     skipLibCheck: true,
     noEmit: true,
-    moduleDetection: ts.ModuleDetectionKind.Force,
+    moduleDetection: 3,
   }
-  const host = {
-    getScriptFileNames: () => [...currentSources.keys()],
-    getScriptVersion: (fileName) => String(versions.get(fileName) ?? 0),
-    getScriptSnapshot(fileName) {
-      const source = currentSources.get(fileName) ?? ts.sys.readFile(fileName)
-      return source === undefined ? undefined : ts.ScriptSnapshot.fromString(source)
-    },
-    getCurrentDirectory: () => process.cwd(),
-    getCompilationSettings: () => options,
-    getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),
-    fileExists: (fileName) => currentSources.has(fileName) || ts.sys.fileExists(fileName),
-    readFile: (fileName) => currentSources.get(fileName) ?? ts.sys.readFile(fileName),
-    readDirectory: ts.sys.readDirectory,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
-    realpath: ts.sys.realpath,
-  }
-  const service = ts.createLanguageService(host, ts.createDocumentRegistry())
+  let binding = bindFiles(currentSources, options)
 
   const isLocalValueExport = (node) => {
     const specifier = node.parent
@@ -402,7 +516,7 @@ function createMutationBindingAnalyzer(sources) {
 
   const isRuntimeReference = (node) => {
     const parent = node.parent
-    if (ts.isComputedPropertyName(parent) && ts.isTypeElement(parent.parent)) return false
+    if (ts.isComputedPropertyName(parent) && isTypeElement(parent.parent)) return false
     if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false
     if (ts.isMetaProperty(parent)) return false
     if (ts.isShorthandPropertyAssignment(parent) && parent.name === node) return true
@@ -412,17 +526,16 @@ function createMutationBindingAnalyzer(sources) {
         ts.isJsxClosingElement(parent) ||
         ts.isJsxSelfClosingElement(parent)) &&
       parent.tagName === node &&
-      ts.isIntrinsicJsxName(node.text)
+      (/^[a-z]/.test(node.text) || node.text.includes('-'))
     ) {
       return false
     }
-    return ts.isInExpressionContext(node)
+    return inExpressionContext(node)
   }
 
-  const resolvesToRuntimeValue = (checker, node) => {
-    const symbol = checker.resolveName(node.text, node, ts.SymbolFlags.Value, false)
+  const resolvesToRuntimeValue = (checker, symbol) => {
     if (!symbol) return false
-    if ((symbol.declarations ?? []).some(ts.isPartOfTypeOnlyImportOrExportDeclaration)) {
+    if (declarations(symbol).some(isTypeOnlyDeclaration)) {
       return false
     }
     if (symbol.flags & ts.SymbolFlags.Alias) {
@@ -433,31 +546,35 @@ function createMutationBindingAnalyzer(sources) {
   }
 
   const unresolvedRuntimeReferences = (fileName) => {
-    const program = service.getProgram()
+    const program = binding.program
     if (!program) throw new Error('TypeScript binding program is unavailable')
-    const sourceFile = program.getSourceFile(fileName)
+    const sourceFile = nativeSourceFile(program, fileName)
     if (!sourceFile) throw new Error(`${fileName}: TypeScript binding program omitted source`)
-    const checker = program.getTypeChecker()
-    const references = []
+    const checker = program.getProject().checker
+    const candidates = []
     const visit = (node) => {
-      if (
-        ts.isIdentifier(node) &&
-        isRuntimeReference(node) &&
-        !resolvesToRuntimeValue(checker, node)
-      ) {
-        const start = node.getStart(sourceFile)
-        const location = sourceFile.getLineAndCharacterOfPosition(start)
-        references.push({
-          name: node.text,
-          start,
-          end: node.end,
-          line: location.line + 1,
-          character: location.character + 1,
-        })
-      }
-      ts.forEachChild(node, visit)
+      if (ts.isIdentifier(node) && isRuntimeReference(node)) candidates.push(node)
+      node.forEachChild(visit)
     }
     visit(sourceFile)
+    const symbols = api.batch(
+      ...candidates.map((node) =>
+        checker.resolveName.gen(node.text, ts.SymbolFlags.Value, node, false),
+      ),
+    )
+    const references = []
+    for (const [index, node] of candidates.entries()) {
+      if (resolvesToRuntimeValue(checker, symbols[index])) continue
+      const start = node.getStart(sourceFile)
+      const location = sourceFile.getLineAndCharacterOfPosition(start)
+      references.push({
+        name: node.text,
+        start,
+        end: node.end,
+        line: location.line + 1,
+        character: location.character + 1,
+      })
+    }
     return references
   }
 
@@ -512,6 +629,13 @@ function createMutationBindingAnalyzer(sources) {
       const original = originalSources.get(fileName)
       currentSources.set(fileName, mutated)
       versions.set(fileName, (versions.get(fileName) ?? 0) + 1)
+      const previous = binding.snapshot
+      const snapshot = previous.update({
+        fileSystem: { kind: 'layer', files: Object.fromEntries(currentSources) },
+        ensurePrograms: [binding.program.id],
+      })
+      binding = { snapshot, program: snapshot.getProgram(binding.program.id) }
+      previous.dispose()
       try {
         const references = unresolvedRuntimeReferences(fileName)
         return newlyUnbound(original, mutated, baselineByFile.get(fileName), references).map(
@@ -524,7 +648,7 @@ function createMutationBindingAnalyzer(sources) {
       }
     },
     dispose() {
-      service.dispose()
+      binding.snapshot.dispose()
     },
   }
 }
@@ -567,20 +691,13 @@ function analyzeMutationSyntax(sources, mutations) {
       }
       const mutated =
         source.slice(0, occurrence.start) + replace + source.slice(occurrence.start + find.length)
-      const sourceFile = ts.createSourceFile(
-        file,
-        mutated,
-        ts.ScriptTarget.Latest,
-        false,
-        scriptKind,
-      )
-      const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
-        const start = diagnostic.start ?? 0
-        const location = sourceFile.getLineAndCharacterOfPosition(start)
-        return `${location.line + 1}:${location.character + 1} ${ts.flattenDiagnosticMessageText(
-          diagnostic.messageText,
-          '\n',
-        )}`
+      const parsed = parseSync(file, mutated)
+      const diagnostics = parsed.errors.map((diagnostic) => {
+        const position = diagnostic.labels?.[0]?.start ?? 0
+        const before = mutated.slice(0, position)
+        const line = before.split('\n').length
+        const character = position - before.lastIndexOf('\n')
+        return `${line}:${character} ${diagnostic.message}`
       })
       const runtimeBindingDiagnostics =
         diagnostics.length === 0 ? bindingAnalyzer.analyze(file, mutated) : []
@@ -615,34 +732,13 @@ function analyzeVerdictProgram(sources) {
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
     skipLibCheck: true,
     noEmit: true,
-    moduleDetection: ts.ModuleDetectionKind.Force,
+    moduleDetection: 3,
   }
-  const fallback = ts.createCompilerHost(options, true)
-  const host = {
-    ...fallback,
-    fileExists(fileName) {
-      return sourceByFile.has(fileName) || fallback.fileExists(fileName)
-    },
-    readFile(fileName) {
-      return sourceByFile.get(fileName) ?? fallback.readFile(fileName)
-    },
-    getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile) {
-      const source = sourceByFile.get(fileName)
-      if (source !== undefined) {
-        return ts.createSourceFile(fileName, source, languageVersion, true, ts.ScriptKind.TS)
-      }
-      return fallback.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
-    },
-  }
-  const program = ts.createProgram({
-    rootNames: [...sourceByFile.keys()],
-    options,
-    host,
-  })
-  const checker = program.getTypeChecker()
+  const { program } = bindFiles(sourceByFile, options)
+  const checker = program.getProject().checker
   const files = {}
   for (const [fileName, pathName] of pathByFile) {
-    const sourceFile = program.getSourceFile(fileName)
+    const sourceFile = nativeSourceFile(program, fileName)
     if (!sourceFile) throw new Error(`${pathName}: compiler omitted source`)
     files[pathName] = analyze(pathName, sourceFile, checker)
   }
@@ -653,7 +749,7 @@ function staticMemberName(node) {
   if (ts.isPropertyAccessExpression(node)) return node.name.text
   if (!ts.isElementAccessExpression(node) || !node.argumentExpression) return undefined
   const argument = unwrap(node.argumentExpression)
-  return ts.isStringLiteralLike(argument) || ts.isNoSubstitutionTemplateLiteral(argument)
+  return ts.isStringLiteralLikeNode(argument) || ts.isNoSubstitutionTemplateLiteral(argument)
     ? argument.text
     : undefined
 }
@@ -686,7 +782,7 @@ function lexicalThisOwner(node) {
       current = current.parent
       continue
     }
-    if (ts.isFunctionLike(current)) return current
+    if (ts.isFunctionLikeDeclaration(current)) return current
     current = current.parent
   }
   return undefined
@@ -710,7 +806,7 @@ function classImplementsSqlExecutor(node) {
     (clause) =>
       clause.token === ts.SyntaxKind.ImplementsKeyword &&
       clause.types.some((type) => {
-        const expression = unwrap(type.expression)
+        const expression = unwrap(type.expression ?? type.typeName)
         return ts.isIdentifier(expression) && expression.text === 'SqlExecutor'
       }),
   )
@@ -749,7 +845,7 @@ function canonicalFencedImports(sourceFile, checker, canonicalExport) {
   for (const statement of sourceFile.statements) {
     if (
       !ts.isImportDeclaration(statement) ||
-      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      !ts.isStringLiteralLikeNode(statement.moduleSpecifier) ||
       statement.moduleSpecifier.text !== '@durablerun/core'
     ) {
       continue
@@ -789,7 +885,7 @@ function isConstDeclaration(node) {
 
 function directFencedParameter(node, canonicalTypes, checker) {
   return (
-    ts.isParameter(node) &&
+    ts.isParameterDeclaration(node) &&
     ts.isIdentifier(node.name) &&
     !!node.type &&
     ts.isTypeReferenceNode(node.type) &&
@@ -919,10 +1015,10 @@ function collectWrites(sourceFile, checker, authorizationDeclarations) {
       !authorizationDeclarations.has(node)
     ) {
       recordWriteTarget(node.name, checker, writes)
-    } else if (ts.isParameter(node) && node.initializer) {
+    } else if (ts.isParameterDeclaration(node) && node.initializer) {
       recordWriteTarget(node.name, checker, writes)
     }
-    ts.forEachChild(node, visit)
+    node.forEachChild(visit)
   }
   visit(sourceFile)
   return writes
@@ -932,7 +1028,7 @@ function batchPropertyBinding(node) {
   if (!ts.isBindingElement(node)) return false
   if (node.propertyName) {
     return (
-      (ts.isIdentifier(node.propertyName) || ts.isStringLiteralLike(node.propertyName)) &&
+      (ts.isIdentifier(node.propertyName) || ts.isStringLiteralLikeNode(node.propertyName)) &&
       node.propertyName.text === 'batch'
     )
   }
@@ -961,36 +1057,15 @@ function analyzeBatchProgram(sources) {
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
     skipLibCheck: true,
     noEmit: true,
-    moduleDetection: ts.ModuleDetectionKind.Force,
+    moduleDetection: 3,
   }
-  const fallback = ts.createCompilerHost(options, true)
-  const host = {
-    ...fallback,
-    fileExists(fileName) {
-      return sourceByFile.has(fileName) || fallback.fileExists(fileName)
-    },
-    readFile(fileName) {
-      return sourceByFile.get(fileName) ?? fallback.readFile(fileName)
-    },
-    getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile) {
-      const source = sourceByFile.get(fileName)
-      if (source !== undefined) {
-        return ts.createSourceFile(fileName, source, languageVersion, true, ts.ScriptKind.TS)
-      }
-      return fallback.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
-    },
-  }
-  const program = ts.createProgram({
-    rootNames: [...sourceByFile.keys()],
-    options,
-    host,
-  })
-  const checker = program.getTypeChecker()
-  const canonicalSource = program.getSourceFile(canonicalCoreFile)
+  const { program } = bindFiles(sourceByFile, options)
+  const checker = program.getProject().checker
+  const canonicalSource = nativeSourceFile(program, canonicalCoreFile)
   const canonicalModule = canonicalSource?.statements.find(
     (statement) =>
       ts.isModuleDeclaration(statement) &&
-      ts.isStringLiteralLike(statement.name) &&
+      ts.isStringLiteralLikeNode(statement.name) &&
       statement.name.text === '@durablerun/core',
   )
   const canonicalModuleSymbol = canonicalModule
@@ -1007,15 +1082,12 @@ function analyzeBatchProgram(sources) {
   const files = {}
 
   for (const [fileName, pathName] of pathByFile) {
-    const sourceFile = program.getSourceFile(fileName)
+    const sourceFile = nativeSourceFile(program, fileName)
     if (!sourceFile) throw new Error(`${pathName}: compiler omitted source`)
-    const diagnostics = (sourceFile.parseDiagnostics ?? []).map((diagnostic) => {
+    const diagnostics = parseDiagnostics(sourceFile).map((diagnostic) => {
       const start = diagnostic.start ?? 0
       const location = sourceFile.getLineAndCharacterOfPosition(start)
-      return `${location.line + 1}:${location.character + 1} ${ts.flattenDiagnosticMessageText(
-        diagnostic.messageText,
-        '\n',
-      )}`
+      return `${location.line + 1}:${location.character + 1} ${diagnostic.messageText}`
     })
     const errors = []
     const calls = []
@@ -1062,7 +1134,7 @@ function analyzeBatchProgram(sources) {
           authorizationDeclarations.add(node)
         }
       }
-      ts.forEachChild(node, collectAuthorizations)
+      node.forEachChild(collectAuthorizations)
     }
     collectAuthorizations(sourceFile)
     const writes = collectWrites(sourceFile, checker, authorizationDeclarations)
@@ -1140,7 +1212,7 @@ function analyzeBatchProgram(sources) {
           )
         }
       }
-      ts.forEachChild(node, inspect)
+      node.forEachChild(inspect)
     }
     inspect(sourceFile)
 
@@ -1161,7 +1233,7 @@ function analyzeBatchProgram(sources) {
       ) {
         reject('indirect this.db.batch reference is opaque')
       }
-      ts.forEachChild(node, validateThis)
+      node.forEachChild(validateThis)
     }
     validateThis(sourceFile)
 
@@ -1201,4 +1273,6 @@ try {
 } catch (error) {
   process.stderr.write(`typescript-verdict-analyzer: ${String(error)}\n`)
   process.exitCode = 1
+} finally {
+  api.close()
 }

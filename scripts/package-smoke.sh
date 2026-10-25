@@ -272,7 +272,9 @@ npm install --prefix "$CONSUMER_DIR" --ignore-scripts --no-audit --no-fund --pre
 "$ROOT/node_modules/.bin/tsc" -p "$CONSUMER_DIR/tsconfig.json"
 node "$CONSUMER_DIR/dist/smoke.js"
 
-cp -R "$ROOT/examples/vercel-turso/." "$EXAMPLE_DIR/"
+# Copy project inputs only; an installed example's pnpm links are not portable.
+cp "$ROOT/examples/vercel-turso/"{README.md,package.json,tsconfig.json,vercel.json,pnpm-lock.yaml,pnpm-workspace.yaml} "$EXAMPLE_DIR/"
+cp -R "$ROOT/examples/vercel-turso/"{api,src,scripts,test} "$EXAMPLE_DIR/"
 npm install --prefix "$EXAMPLE_DIR" --ignore-scripts --no-audit --no-fund --prefer-offline \
   "$PACK_DIR"/*.tgz >/dev/null
 npm run --prefix "$EXAMPLE_DIR" typecheck
