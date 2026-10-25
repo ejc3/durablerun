@@ -66,7 +66,7 @@ A copy of the actual import-boundary suite with this branch passed its four cont
 
 ## Fix-induced defects
 
-No additional defect was established as introduced by these repairs. Both initial reviews finished before the three repairs were batched. The repairs require independent review as new code and the final gates; testing is not counted as review.
+One repair introduced a test-fixture integration defect: literal synthetic verdict identifiers were mistaken for unenrolled production guards. The full base-owned mutation checker caught this before push. The fixture now constructs its synthetic identifiers at runtime; actual enrolled guards and their registry are unchanged. Both initial reviews finished before the three repairs were batched. Repairs receive independent review as new code and the final gates; testing is not counted as review.
 
 ## Evidence
 
