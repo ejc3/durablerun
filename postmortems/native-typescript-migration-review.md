@@ -66,12 +66,14 @@ A copy of the actual import-boundary suite with this branch passed its four cont
 
 ## Fix-induced defects
 
-One repair introduced a test-fixture integration defect: literal synthetic verdict identifiers were mistaken for unenrolled production guards. The full base-owned mutation checker caught this before push. The fixture now constructs its synthetic identifiers at runtime; actual enrolled guards and their registry are unchanged. Both initial reviews finished before the three repairs were batched. Repairs receive independent review as new code and the final gates; testing is not counted as review.
+Two repair integration defects were caught before push. First, literal synthetic verdict identifiers were mistaken for unenrolled production guards. The full base-owned mutation checker caught this before push. The fixture now constructs its synthetic identifiers at runtime; actual enrolled guards and their registry are unchanged. Second, the expanded compiler probe exposed that ESM imports ignore NODE_PATH outside the staged tree; the base checkout now links the candidate modules before probing. The second review also found that the initial bridge omitted package-surface.mjs; both compiler clients are now pinned and probed. Both initial reviews finished before the repairs were batched. Repairs receive independent review as new code and the final gates; testing is not counted as review.
 
 ## Evidence
 
 - Red tests: commit `dcd707ee`, probes packages/cli/test/import-boundary.test.ts and packages/conformance/test/native-compiler-verifier.test.ts. Two tests failed and three passed: the relative-template store count was zero, and the owner was wrong on line 1 instead of right on line 2.
 - Red tests: commit `dcd707ee`, probe scripts/native-base-gate-probe.cjs against the base analyzer with the candidate compiler. It failed on the missing ScriptTarget.Latest API.
+- Red tests: commit `6b57e13f`. The expanded compiler probe failed on the older package-surface checker with a missing NewLineKind.LineFeed API. The compiler bridge is extended to both clients.
+- Fixes: commit `a9fb0306` extends the pinned bridge to the package-surface checker.
 - Fixes: commit `9b52730c`. Five focused tests and the compiler probe passed after the workflow's pinned bridge installed the native adapter over the older base file.
 - Finder: whole-system review, quoted verdicts: "The compiler upgrade breaks the required base gate" and "The import-boundary parser loses static template imports."
 - Finder: native-verifier review, quoted verdict: "Multiline directives can acquire the wrong diagnostic owner."

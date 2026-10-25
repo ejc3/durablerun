@@ -216,6 +216,7 @@ jobs:
         run: |
           mkdir -p "$TMPDIR"
           ln -s "$GITHUB_WORKSPACE/node_modules" "$TMPDIR/node_modules"
+          ln -s "$GITHUB_WORKSPACE/node_modules" /tmp/base/node_modules
       - name: Bridge a new dialect package past its older base checker
         # The head gate above owns an entirely new package. The older ledger
         # cannot classify a dialect that did not exist on its branch. Each
