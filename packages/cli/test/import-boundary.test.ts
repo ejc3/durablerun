@@ -165,6 +165,7 @@ describe('the CLI reaches a store only through its opener, by where its imports 
       "import type { PgExecutor } from '@durablerun/store-postgres'\n",
       "export type Store = typeof import('@durablerun/store-libsql')\n",
       "export const load = () => import('@durablerun/store-mysql/testing')\n",
+      'export const load = () => import(`../../../store-libsql/src/index.js`)\n',
       "export { LibsqlExecutor } from '@durablerun/store-libsql'\n",
     ]) {
       expect({ text, stores: storeSpecifiers(planted, text).length }).toEqual({ text, stores: 1 })
