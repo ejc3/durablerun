@@ -253,6 +253,12 @@ jobs:
           PAIRS = (
               # (path, sha256 of the base's file, sha256 of this tree's file, why)
               (
+                  'scripts/package-smoke-fixture/tsconfig.json',
+                  '9debc42c577f9fda996f23b18b3e6f50786c7f55b64acfa9e12c9c17f515d265',
+                  'a29e26607d2b1faa69574d060b50591ca7cf0aaa0ffeae4ee7dfb5522e12a456',
+                  'native TypeScript requires the existing Node consumer types to be explicit; all strict compiler settings and consumer checks stay intact',
+              ),
+              (
                   'scripts/package-surface.mjs',
                   'c2ef1d0886a0e15c69fa672cbadc23a975168b77d0457ab3427e4e468f9d80eb',
                   'c2b7f93b060c1f913827aa03bf96658d938a98bfcbc54535f740a6dd2ec0502e',
