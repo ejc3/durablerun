@@ -1,0 +1,14 @@
+packages: []
+
+allowBuilds:
+  esbuild: true
+
+overrides:
+  "@durablerun/core": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-core-0.1.0-alpha.1.tgz"
+  "@durablerun/driver": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-driver-0.1.0-alpha.1.tgz"
+  "@durablerun/sdk": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-sdk-0.1.0-alpha.1.tgz"
+  "@durablerun/store-libsql": "https://github.com/ejc3/durablerun/releases/download/v0.1.0-alpha.1/durablerun-store-libsql-0.1.0-alpha.1.tgz"
+
+# The alpha packages are published only as the exact release tarballs pinned above.
+# Their internal version dependencies must resolve to those same reviewed artifacts.
+blockExoticSubdeps: false
