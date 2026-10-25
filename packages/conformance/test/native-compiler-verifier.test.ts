@@ -13,12 +13,7 @@ it('assigns a multiline expect-error marker to its effective directive line', ()
     timeout: 30_000,
     input: JSON.stringify({
       sources: {
-        'fixture.ts':
-          '/* documentation @ts-expect-error ' +
-          marker('wrong') +
-          '\n * @ts-expect-error ' +
-          marker('right') +
-          " */\nconst value: number = 'bad'\n",
+        'fixture.ts': `/* documentation @ts-expect-error ${marker('wrong')}\n * @ts-expect-error ${marker('right')} */\nconst value: number = 'bad'\n`,
       },
     }),
   })
