@@ -74,8 +74,9 @@ DURABLERUN_MYSQL_URL=mysql://root:durablerun@127.0.0.1:3306/durablerun \
   bash scripts/confine.sh bash packages/conformance/bin/dialect-conformance.sh mysql
 ```
 
-`packages/conformance/bin/dialect-conformance.sh` runs one dialect's conformance and its store's
-own tests, and fails a run that exercised nothing. `pnpm verify` runs every
+`packages/conformance/bin/dialect-conformance.sh` runs one dialect's conformance, its store's
+own tests and the six test files of the CLI that run on each selected dialect, and fails a
+run that exercised nothing. `pnpm verify` runs every
 enrolled dialect, so it needs all three servers unless
 `DURABLERUN_CONFORMANCE_DIALECTS` names the ones it has, as a comma list such
 as `libsql,postgres`. CI runs MySQL in its own job, `conformance-mysql`, beside

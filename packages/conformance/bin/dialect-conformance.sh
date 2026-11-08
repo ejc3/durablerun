@@ -29,6 +29,10 @@ DURABLERUN_CONFORMANCE_DIALECTS="$dialect" pnpm exec vitest run \
   "packages/store-$dialect/test" \
   packages/cli/test/cli-dialects.test.ts \
   packages/cli/test/fault-surface.test.ts \
+  packages/cli/test/drive-twin.test.ts \
+  packages/cli/test/drill.test.ts \
+  packages/cli/test/purge-twin.test.ts \
+  packages/cli/test/selftest.test.ts \
   --reporter=default --reporter=json --outputFile.json="$report" || code=$?
 
 python3 - "$report" "$dialect" "$code" <<'PY'
