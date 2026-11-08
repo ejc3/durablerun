@@ -6797,9 +6797,14 @@ as a state that is not the engine's own; a `TypeError` that is no refusal of a p
 is a read that found no row or no column it needs, or a driver's result of another shape
 than its contract; a plain `Error` of a batch that answered another number of results than
 it sent statements; and any error of the step's own check reading such an answer. So an
-error of that kind thrown after the store answered a batch of the step is reported as that
-batch's answer: the step prints `unexpected`, the label of the batch prints `unexpected`,
-and `found` names the label and the error's class. The error's words can quote the row, so
+error of that kind thrown after the store answered a batch of the step is reported as an
+answer of that step: the step prints `unexpected`, and `found` names the error's class and
+the labels the step was answered under. A step reads its answers together, its call's and
+those of the reads that check it, so when one is off it cannot say which: the labels of
+its call and every label it was answered under print `unexpected`, for an answer it could
+not read and for one it read and found wrong alike. A label prints `ok` only when no step
+that was answered under it found anything off. The generated case requires, of every run a
+bent answer ended, that the bent label does not print `ok`. The error's words can quote the row, so
 they print only with `--reveal`. An error thrown before the store answered any batch of
 the step is no answer, and stays exit 1. An executor names every error of its driver as an
 outage, a permanent error or a schema error, so a driver's error is never among these. A

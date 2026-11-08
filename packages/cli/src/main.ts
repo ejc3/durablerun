@@ -1376,11 +1376,25 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       return
     }
     const sentBefore = store.sent().length
+    /**
+     * The labels this step was answered under. A step reads its answers together, its
+     * call's and those of the reads that check it, so when one is off it is one of these,
+     * and the step cannot say which.
+     */
+    const answeredUnder = (): readonly string[] => [
+      ...new Set(
+        store
+          .sent()
+          .slice(sentBefore)
+          .filter((batch) => batch.answered)
+          .map((batch) => batch.label),
+      ),
+    ]
     try {
       const found = await check()
       if (found === null) reports.push({ ...named, result: 'ok' })
       else {
-        ended.answeredOtherwise = port.labels
+        ended.answeredOtherwise = [...port.labels, ...answeredUnder()]
         reports.push({ ...named, result: 'unexpected', found })
       }
     } catch (error) {
@@ -1393,13 +1407,16 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
         // engine's, or by a check of the answer's shape. That is a database that answered
         // otherwise, and not a defect of the CLI. The error's words can quote the row, so
         // they print only with --reveal.
-        ended.answeredOtherwise = [last.label]
+        const labels = answeredUnder()
+        ended.answeredOtherwise = [...port.labels, ...labels]
         const name = error instanceof Error ? error.name : typeof error
         const words = reveal && error instanceof Error ? `: ${error.message}` : ''
+        const which =
+          labels.length === 1 ? `the answer to ${labels[0]}` : `an answer to ${labels.join(' or ')}`
         reports.push({
           ...named,
           result: 'unexpected',
-          found: `the answer to ${last.label} was refused as one the engine does not give (${name})${words}`,
+          found: `${which} was refused as one the engine does not give (${name})${words}`,
         })
         return
       }

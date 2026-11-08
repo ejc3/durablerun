@@ -7405,7 +7405,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The week adds 16 seconds to the compatibility harness: on one loaded host the harness
     took 22 seconds at the base and 32 at the head. Under heavier load the same run took
     60 seconds, the week 37 of them. CI's verify job has a 120 minute limit.
-  - The registry holds 1516 mutations where main held 1482: eight caught by cases
+  - The registry holds 1518 mutations where main held 1482: ten caught by cases
     of `selftest`, nineteen by cases of the week receipt's checker, and seven by cases of
     the week's workflow.
 

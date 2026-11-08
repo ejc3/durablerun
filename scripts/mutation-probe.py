@@ -22783,6 +22783,37 @@ MUTATION_SPECS.extend(
 VERDICTS["operable-week-workflow-a-failed-guard-stops-the-job"] = VERDICTS[
     "operable-week-workflow-requires-the-pinned-database"
 ]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-marks-every-label-a-step-was-answered-under",
+            "packages/cli/src/main.ts",
+            "        ended.answeredOtherwise = [...port.labels, ...answeredUnder()]\n",
+            "        ended.answeredOtherwise = [...port.labels]\n",
+            "a step that finds its call wrong by a second read marks only its call's labels, so the label whose answer was off prints ok",
+        ),
+    )
+)
+VERDICTS["cli-selftest-marks-every-label-a-step-was-answered-under"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise",
+    "mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-names-every-label-of-a-refused-answer",
+            "packages/cli/src/main.ts",
+            "        const labels = answeredUnder()\n",
+            "        const labels = [last.label]\n",
+            "a step answered under two labels says the answer to the last one was refused, when the other is the one that was bent",
+        ),
+    )
+)
+VERDICTS["cli-selftest-names-every-label-of-a-refused-answer"] = VERDICTS[
+    "cli-selftest-marks-every-label-a-step-was-answered-under"
+]
 
 MUTATIONS = [
     Mutation(
@@ -26728,7 +26759,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1516:
+        if len(MUTATIONS) != 1518:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
