@@ -361,26 +361,33 @@ jobs:
               return repaired.replace(table, table + entries)
           if digest == 'd92ef6f06c840199a9b596620f0d89a4cec25739e956601708b777e621f5f975':
               # The self-test command, the week receipt's checker and the workflow of the week
-              # register twenty-five mutations: five caught by cases of `selftest`, sixteen by cases
-              # of the week receipt's checker, and four by the case that reads the week's workflow.
-              # Their cases carry twenty-three verdict markers, two of them shared by two mutations
+              # register thirty-three mutations: eight caught by cases of `selftest`, nineteen by
+              # cases of the week receipt's checker, and six by cases that read the week's workflow.
+              # Their cases carry thirty verdict markers, three of them shared by two mutations
               # each. Each is newer than the base registry, so each is exempted there. No base
               # entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",
                   "mutation-verdict:behavior:cli-selftest-declares-or-names-every-label",
+                  "mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent",
+                  "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
                   "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
                   "mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds",
                   "mutation-verdict:behavior:operable-week-workflow-enqueues-under-the-periods-key",
                   "mutation-verdict:behavior:operable-week-workflow-is-off-until-enabled",
+                  "mutation-verdict:behavior:operable-week-workflow-names-the-pinned-target",
                   "mutation-verdict:behavior:operable-week-workflow-purges-until-no-more-remain",
                   "mutation-verdict:behavior:operable-week-workflow-requires-the-pinned-database",
+                  "mutation-verdict:behavior:operable-week-workflow-stops-at-a-report-it-cannot-read",
+                  "mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows",
                   "mutation-verdict:behavior:week-receipt-allows-the-runs-it-shows",
                   "mutation-verdict:behavior:week-receipt-counts-a-unit-whose-answer-was-lost",
                   "mutation-verdict:behavior:week-receipt-fails-closed",
+                  "mutation-verdict:behavior:week-receipt-reads-a-purge-that-reached-no-unit",
                   "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
                   "mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound",
                   "mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-failed-window-too-long",
                   "mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot",
                   "mutation-verdict:behavior:week-receipt-refuses-a-seal-that-does-not-match",
                   "mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days",
