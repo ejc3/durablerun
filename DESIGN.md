@@ -5678,7 +5678,8 @@ fake clock's setter and `claim` cannot be written, nor any call a worker makes u
 it bypasses section 3.5's hosted authorization port, which decides only the hosted
 routes' four operations, and the rows it reaches hold params, checkpoints and event
 payloads in plaintext (section 3.5, observability). So the CLI's own messages never
-quote the store URL or the token. A URL that does not parse, one whose user name or
+quote the token or a credential of the store URL: of the URL they print only what
+`--target` names. A URL that does not parse, one whose user name or
 password does not percent-decode, one with an @ after the end of its authority, and a
 libSQL server's URL that carries a user name or password, which its client would quote in
 an error, are refused with exit 2 before anything opens. The authority ends at the first
@@ -5741,8 +5742,8 @@ one name.
   completion event included, and nothing derived from its payload. `emit` reads it before
   its write.
 - `eventPayload(queue, name)` answers one event's stored payload, as the text its first
-  emit stored, byte for byte. It is read for the payload's digest alone: `emit` hashes it
-  and never prints it. A stored value that is not text is not answered as a payload, and
+  emit stored, byte for byte. It is read for the payload's digest and for whether it is
+  the payload the call sent: `emit` hashes it, compares it, and never prints it. A stored value that is not text is not answered as a payload, and
   the answer names its kind by the dialect's own name for the type of what is stored.
 - `taskAdmission(queue, taskId)` answers what the engine's own guards say of one task as of
   the read: each conjunct of the retry guard, as true, false or not asked, whether the
@@ -5756,7 +5757,9 @@ one name.
 Five read one queue: `stuckRuns`, `agedTasks`, `queueStatus`, `tableRows` and
 `eventWaiters`. What each answers is said below, with the command that prints it.
 
-`taskAdmission` selects the engine's predicates and holds no copy of one. Each store names
+`taskAdmission` selects the engine's predicates and holds no copy of a store's. The one
+conjunct core writes itself, that the task is failed, is in core's guard and in core's
+read. Each store names
 the conjuncts of its retry guard once, as a record keyed by core's list `RETRY_CONJUNCTS`.
 Core builds the guard of `retryTask` from that record (`retryAdmission`), and it builds the
 flags of the read from the same record, one `CASE WHEN <conjunct> THEN 1 ELSE 0 END` for
@@ -5843,7 +5846,8 @@ Every persisted integer the reads consume is held to the bounds core gives its f
 (`PERSISTED_INTEGER_BOUNDS`). A value outside them, or one that is no exact integer, is read
 as null and listed in the answer's `corrupt` list with its field, the row that holds it,
 why it was refused, and the value itself when it is a number. It is never skipped and never
-thrown. `next-wake` does the opposite with an instant outside its bounds and leaves it out,
+thrown, with one exception, said under `stuck` below: a row that a window of `stuck-runs`
+does not settle is not listed, and nothing of it is listed as corrupt. `next-wake` does the opposite with an instant outside its bounds and leaves it out,
 because a driver must not arm a timer on it. An inspect tool that hides a corrupt row
 defeats its purpose, so it reports the row. `inspect` prints every fact it read, on stdout,
 and exits 10 when the outcome is unreadable, when the list is not empty, or when a run's
@@ -5860,7 +5864,7 @@ fence instant of the task the batch ended, and no statement updates it. So an ev
 exists with no instant is a row no engine path writes. Two readers ask whether a stored NULL
 is a value of a field, and both read that one name, so they agree about such a row. The
 operator's reads list it as corrupt, with the kind of its stored value given as `null`. The
-invariant library, which every conformance case, simulation and fuzz walk runs over the
+invariant library, which conformance cases, simulations and every fuzz walk run over the
 rows, flags it under the storage condition of that field. Core's table of temporal fields,
 `PERSISTED_TEMPORAL_FIELDS`, still records the column as nullable: it records the schema,
 and its entries are a released declaration. A schema version that made the column NOT NULL
@@ -5873,7 +5877,7 @@ run id, waits by run id and then by step, events by name, and the corrupt list b
 then by row, each string compared by Unicode code point in core. That is the order of the
 strings' UTF-8 bytes, so an implementation whose strings are UTF-8 gets it from a plain
 comparison. The order of UTF-16 code units differs from it for a character past the basic
-plane against one from U+E000 to U+FFFF. No statement orders its rows, because a text column
+plane against one from U+E000 to U+FFFF. No statement of `task-facts` orders its rows, because a text column
 sorts by the database's collation, which differs between the dialects and between two
 servers of one dialect.
 
