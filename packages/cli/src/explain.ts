@@ -470,7 +470,7 @@ const statesDifferArm: RunArm = ({ facts }, run) =>
  * whether the engine's own predicate admits the row, and the three arms below answer when
  * it does not: no tick and no sweep comes to such a row, so the command a late cause
  * suggests would change nothing. They decline when the row moved between the two reads,
- * and the late cause below each then answers as it would have.
+ * and the cause below each then answers as it would have.
  */
 const notTakenBy =
   (
@@ -841,11 +841,12 @@ function firstFound(view: View): Found | Needed | null {
  * The verdict of a task that awaits a child. A child that is waiting, stuck, inconsistent
  * or unexplained gives its verdict to the task that waits for it. A child that is `ok` and
  * has not ended makes it `waiting`, whatever that child's cause is called: an `ok` task
- * that has not ended is one a worker is running. A child that has ended would have woken
- * the run in the batch that ended it, so a run still parked on it is `unexplained`, as is
- * a child the queue does not hold and a child that was not followed. Tasks that wait on
- * each other in a ring, or a task that waits on itself, are `waiting` when a clock of some
- * task of the ring ends its wait, and `stuck` when none does: no move can come to them.
+ * that has not ended is one a worker is running. A child that is `ok` and has ended would
+ * have woken the run in the batch that ended it, so a run still parked on it is
+ * `unexplained`, as is a child the queue does not hold and a child that was not followed.
+ * Tasks that wait on each other in a ring, or a task that waits on itself, are `waiting`
+ * when a clock of some task of the ring ends its wait, and `stuck` when none does: no move
+ * can come to them.
  */
 function verdictThrough(child: ChildEvidence | undefined): Verdict {
   if (child === undefined || typeof child === 'string') return 'unexplained'

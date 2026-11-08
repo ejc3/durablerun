@@ -17,7 +17,7 @@
  * and the `purge` verb then runs under windows of five days less half an hour: the units
  * of the week's first five days are old enough by the database's own clock, and the rest
  * are not. Every `purge` command is held to the model of the barrier (`againstTheModel`),
- * over a dump of every table taken before it and after it.
+ * over a dump of the six protocol tables taken before it and after it.
  *
  * If alpha.1 and the current build disagree about a row, this fails and says where: a
  * read that is refused, a cause that is not the planted one, or a unit the model and the

@@ -9,9 +9,10 @@ import {
 } from '@durablerun/core'
 
 /**
- * Redaction and canonical JSON. A value a user wrote (params, headers, a checkpoint's state,
+ * Redaction and canonical JSON. A value a user wrote (params, a checkpoint's state,
  * an event payload, a result, a failure reason the task's code wrote, an idempotency key)
- * prints as its byte length and sha256, and its text prints only with `--reveal`. A
+ * prints as its byte length and sha256, and its text prints only with `--reveal`. No
+ * command reads a task's headers, so none prints them. A
  * database credential is full admin, and the rows hold those values in plaintext, so the
  * default is the one that does not copy them into a terminal or a log.
  */

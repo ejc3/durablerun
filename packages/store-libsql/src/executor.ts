@@ -29,9 +29,9 @@ const MISSING_META_TABLE = /no such table:\s*meta$/i
  * batch fails the same way on every retry.
  *
  * SQLITE_ERROR is deliberately absent. SQLite files a syntax error under that generic code,
- * and files a transaction state error there too, which a new connection cures, and the code
- * is all this executor may read: it never reads message text to type an error. A code that
- * is not listed here is an outage.
+ * and files a transaction state error there too, which a new connection cures. Of the
+ * message text this executor reads only the two wordings above, of a schema fault and of
+ * a missing `meta` table. A code that is not listed here is otherwise an outage.
  */
 const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])
 

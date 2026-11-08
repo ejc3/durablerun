@@ -13,7 +13,7 @@ name: operable-week
 # so it first requires the secret URL to be the one the variable pins. The two commands that
 # write, the enqueue and the purge, name their `--target` from the pinned URL, so the CLI
 # refuses a credential of another database for them too. The two samples, `stats` and
-# `sizes`, are reads, which take no `--target`: the first step alone holds them to the
+# `sizes`, are reads, which take no `--target`: that check alone holds them to the
 # pinned database. No command's output goes to the log: each report is a file, and the
 # files are the job's artifact.
 

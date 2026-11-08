@@ -310,7 +310,10 @@ export interface OperatorReads {
   /** The live tasks of a queue enqueued at least so long ago, oldest first: an age, and no defect. */
   agedTasks(queue: string, options: AgedTasksOptions): Promise<AgedTasks>
 
-  /** A queue's gauges, each stopped at a cap, and the instants at the head of the queue. */
+  /**
+   * A queue's gauges, each stopped at a cap, and a lag, a headroom, an instant and an age
+   * at the head of the queue.
+   */
   queueStatus(queue: string): Promise<QueueStatus>
 
   /** How many rows of each table a queue holds, each count stopped at a cap. */
@@ -319,7 +322,10 @@ export interface OperatorReads {
   /** The waits registered on an event that are still waiting, with the task of each. */
   eventWaiters(queue: string, eventName: string): Promise<EventWaiters>
 
-  /** One event's stored payload, for its digest: what the first emit of the event stored. */
+  /**
+   * One event's stored payload, for its digest and to be compared with the payload a call
+   * sent: what the first emit of the event stored.
+   */
   eventPayload(queue: string, eventName: string): Promise<StoredEventPayload>
 
   /**

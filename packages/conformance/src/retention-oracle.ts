@@ -13,7 +13,7 @@ import type { ProtocolSnapshot } from './poison-matrix.js'
 
 /**
  * What a purge may remove, said a second time, from the model and not from the SQL
- * (specs/Retention.tla, DESIGN.md §3.12). It reads a dump of every table, taken before
+ * (specs/Retention.tla, DESIGN.md §3.12). It reads a dump of the six protocol tables, taken before
  * the purge, and never a live row, so nothing a store does while it purges can agree with
  * it by reading the same thing. The grid, the fuzz walk and the contest hold every purge
  * to it: the answer, and every table afterwards.

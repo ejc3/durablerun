@@ -232,8 +232,8 @@ export const RETRY_REFUSALS: Readonly<Record<RetryGuardConjunct, RetryRefusalSta
 
 /**
  * What a revival would change of a task, read without the task's counters: its state, the
- * stamp of the batch that last wrote it, and how many runs name it. A snapshot of every
- * table selects the counters, and one driver refuses to hand over an integer a number
+ * stamp of the batch that last wrote it, and how many runs name it. A snapshot of the six
+ * protocol tables selects the counters, and one driver refuses to hand over an integer a number
  * cannot hold, so the planted row is read around.
  */
 async function untouched(raw: SqlExecutor, taskId: string) {

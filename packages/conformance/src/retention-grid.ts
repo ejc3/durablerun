@@ -29,7 +29,7 @@ import {
 /**
  * The barrier grid (DESIGN.md §3.12, BUILD.md exit test line 42): every state a purge can
  * meet a unit in, crossed, each built through the store's own ports and the clock, and
- * each purge held to the oracle over a dump of every table.
+ * each purge held to the oracle over a dump of the six protocol tables.
  */
 
 /** The policy of the grid: every ended state named, at the shortest window core takes. */

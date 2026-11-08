@@ -393,7 +393,8 @@ describe('the workflow of the operable week', () => {
   }, 300_000)
 
   it('names the pinned database as the target of every command that writes, whatever the credential opens, and no target for a read, which takes none', async () => {
-    // The credential of another database, as if the first step had been taken out.
+    // The credential of another database, as if the step that requires the pinned one had
+    // been taken out.
     const elsewhere = { ...STEP_ENV, DURABLERUN_STORE_URL: 'libsql://another-database.example' }
     const sent = [ENQUEUE, DAILY]
       .flatMap((name) => runStep(stepNamed(name), elsewhere).sent)
@@ -409,7 +410,7 @@ describe('the workflow of the operable week', () => {
     ).toEqual([
       { verb: 'enqueue', writes: true, target: pinned },
       // The samples are reads. The CLI gives a read no flag to name its store again, so
-      // only the first step holds them to the pinned database.
+      // only the step that requires the pinned database holds them to it.
       { verb: 'stats', writes: false, target: undefined },
       { verb: 'sizes', writes: false, target: undefined },
       { verb: 'purge', writes: true, target: pinned },

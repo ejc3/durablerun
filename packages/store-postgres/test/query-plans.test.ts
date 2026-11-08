@@ -852,7 +852,8 @@ it("reads a queue for an operator through the index of each leg's instant, and s
  * live tasks by state and enqueue instant, which schema version 11 adds for an operator's
  * reads. Every statement that names a task's queue and its live states could be, because
  * the index leads with both. The index's predicate is what keeps them off it: it requires
- * an enqueue instant, and no statement the engine sends compares one. The statements are
+ * an enqueue instant, and the one statement of the engine that compares one names no
+ * state. The statements are
  * recorded from real operations and planned as the cases above plan theirs, with
  * sequential and bitmap scans disabled, which is when a planner with nothing else to go on
  * takes any index it may. This needs a server.

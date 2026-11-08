@@ -320,7 +320,8 @@ export const MIGRATIONS: Migration[] = [
     // The second term of its predicate is what keeps the engine's statements off it. Every
     // task has an enqueue instant, so the term leaves no task out. SQLite uses a partial
     // index only for a statement whose own WHERE holds the index's terms, and no statement
-    // the engine sends tests the enqueue instant. Without the term every follow-on that
+    // the engine sends holds both: the one that tests the enqueue instant, the insert of a
+    // spawned task's first run, names no state. Without the term every follow-on that
     // updates a task by its key was planned through this index, by its queue and its state,
     // and read every live task of that state: the plan test named 25 statements of 14
     // batches, the claim's among them. A read that means to use the index writes both terms

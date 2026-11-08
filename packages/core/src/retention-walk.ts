@@ -34,10 +34,11 @@ import { requirePositiveInt } from './validate.js'
  *
  * One number bounds a walk: `limit`, the most units it takes. Nothing bounds the candidates
  * it looks at but the queue. A walk sends a listing for every page of candidates, a purge
- * for every candidate it reaches, and a read of the barrier for every one it keeps, so a
- * queue whose kept units grow costs each walk more. `examined` says how many looks a walk
- * took. A walk that its limit stopped says `more`, and the same walk run again from the
- * oldest takes what the first left.
+ * for every candidate it reaches but one the port keeps before it builds a batch (a key in
+ * the spawn namespace that names no parent), and a read of the barrier for every one it
+ * keeps, so a queue whose kept units grow costs each walk more. `examined` says how many
+ * looks a walk took. A walk that its limit stopped says `more`, and the same walk run
+ * again from the oldest takes what the first left.
  */
 
 /** The most candidates one listing of the walk asks for. A page is not the limit: a walk that takes one unit still reads its candidates a hundred at a time. */

@@ -17,10 +17,12 @@ import { makeLibsqlFixture } from './fixture-libsql.js'
 
 /**
  * The simulated week passes on every dialect. A hold nobody has seen fail holds nothing,
- * so each hold of the week is run here over a week that does what the hold forbids: a
+ * so holds of the week are run here over a week that does what the hold forbids: a
  * purge that deletes nothing, a policy that lets nothing go, a purge that reads a shorter
  * age than the policy names, a driver that stops for a day, and a store that leaves a
- * wait behind when it ends a run. The control is the clean week, run once.
+ * wait behind when it ends a run. Three holds have no failing week here: the sampled
+ * outcomes, the queue that ends empty, and the rows of a digest unit. The control is the
+ * clean week, run once.
  */
 
 /** A fixture whose purge answers that the barrier kept the unit, and sends nothing. */

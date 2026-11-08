@@ -338,7 +338,8 @@ export const MIGRATIONS: readonly PostgresMigration[] = [
     // The second term of its predicate is what keeps the engine's statements off it. Every
     // task has an enqueue instant, so the term leaves no task out. PostgreSQL uses a
     // partial index only for a statement whose own conditions imply the index's predicate,
-    // and no statement the engine sends compares the enqueue instant. Without the term a
+    // and no statement the engine sends implies it: the one that compares the enqueue
+    // instant, the insert of a spawned task's first run, names no state. Without the term a
     // statement that names a queue and the live states could be planned through this index
     // and read every live task of the queue. A read that means to use the index compares
     // the enqueue instant with a range: the server drops a test for NULL of a column that

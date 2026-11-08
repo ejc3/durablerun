@@ -36,7 +36,7 @@ import { awaitOwned, claimActivated, claimOne } from './scenario.js'
  * leaves a queue in, so it is asked of the states a fuzz walk of the engine leaves, with a
  * floor on what the walks reached, as well as of a queue seeded by hand, at the instant
  * each move comes due and one millisecond before it. The gauges and the row counts equal
- * counts made here, in TypeScript, from a dump of every table, and the list of the oldest
+ * counts made here, in TypeScript, from a dump of the six protocol tables, and the list of the oldest
  * live tasks equals a list made from the same dump.
  */
 
@@ -447,7 +447,7 @@ const least = (instants: readonly number[]): number | null =>
   instants.length === 0 ? null : Math.min(...instants)
 
 /**
- * What `queueStatus` must answer for one queue, counted here from a dump of every table and
+ * What `queueStatus` must answer for one queue, counted here from a dump of the six protocol tables and
  * from nothing the reads send: no leg, no index and no fragment of a store.
  */
 function statusFromTheDump(dump: ProtocolSnapshot, nowMs: number): QueueStatus {
@@ -543,7 +543,7 @@ function agedFromTheDump(dump: ProtocolSnapshot, nowMs: number, olderThanMs: num
 
 /**
  * The gauges, the row counts and the oldest live tasks of the queue, each against a count
- * or a list made from a dump of every table.
+ * or a list made from a dump of the six protocol tables.
  */
 async function countsAgainstTheDump(
   f: StoreFixture,
@@ -1227,9 +1227,10 @@ export function operatorQueueReadsConformance(
         await at(LATER)
         const reads = f.operatorReadsOver(f.raw)
         const listed = found(unadmitted(behind, 'pending', START + 1_000, LATER))
-        // With a limit of two the window is the three oldest due runs, all of which a
-        // claim takes. The refused run is the fourth, past the window: it is not listed,
-        // and the leg says that it left rows unexamined.
+        // With a limit of two the leg reads the three oldest due runs, all of which a claim
+        // takes, and the window reads four. The refused run is the fourth: it sorts after
+        // the last row of a leg that came back full, so it is not settled. It is not
+        // listed, and the leg says that it left rows unexamined.
         const windowOfThree = await reads.stuckRuns(Q, { graceSeconds: 0, limit: 2 })
         expect({
           dueUnclaimed: [

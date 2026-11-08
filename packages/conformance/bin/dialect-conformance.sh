@@ -20,15 +20,22 @@ esac
 report="$(mktemp -t "durablerun-$dialect-conformance.XXXXXX.json")"
 trap 'rm -f "$report"' EXIT
 
+# A case of packages/conformance/test/enrollment.test.ts holds this list to every test file
+# that runs its cases once for each selected dialect.
 code=0
 DURABLERUN_CONFORMANCE_DIALECTS="$dialect" pnpm exec vitest run \
   packages/conformance/test/libsql.test.ts \
+  packages/conformance/test/retention-soak-turns.test.ts \
   packages/conformance/test/sql-corpus.test.ts \
   packages/conformance/test/store-tables-schema.test.ts \
   packages/conformance/test/text-statements.test.ts \
   "packages/store-$dialect/test" \
   packages/cli/test/cli-dialects.test.ts \
   packages/cli/test/fault-surface.test.ts \
+  packages/cli/test/drive-twin.test.ts \
+  packages/cli/test/drill.test.ts \
+  packages/cli/test/purge-twin.test.ts \
+  packages/cli/test/selftest.test.ts \
   --reporter=default --reporter=json --outputFile.json="$report" || code=$?
 
 python3 - "$report" "$dialect" "$code" <<'PY'

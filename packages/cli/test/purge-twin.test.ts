@@ -43,7 +43,7 @@ import {
 /**
  * Exit test line 43: what `purge` takes is what the model of the barrier lets go, and it
  * changes nothing else. The command runs through `main` against a database. A dump of
- * every table is taken before it and after it, and the units it printed as purged are held
+ * the six protocol tables is taken before it and after it, and the units it printed as purged are held
  * to the oracle of the retention surface, which is written from the model and not from the
  * code: applied to the dump taken before, in the order the units were printed, the oracle
  * must let each go with the rows the command printed for it, and what it leaves must be

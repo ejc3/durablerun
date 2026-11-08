@@ -40,7 +40,7 @@ export interface TaskDoneStore {
  * commit could only change that answer for a transition that has happened. A batch that
  * names the wrong task would end the task with no event, and an insert that writes
  * nothing passes every row-count audit. What holds that is `childTaskViolations`, which
- * every conformance case, every fuzz walk, and the SDK harness run over the rows, with
+ * conformance cases, every fuzz walk, and the SDK harness run over the rows, with
  * one case for each terminal label.
  */
 export function addTaskDone(

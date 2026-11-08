@@ -202,8 +202,8 @@ describe('inspect on libSQL', () => {
   })
 
   it('exits 8 for a task whose unit a purge took, by its id and by its key, as for a task that never existed', async () => {
-    // Nothing the CLI runs purges, so the test calls the store's retention port itself,
-    // a window after the seeded task completed.
+    // The test calls the store's retention port itself, a window after the seeded task
+    // completed.
     const db = await openCliDb('libsql', 'inspect-purged')
     try {
       const seeded = await seedTasks(db)

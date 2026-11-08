@@ -248,7 +248,8 @@ export interface RollbackOutcome {
  * A persisted integer an operator read consumed whose stored value is outside the bounds
  * core holds that field to (`PERSISTED_INTEGER_BOUNDS`), or is no exact integer at all: a
  * fraction, text, or a NULL in a column the engine writes with every row. The
- * read reports it here and answers null for the field: it is never skipped and never thrown.
+ * read reports it here and answers null for the field: it is never skipped and never thrown,
+ * but for a row that a window of `stuck-runs` does not settle, of which nothing is listed.
  */
 export interface CorruptInteger {
   /** The field as core's bounds name it, such as `runs.claim_gen`. */
@@ -371,7 +372,8 @@ export type EventState =
   | (Extract<EmittedEvent, { exists: true }> & { readonly corrupt: readonly CorruptInteger[] })
 
 /**
- * An event's stored payload, read for its digest. `payloadJson` is the text as stored. It
+ * An event's stored payload, read for its digest and to be compared with the payload a
+ * call sent. `payloadJson` is the text as stored. It
  * is null for a stored value that is no text, which no engine path writes, and `stored`
  * then names the kind of value the row holds.
  */

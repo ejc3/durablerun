@@ -74,8 +74,9 @@ DURABLERUN_MYSQL_URL=mysql://root:durablerun@127.0.0.1:3306/durablerun \
   bash scripts/confine.sh bash packages/conformance/bin/dialect-conformance.sh mysql
 ```
 
-`packages/conformance/bin/dialect-conformance.sh` runs one dialect's conformance and its store's
-own tests, and fails a run that exercised nothing. `pnpm verify` runs every
+`packages/conformance/bin/dialect-conformance.sh` runs one dialect's conformance, its store's
+own tests and the six test files of the CLI that run on each selected dialect, and fails a
+run that exercised nothing. `pnpm verify` runs every
 enrolled dialect, so it needs all three servers unless
 `DURABLERUN_CONFORMANCE_DIALECTS` names the ones it has, as a comma list such
 as `libsql,postgres`. CI runs MySQL in its own job, `conformance-mysql`, beside
@@ -130,7 +131,9 @@ DESIGN.md section 3.11 says what each one does.
 **The environment.** `DURABLERUN_STORE_URL` names the database, and
 `DURABLERUN_STORE_TOKEN` holds the token of a libSQL server. No other variable
 is read for the store. A database credential is full admin, so the CLI never
-prints the URL or the token. Every command that writes names its store a second
+prints the token or a credential of the URL. Of the URL it prints the host or
+the file path, which `--target` names, and the scheme, in every answer of a
+command that opened a store. Every command that writes names its store a second
 time with `--target`: the host of the URL, or the path of a `file:` URL. A
 `--target` that names another store changes nothing and exits 2. In the lines
 below, `<host>` stands for that host and `example-queue` for the queue.
