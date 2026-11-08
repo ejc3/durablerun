@@ -877,8 +877,8 @@ export const DIGEST_UNIT_ROWS: Readonly<Record<UnitTable, number>> = Object.free
 /**
  * The simulated week on one dialect (BUILD.md exit test line 43). Every number below was
  * measured, and is the same on every dialect, because the week runs under fake time and
- * names its tasks by their slot. A case that shows each hold failing is in
- * `test/retention-soak-reds.test.ts`.
+ * names its tasks by their slot. Cases that show holds failing are in
+ * `test/retention-soak-reds.test.ts`, which names the three that have none.
  */
 export function retentionSoakConformance(dialect: string, makeFixture: StoreFixtureFactory): void {
   describe(`the simulated week [${dialect}]`, () => {

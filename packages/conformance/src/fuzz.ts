@@ -71,7 +71,7 @@ export interface FuzzStats {
   haltsNamed: number
   /** Names past the width or outside the durable string domain that the port refused. */
   portStringRefusals: number
-  /** Units a purge took, each held to the oracle over a dump of every table. */
+  /** Units a purge took, each held to the oracle over a dump of the six protocol tables. */
   purges: number
 }
 
@@ -83,7 +83,7 @@ const PURGE_FROM = 0.985
 
 /**
  * Purge what retention lists, and hold every purge to the oracle (DESIGN.md §3.12). Each
- * candidate is judged over a dump of every table taken before its purge: the candidates
+ * candidate is judged over a dump of the six protocol tables taken before its purge: the candidates
  * list nothing the model keeps for its state, its stamp or its age, the purge answers
  * exactly when the model lets the unit go, with the rows the unit held, and every table
  * afterwards is the dump less that unit and nothing else. The candidates are walked until

@@ -46,11 +46,11 @@ import {
 
 /**
  * `purge` through `main` on libSQL (exit test line 43): the one command by which an
- * operator deletes durable state. What it must not do is held as closely as what it does.
+ * operator deletes a task and the rows of its unit. What it must not do is held as closely as what it does.
  * A dry run and every refusal leave a dump of every table as it was and send no purge
  * batch, and each is shown beside the same command line with the refusal's cause taken
- * away, which changes the database. That the command is the retention port's calls and
- * nothing else is held on every dialect by purge-twin.test.ts.
+ * away, which changes the database. That the command deletes through the retention port's
+ * calls and nothing else is held on every dialect by purge-twin.test.ts.
  *
  * A purge refuses under a test clock, and every database of these tests starts with one
  * set. So a case seeds its tasks under that clock, at an instant years in the past, and

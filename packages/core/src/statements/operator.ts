@@ -21,7 +21,8 @@ import {
  * The reads of the operator's port (`OperatorReads`), each one SELECT of a batch that only
  * reads. They select what an operator needs to see why a task is where it is, and no value
  * a task's code wrote beyond the outcome `getTaskResult` already answers with: no params,
- * headers, event payload, run result or checkpoint state.
+ * headers, run result or checkpoint state. One read selects a value a caller wrote: the
+ * payload of one event, in `event-payload`.
  *
  * The statements of `task-facts` order no rows. A text column sorts by the database's
  * collation, which differs between the dialects and between two servers of one dialect, so
@@ -340,8 +341,9 @@ export const eventWaitersRead = defineStatement(
 
 /**
  * `event-payload`: one event's stored payload, with how the dialect names the type of the
- * stored value. It is read for the payload's digest alone: the operator who emits an event
- * that already exists is told which payload the first emit stored, by its hash.
+ * stored value. It is read for the payload's digest and to be compared with the payload a
+ * call sent: the operator who emits an event that already exists is told which payload the
+ * first emit stored, by its hash, and whether it is the one this call sent.
  */
 export const eventPayloadRead = defineStatement(
   'event-payload',

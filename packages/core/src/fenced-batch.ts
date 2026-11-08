@@ -275,7 +275,8 @@ const generatedBuilder = treeBuilder as unknown as Kysely<Record<string, Record<
 /**
  * The tables whose rows only the purge of a task's unit deletes (DESIGN.md §3.12): the
  * task, its runs, its checkpoints, and its completion event. A wait is deleted by every
- * batch that ends or parks the run it names, so `waits` is not among them.
+ * batch that ends the run it names, or parks it otherwise than on an await, so `waits` is
+ * not among them.
  */
 const DELETED_BY_A_PURGE_ALONE: readonly string[] = ['tasks', 'runs', 'checkpoints', 'events']
 

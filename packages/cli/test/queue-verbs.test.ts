@@ -28,7 +28,7 @@ import {
  * `stuck`, `stats` and `sizes` through `main` on libSQL (exit test line 37): what each
  * prints, the stream it prints on, and the exit it ends in, in human text and in `--json`.
  * What the reads behind them answer is held on every dialect by the conformance package's
- * `operator-reads` surface, against the engine and against a dump of every table.
+ * `operator-reads` surface, against the engine and against a dump of the six protocol tables.
  */
 
 const LEGS = [
@@ -605,7 +605,8 @@ describe('stuck on libSQL', () => {
    * and in alpha.1's. Each tick claims its run and the worker parks it 15 to 24 seconds on,
    * so it is due and unclaimed for part of every minute, and never for as long as the
    * grace: under the default grace it is in no leg at any instant between ticks. At grace
-   * 0 the same instants show it, so the check can say yes.
+   * 0 the last three of those instants show it and the first does not, so the check can
+   * say yes.
    */
   it("a task looping through launch deferral, in the current worker's form and in alpha.1's, is in no leg under the default grace at any instant between ticks, and its age finds it", async () => {
     for (const form of DEFERRAL_FORMS) {

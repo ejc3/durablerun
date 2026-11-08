@@ -6,8 +6,8 @@ import type { JsonAnswer } from './support.js'
 
 /**
  * One `purge` command held to the model of the barrier. The oracle of the retention
- * surface is written from the model and not from the code. Applied to a dump of every
- * table taken before the command, in the order the command printed its units, it must let
+ * surface is written from the model and not from the code. Applied to a dump of the six
+ * protocol tables taken before the command, in the order the command printed its units, it must let
  * each go with the rows the command printed for it, and what it leaves must be the dump
  * taken after. The verb's own test and the week on the release alpha.1 both hold their
  * commands to it through this one function.

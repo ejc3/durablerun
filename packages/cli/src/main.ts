@@ -721,9 +721,12 @@ export async function explained(
 
 /**
  * Why a task is where it is: one cause from the closed table, a verdict, and the facts
- * behind it, on stdout whatever the command exits with. A verdict is not an exit code. The
+ * behind it, on stdout whatever the command exits with. A task that is not there has no
+ * such answer, and prints on stderr in text. A verdict is not an exit code. The
  * command exits `done` for every task it could read, and `unreadable` when a row it read,
- * the task's or that of a child it followed, is one `inspect` exits `unreadable` for.
+ * the task's or that of a child it followed, is one `inspect` exits `unreadable` for, when
+ * a wait of another task on the awaited event is not readable, or when the decoders refuse
+ * a checkpoint row it asked for.
  */
 const explain: Handler = async (context) => {
   const named = await namedTask(context)
@@ -816,8 +819,8 @@ const stuck: Handler = async (context) => {
 }
 
 /**
- * A queue's gauges and the instants at its head, on stdout whatever the command exits
- * with. It exits `unreadable` when a row it counted holds an instant that is not readable.
+ * A queue's gauges and a lag, a headroom, an instant and an age at its head, on stdout
+ * whatever the command exits with. It exits `unreadable` when a row it counted holds an instant that is not readable.
  */
 const stats: Handler = async (context) => {
   const queue = await readableQueue(context)
@@ -1011,8 +1014,8 @@ const emitEvent: Handler = async (context) => {
  * Cancelling a task whose saga began halts the rollback where it stands (DESIGN.md
  * section 3.10), which is why that takes the flag. When the port answers false it wrote
  * nothing, and why is read from the task as it stands after: gone, cancelled already,
- * ended another way, rolling back with no --halt-rollback, or live with a run in another
- * queue. The read before the call is for what a run without --yes says it would do, and
+ * ended another way, rolling back with no --halt-rollback, live with a run in another
+ * queue, or live with nothing in its rows that refuses it. The read before the call is for what a run without --yes says it would do, and
  * for `stateBefore`. The task is read again after the call, whatever the port answered.
  * Beside the outcome `cancelled`, `sagaBegan` is of that later read, so it is true of the
  * task this call cancelled: `sagaBegan: true` there means the cancellation halted a
@@ -1228,15 +1231,16 @@ async function notAtTheBuildsVersion(
 }
 
 /**
- * Purge the units of a queue's ended tasks that are older than the windows named. It is
- * the store's retention port and nothing else: it runs core's one walk over that port
- * (`purgeWalk`), which lists the candidates by `purgeCandidates` and sends each unit's
- * purge by `purgeUnit`, whose compare-and-set holds the whole barrier at the instant of
+ * Purge the units of a queue's ended tasks that are older than the windows named. It
+ * deletes through the store's retention port and nothing else: it runs core's one walk over
+ * that port (`purgeWalk`), which lists the candidates by `purgeCandidates` and asks each
+ * unit's purge of `purgeUnit`, whose compare-and-set holds the whole barrier at the instant of
  * deletion. The command builds no statement of its own.
  *
  * Without `--execute` it is a dry run that sends only reads: each candidate is listed with
  * what the barrier says of it as of that read (`purgeAdmission`), and nothing is deleted.
- * With it, each candidate's purge is sent. A unit the port answers kept is not a failure:
+ * With it, each candidate's purge is asked of the port, which keeps one kind before it
+ * builds a batch. A unit the port answers kept is not a failure:
  * what keeps it is then read, and it is listed as kept, or as gone when no task is there at
  * that read, which is a unit another purge took or this call delivered twice.
  *
@@ -1254,7 +1258,7 @@ async function notAtTheBuildsVersion(
  * run had reached are printed all the same, on stdout, and the exit is the failure's: the
  * answers already given stand, and running the command again purges what is left. A unit
  * whose purge was sent and not answered is printed whole under `outcomeNotKnown`: it may
- * have gone. A failure before any unit was reached prints as any failure does.
+ * have gone. A failure that leaves no unit in any list prints as any failure does.
  */
 const purge: Handler = async (context) => {
   const { invocation, store, reveal } = context
@@ -1346,7 +1350,7 @@ const purge: Handler = async (context) => {
  * answered. It is for a branch or a snapshot of a database, before a migration of the
  * database itself or a first purge. The calls and what the engine answers to each are in
  * `selftest.ts`. The report lists each call with the batch labels the command table
- * declares for it, then each label with its result, and the labels it does not send with
+ * declares for it, each label with its result, and the labels it does not send with
  * the reason.
  *
  * It refuses, having written nothing, a schema version that is not the build's, as `purge`
