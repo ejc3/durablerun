@@ -6927,9 +6927,9 @@ exits 5 outside it and prints the recorded version and the versions the build re
 libSQL that window starts at version 5, and a verb may write there because its twin passes
 there: the test runs every verb's twin at each version from 5 to the build's. The verbs it
 runs are the drive verbs of the command table, which is every command that writes but
-`migrate` and `purge`, so a verb that joins the table joins the test, and one whose twin
-fails at a version fails by name. `purge` is held more narrowly: it refuses every version
-but the build's (above). Versions 6 to 12 add indexes, empty versions and triggers, and no
+`migrate`, `purge` and `selftest`, so a verb that joins the table joins the test, and one
+whose twin fails at a version fails by name. `purge` and `selftest` are held more narrowly:
+each refuses every version but the build's (above). Versions 6 to 12 add indexes, empty versions and triggers, and no
 statement a drive verb sends names a column or an index a later version adds. PostgreSQL and
 MySQL read their own version alone, so a drive verb exits 5 on an older database of either.
 No command has a second path for an older schema.

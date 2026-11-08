@@ -55,7 +55,7 @@ This project's machinery found other defects on the branch, before the review an
 
 Self-catch rate: 0 of 14, or 0% (previous round, PR5.2d's: 0 of 21, or 0%). All eleven rounds of the operable alpha milestone so far have a rate of zero. The rate is not improving.
 
-One number of this round is different from the last. PR5.2d's fold made thirteen new defects and a second review found them. In this fold the audit of each mechanism was run while the fold was still open, and it found four of the fold's own holes before any second reading. That is the machinery finding something, and it is not the rate: the audit runs only because a review happened.
+One number of this round is different from the last. PR5.2d's fold made thirteen new defects and a second review found them. In this fold the audit of each mechanism was run while the fold was still open. Before any second reading it found two defects the fold had made, and two holes that were there before the fold. That is the machinery finding something, and it is not the rate: the audit runs only because a review happened.
 
 ## Recurrence
 
@@ -111,7 +111,7 @@ Were the fixes reviewed as new code? Not when this was written. The fold was re-
 - Fixes: commit `e9abca5`, which turns it green; gate after the fix: the cases of `selftest`, of the opener and of the fault surface.
 - Red tests: commit `07d4f17`, probe `packages/cli/test/selftest.test.ts` `exits 11 and never 1 when the database answers a row the decoders refuse: the step is unexpected, the label is the one that was answered, and the row prints only with --reveal`, run and seen failing (2 tests: the finding's own input, and 42 of 100 bent runs that exit 1) against `e9abca5`.
 - Fixes: commit `69d2c7c`, which turns them green; gate after the fix: the cases of `selftest`, of redaction and of the fault surface.
-- Red tests: commit `380302e`, probe `packages/cli/test/selftest.test.ts` `exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise`, run and seen failing (1 test, for 8 of 100 bent runs) against `69d2c7c`. This red test is the fold's own, of a defect the fix for finding 3 made.
+- Red tests: commit `380302e`, probe `packages/cli/test/selftest.test.ts` `exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise`, run and seen failing (1 test, for 8 of 100 bent runs) against `a1db853`, whose product code is that of the fix for finding 3. This red test is the fold's own, of a defect that fix made.
 - Fixes: commit `7e1fa60`, which turns it green.
 - Red tests: none of its own for findings 4 to 14, and this line cites no commit. Each case those findings gained was seen failing once on the code without its fix, by planting the unfixed line: the reader that refuses a bare failure, the cause taken out, the dot segment allowed, the old line of the migrate script, the plain shell, the purge's target named from the secret, and a cause in the README that `explain` does not name.
 - Fixes: commits `0d7dd11` (findings 4 and 7), `8d35608` (findings 5, 12 and 14), `bd0b89b` (findings 9 and 13), `57c05c1` (findings 6, 8 and 10, and the record of finding 11), `a1db853` (a failed guard stops the job), `a33b2d8` (every batch of a run refused in turn) and `85f5178` (the injected task is cleared with a cancel); gate after the fixes: the cases of the CLI and of the checker on libSQL, the example's cases against the release alpha.1, the compatibility harness, and the registry's self-test with 1519 live mutations.
@@ -122,9 +122,9 @@ Were the fixes reviewed as new code? Not when this was written. The fold was re-
 - Its demonstration of finding 6, with the worker of the release alpha.1 and the current CLI as the operator: "Right after the enqueue both kinds of injected task printed `pending-due-unclaimed`. After one pass of alpha.1's worker they printed `never-started-alpha1-form` and `awaiting-an-untimed-event`." A run of the fold on the same release carried it further: both causes stand unchanged through a day of the test clock and five more passes of the worker.
 - Its demonstration of finding 7: the well-formed receipt with a failed window of 604,800 seconds and an empty list "printed 13 refusals, all `sizes-over-bound`, the first `days[3] counts 56 rows of runs, over the bound of 55`."
 - What the fold measured for finding 1, on the release alpha.1: both kinds of injected task hold a task and a run when enqueued. A task of a name no handler is registered for ends with the event of its ending more. A task that awaits an event holds a wait while it is parked, and ends with no wait and the event of its ending. The allowance is one wait and one event.
-- What ran in place of a review of the fold, each on the code as committed. A red case seen failing by name before each of the four product fixes that has one. Every new mutant planted in the tree and seen failing by its own marker before it was registered. The runs of the audit above. And the gates of the repository on the final head, which the pull request's text reports, since this document is part of that head.
+- What ran in place of a review of the fold, each on the code as committed. A red case seen failing by name before each of the four product fixes that has one. Every new mutant planted in the tree and seen failing by the marker it is registered under, before it was registered. The runs of the audit above. And the gates of the repository on the final head, which the pull request's text reports, since this document is part of that head.
 - What the review checked and found clean: the five new test files of the CLI and the six it touched, the compatibility harness with the week, the example's new cases against the release alpha.1, the lints, the type check, and the registry's self-test. It ran no PostgreSQL, no MySQL and no mutation audit, and it did not read the pull request's text.
-- Did not reproduce: none of the fourteen was refuted. Where the fold differs from what was found. Finding 13 offered two repairs, and the command table settled which: `stats` and `sizes` are reads, a read takes no `--target`, so the three sentences were corrected and no flag was added. Finding 11 is recorded and not built. For finding 3, an error thrown before the store answered any batch of the step still exits 1, because nothing a database answered can have raised it. Finding 9 asked only for the shell of the cases. Under that shell the daily step was seen to write an unreadable report's text to the log, so the step was changed as well.
+- Did not reproduce: none of the fourteen was refuted. The fold differs from what was found in four places. Finding 13 offered two repairs, and the command table settled which: `stats` and `sizes` are reads, a read takes no `--target`, so the three sentences were corrected and no flag was added. Finding 11 is recorded and not built. For finding 3, an error thrown before the store answered any batch of the step still exits 1, because nothing a database answered can have raised it. Finding 9 asked only for the shell of the cases. Under that shell the daily step was seen to write an unreadable report's text to the log, so the step was changed as well.
 
 ## Root cause
 
@@ -143,16 +143,16 @@ Built in this PR:
 - A case that bends the answer to every declared label four ways and requires that no run exits 1 and that no bent label prints `ok` in a run it ended (rung 2, generated from the command table).
 - The checker's reader of a purge that reached no unit, held by a case on what the CLI prints for an outage and for a refusal, and the refusal `failed-window-too-long` with its doctored receipt (rung 3).
 - One predicate for a dot segment, which the repository's name and the ref are held to, and one request function for the example's two GitHub readers (rung 1, each for the two places that share it).
-- The workflow's cases run under the job's shell, with a case that holds the shell, a case over every command the workflow sends, and a case that no step carries on after a failure (rung 3).
+- The workflow's cases run under the job's shell, with a case that holds the shell and a case over every command the workflow sends. The guard's case also holds that no step carries on after a failure (rung 3).
 - A case that holds the causes the README's steps name to the table of `explain` (rung 2, a check of syntax).
-- Twelve registered mutations for these, each seen failing by its own marker.
+- Twelve registered mutations for these, each seen failing by the marker it is registered under. Four of the twelve share the marker of another.
 
 Deferred (recorded in BUILD.md):
 
 - A bound of runs for each sample (finding 11). Its trigger is a receipt accepted on a week whose purge lost an answer, or a first request for it. Deferral is acceptable because the allowance is stated in DESIGN.md and loosens one table.
 - An alarm for a daily run that has not started (finding 8). The README says what to do by hand, and its trigger is a week refused for that cause.
 - A command that assembles a week receipt from the workflow's artifacts, which the entry already held. Its trigger is the maintainer's first week.
-- A mutation audit that reads test files outside packages/, which would hold the example's cases. Its trigger is a second app whose cases need it.
+- A mutation audit that reads test files under apps/. Its trigger is a second app whose cases need it. It would not hold the example's cases, which are under examples/ and run only in `pnpm verify:packages`, and no option is recorded for those.
 
 ## What this round still would not catch
 
