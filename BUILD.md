@@ -63,9 +63,11 @@ milestone: those ten, PR5.0 (PR #111), which wrote this record, and PR5.5, the
 docs pull request that records the lines as met. Nine of them merged from
 2026-09-24 to 2026-10-06. The work was paused from 2026-10-06 to 2026-11-07,
 PR5.2d merged on 2026-11-07, and PR5.4 on 2026-11-08. Each of the twelve has
-the postmortem of its reviews under `postmortems/`. PR5.5's one review found
-ten things, none HIGH and two MEDIUM, and
-`postmortems/pr5.5-milestone-close-review.md` holds them. PR5.5 also added
+the postmortem of its reviews under `postmortems/`. PR5.5 had two reviews,
+the second of its first fold alone. They found 18 things, none HIGH and two
+MEDIUM, and `postmortems/pr5.5-milestone-close-review.md` holds them. No
+review follows its last fold: it was tested again and nobody has read it, as
+the postmortem says. PR5.5 also added
 to CI's MySQL job the five test files that run once for each selected
 dialect and that the job did not run: four of the CLI, `drive-twin.test.ts`,
 `drill.test.ts`, `purge-twin.test.ts` and `selftest.test.ts`, and
