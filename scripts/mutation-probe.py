@@ -22323,7 +22323,7 @@ MUTATION_SPECS.extend(
         (
             "cli-selftest-checks-what-each-call-answered",
             "packages/cli/src/selftest.ts",
-            "      return differs('the state', await stateOf(a), 'cancelled')\n",
+            "      return stateDiffers('the state', await stateOf(a), 'cancelled')\n",
             "      return null\n",
             "selftest takes a cancellation that cancelled nothing for one that did",
         ),
@@ -22938,6 +22938,40 @@ MUTATION_SPECS.extend(
 VERDICTS["week-receipt-allows-the-injected-task-no-wait"] = VERDICTS[
     "week-receipt-allows-the-injected-task-its-rows"
 ]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-prints-a-stored-state-as-any-command-does",
+            "packages/cli/src/selftest.ts",
+            "    const was = typeof found === 'string' ? stateView(found, reveal) : null\n",
+            "    const was = typeof found === 'string' ? found : null\n",
+            "selftest prints a state a row stores as it is stored, so a state that is not one of the engine prints in the report with no --reveal",
+        ),
+    )
+)
+VERDICTS["cli-selftest-prints-a-stored-state-as-any-command-does"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read prints a state a row stores that is not one of the engine only with --reveal, as a hidden value prints: the state of the task, of its run, and the one the guards read",
+    "mutation-verdict:behavior:cli-selftest-prints-a-stored-state-as-any-command-does",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-prints-no-text-a-database-answered",
+            "packages/cli/src/selftest.ts",
+            "        differs('whether a repeated spawn answers the first task', again.taskId === a, true),\n",
+            "        differs('the task a repeated spawn answers', again.taskId as never, a as never),\n",
+            "selftest prints the id a repeated spawn answered beside the one it expects, so an id the database answered prints in the report with no --reveal",
+        ),
+    )
+)
+VERDICTS["cli-selftest-prints-no-text-a-database-answered"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise",
+    "mutation-verdict:behavior:cli-selftest-prints-no-text-a-database-answered",
+)
 
 MUTATIONS = [
     Mutation(
@@ -26883,7 +26917,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1526:
+        if len(MUTATIONS) != 1528:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

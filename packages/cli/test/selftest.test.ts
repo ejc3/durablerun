@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { COMMANDS, NOT_SENT_BY_SELFTEST } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
 import { type OpenedStore, type StoreOpener, openStore, storeTarget } from '../src/open-store.js'
+import { userValue } from '../src/render.js'
 import { SELFTEST_TASK } from '../src/selftest.js'
 import {
   type CliDb,
@@ -439,16 +440,77 @@ describe('what selftest says of a database whose answer cannot be read', () => {
       })
     }))
 
+  it('prints a state a row stores that is not one of the engine only with --reveal, as a hidden value prints: the state of the task, of its run, and the one the guards read', async () => {
+    // The stored state alone is bent, in the one result of the read that holds it.
+    const stateBent =
+      (index: number) =>
+      (results: SqlResult[]): SqlResult[] =>
+        results.map((result, at) =>
+          at === index
+            ? { ...result, rows: result.rows.map((row) => ({ ...row, state: BOGUS })) }
+            : result,
+        )
+    const hidden = JSON.stringify(userValue(BOGUS, false))
+    const revealed = JSON.stringify(userValue(BOGUS, true))
+    for (const [label, index, call] of [
+      ['task-facts', 0, 'operator.taskFacts'],
+      ['task-facts', 1, 'operator.taskFacts'],
+      ['task-admission', 1, 'operator.taskAdmission'],
+    ] as const) {
+      await onDb(`selftest-state-${label}-${index}`, async (db) => {
+        const opener = openerWrapping(answering(label, stateBent(index)))
+        const run = await runCli(line(db), db.env, opener)
+        const at = (report(run.stdout).steps ?? []).find((step) => step.result !== 'ok')
+        expect(
+          {
+            label,
+            index,
+            exit: run.exit,
+            call: at?.call,
+            result: at?.result,
+            printsTheState: `${run.stdout}${run.stderr}`.includes(BOGUS),
+            printsItHidden: at?.found?.includes(hidden),
+          },
+          'mutation-verdict:behavior:cli-selftest-prints-a-stored-state-as-any-command-does',
+        ).toEqual({
+          label,
+          index,
+          exit: exitCode('failed'),
+          call,
+          result: 'unexpected',
+          printsTheState: false,
+          printsItHidden: true,
+        })
+        const shown = await runCli(
+          [...line(db, `${OWN_QUEUE}-revealed`), '--reveal'],
+          db.env,
+          opener,
+          testIdSource('selftest-state-revealed'),
+        )
+        const there = (report(shown.stdout).steps ?? []).find((step) => step.result !== 'ok')
+        expect({ exit: shown.exit, printsItRevealed: there?.found?.includes(revealed) }).toEqual({
+          exit: exitCode('failed'),
+          printsItRevealed: true,
+        })
+      })
+    }
+  })
+
   it('exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise', async () => {
     const labels = [...new Set(DECLARED)]
     const exits = new Map<number, number>()
     const internal: string[] = []
     const printedOk: string[] = []
+    const printedTheText: string[] = []
     for (const label of labels) {
       for (const [how, bend] of Object.entries(BENT)) {
         await onDb(`selftest-bent-${label}-${how}`, async (db) => {
           const run = await runCli(line(db), db.env, openerWrapping(answering(label, bend)))
           exits.set(run.exit, (exits.get(run.exit) ?? 0) + 1)
+          // With every text of the answer replaced by one word, that word is a text a row
+          // stores: an id, a state, a name. None of it prints with no --reveal, on either
+          // stream, whatever the run makes of the answer.
+          if (`${run.stdout}${run.stderr}`.includes(BOGUS)) printedTheText.push(label)
           // A run that the bent answer ended never prints the bent label as ok, and what it
           // says was refused never names another label alone: a step that was answered under
           // two labels read them together.
@@ -485,6 +547,10 @@ describe('what selftest says of a database whose answer cannot be read', () => {
     expect(
       internal,
       'mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer',
+    ).toEqual([])
+    expect(
+      printedTheText,
+      'mutation-verdict:behavior:cli-selftest-prints-no-text-a-database-answered',
     ).toEqual([])
     expect(
       printedOk,

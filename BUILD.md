@@ -7575,7 +7575,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     step's line that prints its own call's labels beside the label that failed. No review
     follows that last fold: it was tested again and nobody has read it, as the postmortem
     says.
-  - The registry holds 1526 mutations where main held 1482: fifteen caught by cases
+  - One more finding, after both rounds, from a read of DESIGN.md against the code: the
+    24th. `selftest` printed a text a database answered under `found` with no `--reveal`:
+    a state as an operator's read answers it, which is the text the row stores, and an id
+    as a spawn, a read by key or a listing answered it. A state it prints now goes through
+    the function every command prints a stored state with, an id is compared and what
+    prints is whether it is the expected one, and the generated case of bent answers
+    requires that the word that replaced every text is nowhere in the output.
+  - The registry holds 1528 mutations where main held 1482: seventeen caught by cases
     of `selftest` and of the opener, twenty-two by cases of the week receipt's checker,
     and seven by cases of the week's workflow.
 

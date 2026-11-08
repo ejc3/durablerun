@@ -3,9 +3,12 @@ import {
   MIN_RETENTION_SECONDS,
   OPERATOR_LIST_CAP,
   PURGE_BARRIER_CONDITIONS,
+  type PurgeBarrierCondition,
+  QUEUE_TABLES,
   type RetentionPolicy,
 } from '@durablerun/core'
 import { COMMANDS, type PortUse } from './commands.js'
+import { stateView } from './inspect.js'
 import type { OpenedStore, SentBatch } from './open-store.js'
 
 /**
@@ -43,10 +46,14 @@ const POLICY: RetentionPolicy = Object.freeze({
   failedSeconds: MIN_RETENTION_SECONDS,
 })
 
-/** What one run of selftest names: its queue, and the id its keys and its event are made from. */
+/**
+ * What one run of selftest names: its queue, the id its keys and its event are made from,
+ * and whether a stored state that is not one of the engine prints as it is stored.
+ */
 export interface SelftestNames {
   readonly queue: string
   readonly runId: string
+  readonly reveal: boolean
 }
 
 export interface SelftestStep {
@@ -66,12 +73,24 @@ export function selftestPort(call: PortUse['call']): PortUse {
 }
 
 /**
- * A difference between what a call answered and what the engine answers, in words, or null
- * for none. The two are compared and printed as JSON, so a caller hands it only what may
- * print: counts, flags, ids and names of the engine's own. A text a row stores is compared
- * before it gets here, and what arrives is whether it matched.
+ * What a step may print of an answer: a count, a flag, the counts of the queue's tables,
+ * and names of the barrier's conditions, which selftest holds itself. No text a database
+ * answered is among them. An id is compared before it gets here, and what arrives is
+ * whether it is the one selftest expects. A state goes through `stateDiffers`.
  */
-function differs(what: string, found: unknown, expected: unknown): string | null {
+type MayPrint =
+  | number
+  | boolean
+  | null
+  | readonly PurgeBarrierCondition[]
+  | Readonly<Record<string, number>>
+
+/**
+ * A difference between what a call answered and what the engine answers, in words, or null
+ * for none. The two are compared and printed as JSON, so the type lets a caller hand it
+ * only what may print.
+ */
+function differs(what: string, found: MayPrint, expected: MayPrint): string | null {
   const [was, wanted] = [JSON.stringify(found), JSON.stringify(expected)]
   return was === wanted ? null : `${what} is ${was}, not ${wanted}`
 }
@@ -86,7 +105,7 @@ const first = (...checks: readonly (string | null)[]): string | null =>
  */
 export function selftestSteps(
   store: Pick<OpenedStore, 'admin' | 'scheduler' | 'operator' | 'retention'>,
-  { queue, runId }: SelftestNames,
+  { queue, runId, reveal }: SelftestNames,
 ): SelftestStep[] {
   const { admin, scheduler, operator, retention } = store
   const keyOfA = `selftest-${runId}-a`
@@ -100,13 +119,28 @@ export function selftestSteps(
   /** A task's state as the store's decoder answers it, which refuses a state that is not the engine's own. */
   const stateOf = async (taskId: string): Promise<string | null> =>
     (await scheduler.getTaskResult(queue, taskId))?.state ?? null
-  /** The queue's row counts, table by table in the order of the tables' names. */
-  const rowsOf = async (): Promise<Record<string, number>> =>
-    Object.fromEntries(
-      Object.entries((await operator.tableRows(queue)).tables)
-        .map(([table, gauge]): [string, number] => [table, gauge.count])
-        .sort(([left], [right]) => (left < right ? -1 : 1)),
+  /**
+   * A difference between a state a read answered and the one the engine holds there, or
+   * null for none. An operator's read answers a state as the text the row stores, so what
+   * prints of it is what every command prints of a stored state: one of the engine's own
+   * as it is, and any other hidden unless revealed.
+   */
+  const stateDiffers = (
+    what: string,
+    found: string | null | undefined,
+    expected: 'pending' | 'cancelled',
+  ): string | null => {
+    if (found === expected) return null
+    const was = typeof found === 'string' ? stateView(found, reveal) : null
+    return `${what} is ${JSON.stringify(was)}, not ${JSON.stringify(expected)}`
+  }
+  /** The queue's row counts, under the names of the tables a queue has, in their order. */
+  const rowsOf = async (): Promise<Record<string, number>> => {
+    const { tables } = await operator.tableRows(queue)
+    return Object.fromEntries(
+      [...QUEUE_TABLES].sort().map((table): [string, number] => [table, tables[table].count]),
     )
+  }
   const step = (
     call: PortUse['call'],
     sends: string,
@@ -116,17 +150,25 @@ export function selftestSteps(
   return [
     step('admin.nowEpochMs', "a read of the database's clock", async () => {
       const now = await admin.nowEpochMs()
-      return Number.isSafeInteger(now) ? null : `the clock answered ${JSON.stringify(now)}`
+      return differs(
+        'whether the clock answered a whole number of milliseconds',
+        Number.isSafeInteger(now),
+        true,
+      )
     }),
     step('scheduler.spawn', 'a spawn under a key of this run', async () => {
       a = (await scheduler.spawn(queue, SELFTEST_TASK, 'null', { idempotencyKey: keyOfA })).taskId
-      return differs('the task the key finds', await operator.taskIdByKey(queue, keyOfA), a)
+      return differs(
+        'whether the key finds the task it spawned',
+        (await operator.taskIdByKey(queue, keyOfA)) === a,
+        true,
+      )
     }),
     step('scheduler.spawn', 'the same spawn again', async () => {
       const again = await scheduler.spawn(queue, SELFTEST_TASK, 'null', { idempotencyKey: keyOfA })
       return first(
         differs('created', again.created, false),
-        differs('the task a repeated spawn answers', again.taskId, a),
+        differs('whether a repeated spawn answers the first task', again.taskId === a, true),
       )
     }),
     step(
@@ -142,7 +184,11 @@ export function selftestSteps(
       },
     ),
     step('operator.taskIdByKey', 'a read of a task by its key', async () =>
-      differs('the task the second key finds', await operator.taskIdByKey(queue, keyOfB), b),
+      differs(
+        'whether the second key finds the second task',
+        (await operator.taskIdByKey(queue, keyOfB)) === b,
+        true,
+      ),
     ),
     step('operator.taskFacts', 'a snapshot of the first task', async () => {
       const facts = await operator.taskFacts(queue, a)
@@ -154,14 +200,14 @@ export function selftestSteps(
           facts.task.taskName === SELFTEST_TASK,
           true,
         ),
-        differs('the state', facts.task.state, 'pending'),
+        stateDiffers('the state', facts.task.state, 'pending'),
         differs('the number of runs', facts.runs.length, 1),
-        differs("the run's state", facts.runs[0]?.state, 'pending'),
+        stateDiffers("the run's state", facts.runs[0]?.state, 'pending'),
         differs('the number of values not readable', facts.corrupt.length, 0),
       )
     }),
     step('scheduler.getTaskResult', "a read of the first task's outcome", async () =>
-      differs('the state', await stateOf(a), 'pending'),
+      stateDiffers('the state', await stateOf(a), 'pending'),
     ),
     step('scheduler.getCheckpoints', "a read of the first task's checkpoints", async () =>
       differs(
@@ -177,7 +223,7 @@ export function selftestSteps(
         const admission = await operator.taskAdmission(queue, a)
         if (admission === null) return 'the queue does not hold the task it spawned'
         return first(
-          differs('the state', admission.state, 'pending'),
+          stateDiffers('the state', admission.state, 'pending'),
           differs('the number of values not readable', admission.corrupt.length, 0),
         )
       },
@@ -207,10 +253,14 @@ export function selftestSteps(
         olderThanSeconds: 0,
         limit: OPERATOR_LIST_CAP,
       })
-      return differs(
-        'the live tasks',
-        aged.tasks.rows.map((task) => task.taskId).sort(),
-        [a, b].sort(),
+      const listed = aged.tasks.rows.map((task) => task.taskId)
+      return first(
+        differs('the number of live tasks', listed.length, 2),
+        differs(
+          'whether the live tasks are the two it spawned',
+          listed.includes(a) && listed.includes(b),
+          true,
+        ),
       )
     }),
     step('operator.queueStatus', "a read of the queue's gauges", async () => {
@@ -224,13 +274,13 @@ export function selftestSteps(
     }),
     step('scheduler.nextWakeAtEpochMs', "a read of the queue's next wake", async () => {
       const next = await scheduler.nextWakeAtEpochMs(queue)
-      return typeof next === 'number' ? null : `the next wake is ${JSON.stringify(next)}`
+      return differs('whether the queue has a next wake', typeof next === 'number', true)
     }),
     step('scheduler.sweep', 'a sweep, which cancels the task past its deadline', async () => {
       await scheduler.sweep(queue, OPERATOR_LIST_CAP)
       return first(
-        differs('the state of the task past its deadline', await stateOf(b), 'cancelled'),
-        differs('the state of the task with no deadline', await stateOf(a), 'pending'),
+        stateDiffers('the state of the task past its deadline', await stateOf(b), 'cancelled'),
+        stateDiffers('the state of the task with no deadline', await stateOf(a), 'pending'),
       )
     }),
     step('operator.eventState', 'a read of whether an event of this run exists', async () =>
@@ -264,13 +314,17 @@ export function selftestSteps(
       'a revival of a task that has not failed, which the guard refuses',
       async () =>
         first(
-          differs('the revival', await scheduler.retryTask(queue, a), null),
-          differs('the state', await stateOf(a), 'pending'),
+          differs(
+            'whether the revival was refused',
+            (await scheduler.retryTask(queue, a)) === null,
+            true,
+          ),
+          stateDiffers('the state', await stateOf(a), 'pending'),
         ),
     ),
     step('scheduler.cancelTask', 'a cancellation of the first task', async () => {
       await scheduler.cancelTask(queue, a, { unlessSagaBegan: true })
-      return differs('the state', await stateOf(a), 'cancelled')
+      return stateDiffers('the state', await stateOf(a), 'cancelled')
     }),
     step('retention.purgeCandidates', 'a listing of what a purge may take', async () => {
       const page = await retention.purgeCandidates(queue, POLICY, { limit: OPERATOR_LIST_CAP })
@@ -283,7 +337,7 @@ export function selftestSteps(
         const purged = await retention.purgeUnit(queue, unitOfA(), POLICY)
         return first(
           purged === null ? null : 'the purge took a unit that ended a moment ago',
-          differs('the state', await stateOf(a), 'cancelled'),
+          stateDiffers('the state', await stateOf(a), 'cancelled'),
         )
       },
     ),
