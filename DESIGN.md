@@ -6298,8 +6298,8 @@ deadline is named for the deadline before any of the three, and a row that is no
 is named as that. `explain` asks the engine's own predicate about a run that is due
 (`taskAdmission`). A run no claim admits is `due-run-no-claim-admits`, with the verdict
 `inconsistent` and `inspect` as its next command, and `stuck` lists it in `dueNotAdmitted`.
-A run a claim takes is one of the three late causes, or a never-started cause when no
-worker started it, which stays `waiting`, and `stuck` lists it in a leg of due
+A run a claim takes is one of the three late causes, or one of the two never-started
+causes, which stay `waiting`, and `stuck` lists it in a leg of due
 runs. So the two commands agree about which of the two a run is. The same holds of a lapsed
 lease the sweep's scan does not answer (`lapsed-lease-no-sweep-reclaims`) and of a deadline
 it does not answer (`deadline-no-sweep-cancels`). `explain` reads the facts and the
