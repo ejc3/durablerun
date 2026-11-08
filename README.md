@@ -136,8 +136,9 @@ time with `--target`: the host of the URL, or the path of a `file:` URL. A
 below, `<host>` stands for that host and `example-queue` for the queue.
 
 **The schema window.** A build reads the schema versions its store package
-names, from 5, the release alpha.1, to its own. A database outside that window
-is refused with exit 5 before anything is sent. `pnpm cli doctor --queue
+names. On libSQL they run from 5, the release alpha.1, to the build's own. On
+PostgreSQL and MySQL a build reads only its own version. A database outside
+that window is refused with exit 5 before anything is sent. `pnpm cli doctor --queue
 example-queue` prints the build's version and the version the database records.
 `purge` and `selftest` take only the build's own version.
 
@@ -222,9 +223,18 @@ and then runs `purge --execute` until the verb says no more remain. It holds a
 database credential, so it first requires the secret URL to equal the URL a
 repository variable pins. The enqueue and the purge, which write, name their
 `--target` from the pinned URL. `stats` and `sizes` are reads and take no
-`--target`, so that first check alone holds them to the pinned database. Its reports are files in the run's artifact, and no report goes to
-the log. The file's first comment lists the secrets and
-variables it needs.
+`--target`, so that first check alone holds them to the pinned database. Its
+reports are files in the run's artifact, and no report goes to the log. The
+file's first comment lists the secrets and variables it needs.
+
+GitHub can start a scheduled run late, or drop it. The checker refuses a week
+in which one sample is more than 25 hours after the one before it, as
+`missing-daily-snapshot`, and no later sample repairs that. So when a day's
+scheduled run has not started within an hour of its time, start it by hand
+before the 25 hours are up: run the workflow from the repository's Actions
+page with the operation `daily`, or run `gh workflow run operable-week.yml -f
+operation=daily`. A late or dropped hourly run costs one period, and the
+checker allows eight of the 168 to be missing.
 
 A week receipt is one JSON document that holds what the CLI printed with
 `--json` during a week of at least 168 hours:
@@ -253,11 +263,22 @@ the store URL finds a stuck task nobody told them about. The checker can prove
 only the hash, so the order of the steps is the maintainer's to attest.
 
 1. Before the start sample, a second person enqueues one task that will not
-   end by itself: a task name the deployment has no handler for, or a task
-   that awaits an event nobody emits.
-2. The same person notes the task's id and the cause `pnpm cli explain` names
-   for it, picks a nonce, and publishes the sha256 of the three, each followed
-   by a line feed, telling the operator nothing else:
+   end by itself, into the week's queue: a task name the deployment has no
+   handler for, or a task that awaits an event nobody emits. The checker
+   reads the start sample and the operator's explanation of that queue, so a
+   task in another queue is not the injected one.
+2. The same person waits until the deployment has taken the task, and only
+   then notes the task's id and the cause `pnpm cli explain` names for it.
+   Right after the enqueue `explain` names `pending-due-unclaimed` for either
+   kind, which is not the cause the operator will be shown. Once the deployed
+   alpha has taken the task, at its next tick, a task of a name with no
+   handler is `never-started-alpha1-form`, a task that awaits an event nobody
+   emits is `awaiting-an-untimed-event`, and each stays so until the operator
+   clears it. A hash made over an earlier cause refuses the week's receipt,
+   as `explanation-differs-from-the-seal`. It cannot be made again once the
+   start sample is taken, because the hash is published before that sample.
+   With the cause noted, the person picks a nonce and publishes the sha256 of
+   the three, each followed by a line feed, telling the operator nothing else:
 
    ```sh
    printf '%s\n%s\n%s\n' "$TASK_ID" "$CAUSE" "$NONCE" | sha256sum

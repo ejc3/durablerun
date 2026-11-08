@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { WEEK_REFUSALS, sealOf } from '../../../apps/dogfood/src/week-receipt.js'
 import { parseInvocation } from '../src/commands.js'
+import { CAUSES } from '../src/explain.js'
 import { ROOT } from './support.js'
 
 /**
@@ -65,6 +66,33 @@ describe('the documents of operating a deployment', () => {
       },
     })
     expect(printed.split(' ')[0]).toBe(sealOf(injection))
+  })
+
+  it('names, in the steps of the sealed injection, only causes explain can name and refusals the checker makes, and BUILD.md names the same ones', () => {
+    const readme = read('README.md')
+    const steps = readme.slice(readme.indexOf('**The sealed injection.**'))
+    // Every name of the steps that is written as a cause or a refusal is: lower case words
+    // joined by hyphens, in backticks.
+    const named = [...steps.matchAll(/`([a-z0-9]+(?:-[a-z0-9]+)+)`/g)].map(
+      (match) => match[1] ?? '',
+    )
+    const refusals: readonly string[] = WEEK_REFUSALS
+    const causes = named.filter((name) => !refusals.includes(name))
+    expect(causes.filter((name) => !Object.hasOwn(CAUSES, name))).toEqual([])
+    // The cause right after the enqueue, and the one each kind of injected task holds once
+    // the deployment has taken it, which the week on the release alpha.1 also requires.
+    expect([...new Set(causes)].sort()).toEqual([
+      'awaiting-an-untimed-event',
+      'never-started-alpha1-form',
+      'pending-due-unclaimed',
+    ])
+    expect(named.filter((name) => refusals.includes(name))).toEqual([
+      'explanation-differs-from-the-seal',
+    ])
+    const build = read('BUILD.md')
+    const receipt = build.slice(build.indexOf('**Receipt M1'))
+    const paragraph = receipt.slice(0, receipt.indexOf('NOT MET'))
+    for (const name of new Set(named)) expect(paragraph).toContain(`\`${name}\``)
   })
 
   it("names in DESIGN.md every cause the week receipt's checker refuses for", () => {

@@ -984,9 +984,16 @@ windows of the maintainer's policy, again until its report says no more remain.
 line 44's bound. .github/workflows/operable-week.yml is that cron, the daily
 samples and the daily purge, and it is off until the maintainer sets its
 variable. A second person injects one cause (an unregistered task name, or an
-await nobody emits) before the start sample, so the start sample counts its
-rows, and publishes the sha256 of its task id, the cause as `explain` names it
-and a nonce, each followed by a line feed. The maintainer attests when the hash
+await nobody emits) into the week's queue before the start sample, so the start
+sample counts its rows. That person waits until the deployment has taken the
+task, because right after the enqueue `explain` names `pending-due-unclaimed`
+for either kind, and once the deployed alpha has taken it an unregistered name
+is `never-started-alpha1-form` and an await nobody emits is
+`awaiting-an-untimed-event`, which is what the operator will be shown. Then the
+person publishes the sha256 of its task id, the cause as `explain` names it and
+a nonce, each followed by a line feed. A hash made over an earlier cause
+refuses the week's receipt, as `explanation-differs-from-the-seal`, and it
+cannot be made again once the start sample is taken. The maintainer attests when the hash
 was published, since the checker can prove only the hash. The operator, holding
 the CLI and the store URL, finds the cause with `pnpm cli stuck --queue digest
 --older-than <age>`, names it with `explain`, and clears it, adding `--yes`
@@ -7381,7 +7388,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     command that assembles a week receipt from the workflow's artifacts: the maintainer's
     first week. The workflow enqueues the hour it runs in, so a schedule that runs late by
     a whole hour skips a period, and the floor of 160 of 168 absorbs it: a week that
-    finds fewer than 160 periods for that reason alone. A mutation audit that reads test
+    finds fewer than 160 periods for that reason alone. The daily sample has no such
+    floor: a daily run that starts more than an hour late, or is dropped, leaves two
+    samples more than 25 hours apart, and the checker refuses the week as
+    `missing-daily-snapshot` unless the maintainer starts the operation `daily` by hand
+    in time, which the README says how to do. An alarm for a daily run that has not
+    started is not built: a week refused for that cause. A bound of runs for each
+    sample: the runs a unit held beyond its first are summed over the whole week and
+    allowed at every sample, and each unit whose purge went unanswered adds four, so one
+    purge that lost its answers loosens the bound of runs of every day, the earlier
+    ones included. A purge report prints each unit's `endedAtMs` and each sample has
+    its instant, so a bound of each sample can be built. Its trigger: a receipt
+    accepted on a week whose purge lost an answer, or a first request for a bound of
+    each sample. A mutation audit that reads test
     files under apps/: a second app whose cases need it.
   - The week adds 16 seconds to the compatibility harness: on one loaded host the harness
     took 22 seconds at the base and 32 at the head. Under heavier load the same run took
