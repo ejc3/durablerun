@@ -21,8 +21,8 @@ import {
  * The reads of the operator's port (`OperatorReads`), each one SELECT of a batch that only
  * reads. They select what an operator needs to see why a task is where it is, and no value
  * a task's code wrote beyond the outcome `getTaskResult` already answers with: no params,
- * headers, run result or checkpoint state. One read selects a value a caller wrote: the
- * payload of one event, in `event-payload`.
+ * headers, run result or checkpoint state. Two reads select a value a caller wrote: a
+ * task's idempotency key, in `task-facts`, and the payload of one event, in `event-payload`.
  *
  * The statements of `task-facts` order no rows. A text column sorts by the database's
  * collation, which differs between the dialects and between two servers of one dialect, so
