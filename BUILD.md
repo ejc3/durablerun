@@ -1027,10 +1027,10 @@ only on this record and holds no implementation, so it merges on the
 maintainer's approval of its two contract changes (2026-10-03), ahead of PR5.3b1
 to PR5.3d, and no second implementation PR is in flight. Then PR5.2c1 (after PR5.2a),
 PR5.2c2 (after PR5.2c1 and PR5.3c; schema version 12 is its first commit, and it
-is the one PR that can delete durable state), PR5.2d (after PR5.2c2 and PR5.3d),
+is the one PR that can delete a task), PR5.2d (after PR5.2c2 and PR5.3d),
 PR5.4 (after PR5.2d), and PR5.5, the docs PR that closes the milestone (after
-PR5.4). Nothing can delete before PR5.2c2, and no operator can call a delete
-before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
+PR5.4). Nothing can delete a task before PR5.2c2, and no operator can call
+such a delete before PR5.2d. DESIGN.md section 3.11 is written by PR5.3a and extended by each
 PR that adds a command, and section 3.12 is written by PR5.2a and completed by
 PR5.2c2. The maintainer approved the two contract changes of DESIGN.md section 3.12 on
 2026-10-03 and PR5.2a has merged, so they hold neither PR5.2a nor PR5.2c2. The maintainer
@@ -6533,8 +6533,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     that a script does not read a corrupt row as a clean answer. The plan named no exit
     for it. (5) The reads use a store's saga fragments and none of its eligibility
     fragments, which the plan listed: they report rows and decide nothing about what the
-    engine may do next, which `explain` says from the facts. (6) No statement orders its
-    rows, and core orders every list by Unicode code point, which is the order of UTF-8
+    engine may do next, which `explain` says from the facts. (6) No statement of this pull
+    request orders its rows, and core orders every list by Unicode code point, which is the order of UTF-8
     bytes, because a text column sorts by the database's collation.
   - The one review of this pull request found eleven things, two of them defects it
     demonstrated, and `postmortems/pr5.3b1-operator-reads-review.md` holds the round. Fixed
@@ -6791,7 +6791,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     on `claim_expires_at_ms` in one leg. Each leg's SQL keeps the engine's own predicate at
     the engine's own clock. (5) The claim legs hold what a claim requires of a run and its
     task, with the claim's due predicate, and do not go through the claim's candidate
-    subquery, which locks rows and holds the claim's limit. (6) `sizes` counts five tables
+    subquery, which holds the claim's limit and, on PostgreSQL and MySQL, locks rows. (6)
+    `sizes` counts five tables
     and not `drivers`: a statement tree names the tables core lists, and a driver's row is
     a heartbeat. The grammar took the count over a LIMITed derived table on the three
     dialects, so it is a tree and no text statement. (7) The plan test's table
@@ -6950,7 +6951,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a conjunct the guard gains is read and must be given a cause. Thirteen conjuncts give
     the nine causes the comment on `retryTask` listed and a saga that began, less a task
     that is not there, which has no conjunct: nine causes and a tenth. (3) A later `emit`
-    is still a write. It changes no payload and wakes nothing, and the engine stamps the
+    is still a write. It changes no payload, and wakes nothing in any state an engine path
+    leaves, and the engine stamps the
     event's row, so the answer says `already-emitted` and the twin holds the stamp.
     (4) `explain` asks the engine's predicates before it calls the driver late, in a
     second snapshot, and reads a row that moved between the two as it stood. When an
@@ -7166,7 +7168,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     Trigger: a fifth checker, or an ownership test of the fault matrix that nears its 300
     second limit.
 - **PR5.2c2 schema version 12 and the retention purge port**: DONE (#120). Exit test line 42 of
-  the operable alpha milestone, and the first code that deletes durable state. Schema
+  the operable alpha milestone, and the first code that deletes a task. Schema
   version 12 adds the indexes retention reads through, on the three dialects. Core gains
   the `Retention` port, `purgeCandidates` and `purgeUnit`, with its one implementation and
   the purge's statements as trees, in the batches `purge-candidates` and `purge-unit`, and
@@ -7287,8 +7289,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     runs that hold each other's outcomes (the entry of PR5.2a) stays an option: its
     trigger is a unit seen kept that way, and no purge has run over a live history.
 - **PR5.2d the purge verb and the simulated week**: DONE (#121). Exit test line 43 of the
-  operable alpha milestone, and the first command by which an operator deletes durable
-  state. `pnpm cli purge` is the retention port's calls and nothing else: a dry run unless
+  operable alpha milestone, and the first command by which an operator deletes a task
+  and the rows of its unit. `pnpm cli purge` deletes through the retention port's calls and
+  nothing else: a dry run unless
   `--execute`, with two required windows and no default, the store named again with
   `--target`, and refusals of a schema version that is not the build's and of a database
   whose test clock is set. The `retention-soak` surface runs a simulated week of 168 hourly
@@ -7321,7 +7324,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     it.
   - Corrections of the plan, each as built. Line 43 asked for purged rows above zero in
     every counted table, and for the control to exceed the bound three times in each. Every
-    batch that ends or parks a run deletes that run's waits, so an ended unit holds none
+    batch that ends a run, or parks one otherwise than on an await, deletes that run's
+    waits, so an ended unit holds none
     and the control's waits do not grow with the week: the floor and the vacuity check
     range over tasks, runs, checkpoints and completion events, and for waits the week
     holds that none outlives its run. The vacuity check is two ratios, the control over the
@@ -7390,8 +7394,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the list of the barrier's conditions is frozen; and `inspect --key` and `explain
     --key` say that a task the key found may have been retained out, and no more.
   - The rewordings of exit test line 43, each with its reason. (1) Waits are out of the
-    floor of purged rows and of the vacuity check: every batch that ends or parks a run
-    deletes that run's waits, so an ended unit holds none and no purge of a correct store
+    floor of purged rows and of the vacuity check: every batch that ends a run, or parks
+    one otherwise than on an await, deletes that run's waits, so an ended unit holds none
+    and no purge of a correct store
     takes one. This was confirmed on 2026-10-06, while the work was under way. (2) The
     vacuity check is two ratios: a bound built from the model does not move when the purge
     deletes nothing, so the control over the bound cannot fail then, and the control over
