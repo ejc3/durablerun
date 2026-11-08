@@ -1,4 +1,4 @@
-import { QUEUE_TABLES } from '@durablerun/core'
+import { PermanentStoreError, QUEUE_TABLES, type SqlExecutor } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, NOT_SENT_BY_SELFTEST } from '../src/commands.js'
@@ -45,6 +45,7 @@ interface Step {
   readonly labels: readonly string[]
   readonly result: string
   readonly found?: string
+  readonly failedAt?: string
 }
 
 type Report = JsonAnswer & {
@@ -211,6 +212,70 @@ describe('what selftest refuses, having written nothing', () => {
       await db.close()
     }
   })
+})
+
+/** A store that refuses every batch under one label and takes every other. */
+const refusing =
+  (refused: string) =>
+  (real: SqlExecutor): SqlExecutor => ({
+    batch: (label, statements, control) =>
+      label === refused
+        ? Promise.reject(new PermanentStoreError(`the store refuses '${label}'`))
+        : real.batch(label, statements, control),
+  })
+
+describe('what selftest says of a store that refuses one batch', () => {
+  it('prints each label by what was sent, for every label it sends: the label the store refused as failed, the labels answered before it as ok, and the rest as not-run', async () => {
+    // The order of a run nothing fails: where each label is first sent.
+    const firstSent = new Map<string, number>()
+    await onDb('selftest-label-order', async (db) => {
+      const recording = recordingOpener()
+      expect((await runCli(line(db), db.env, recording.opener)).exit).toBe(0)
+      for (const [index, batch] of recording.sent().entries()) {
+        if (!firstSent.has(batch.label)) firstSent.set(batch.label, index)
+      }
+    })
+    const labels = [...new Set(DECLARED)]
+    expect(labels.filter((label) => !firstSent.has(label))).toEqual([])
+    // Every label is tried, and what each run printed otherwise is listed whole.
+    const differed: unknown[] = []
+    for (const refused of labels) {
+      await onDb(`selftest-refuses-${refused}`, async (db) => {
+        const run = await runCli(line(db), db.env, openerWrapping(refusing(refused)))
+        const answer = report(run.stdout)
+        const at = firstSent.get(refused) ?? -1
+        const expected = Object.fromEntries(
+          labels.map((label) => {
+            const first = firstSent.get(label) ?? -1
+            return [label, label === refused ? 'failed' : first < at ? 'ok' : 'not-run']
+          }),
+        )
+        const printed = answer.labels ?? {}
+        // The step that was running names the label that failed, which need not be its own.
+        const failedAt = (answer.steps ?? [])
+          .filter((step) => step.result === 'failed')
+          .map((step) => step.failedAt)
+        const wrong = labels.filter((label) => printed[label] !== expected[label])
+        if (
+          wrong.length > 0 ||
+          run.exit !== exitCode('permanent') ||
+          failedAt.length !== 1 ||
+          failedAt[0] !== refused
+        ) {
+          differed.push({
+            refused,
+            exit: run.exit,
+            failedAt,
+            wrong: Object.fromEntries(wrong.map((label) => [label, printed[label] ?? null])),
+          })
+        }
+      })
+    }
+    expect(
+      differed,
+      'mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent',
+    ).toEqual([])
+  }, 300_000)
 })
 
 describe('what selftest says of a store that answers otherwise', () => {
