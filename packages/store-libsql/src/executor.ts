@@ -37,9 +37,6 @@ const MISSING_META_TABLE = /no such table:\s*meta$/i
  */
 const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])
 
-/** The code the client gives an HTTP answer whose status is no success, whatever the status. */
-const HTTP_STATUS_ERROR = 'SERVER_ERROR'
-
 /**
  * HTTP statuses that say the server refused the credential, or what it may do. A hosted
  * libSQL server answers 401 for a token whose signature it does not accept and for no token
@@ -55,15 +52,15 @@ const ACCESS_REFUSED_HTTP_STATUSES = new Set([
 ])
 
 /**
- * The HTTP status a driver error carries when it is one of the statuses above, read as the
- * number the client keeps on the error's cause and never from the message. A WebSocket
- * upgrade the server refused has another code and carries its status only in its message, so
- * it is none of these and keeps the type it had.
+ * The HTTP status a driver error carries when it is one of the statuses above. The client
+ * reports every HTTP answer that is no success under one code, `SERVER_ERROR`, and keeps the
+ * status as a number on the error's cause, which is what is read here, and never the
+ * message. A WebSocket upgrade the server refused carries its status only in its message, so
+ * it has none here and keeps the type it had.
  */
 function accessRefusedStatus(error: LibsqlError): number | undefined {
-  if (error.code !== HTTP_STATUS_ERROR) return undefined
-  const status = (error.cause as { status?: unknown } | undefined)?.status
-  return typeof status === 'number' && ACCESS_REFUSED_HTTP_STATUSES.has(status) ? status : undefined
+  const status = (error.cause as { status?: number } | undefined)?.status
+  return status !== undefined && ACCESS_REFUSED_HTTP_STATUSES.has(status) ? status : undefined
 }
 
 /**
