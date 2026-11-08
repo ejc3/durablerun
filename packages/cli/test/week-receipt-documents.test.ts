@@ -153,9 +153,9 @@ describe('the week receipt reads what the CLI prints', () => {
           false,
         )
 
-        // A purge the store fails before any unit prints its failure and no queue, and one
-        // refused under a test clock prints its failure beside what was asked. Each reads as
-        // a run that took nothing and did not finish.
+        // A purge the store fails before any unit prints its failure and no queue, and
+        // reads as a run that took nothing and did not finish. One refused under a test
+        // clock prints its failure beside what was asked, and reads as that refusal.
         const tookNothing = {
           execute: false,
           finished: false,
@@ -164,6 +164,7 @@ describe('the week receipt reads what the CLI prints', () => {
           failedSeconds: null,
           taken: [],
           outcomeNotKnown: [],
+          underATestClock: false,
         }
         const purgeLine = ['purge', ...PURGE_WINDOWS, '--execute', ...writeFlags(db), '--json']
         const outage = await runCli(
@@ -185,7 +186,10 @@ describe('the week receipt reads what the CLI prints', () => {
         await db.admin.setFakeNowEpochMs(1_700_000_000_000)
         const underATestClock = await runCli(purgeLine, db.env)
         expect(underATestClock.exit).toBe(2)
-        expect(readPurge(JSON.parse(underATestClock.stdout), QUEUE)).toEqual(tookNothing)
+        expect(readPurge(JSON.parse(underATestClock.stdout), QUEUE)).toEqual({
+          ...tookNothing,
+          underATestClock: true,
+        })
         expect(readPurge(JSON.parse(underATestClock.stdout), 'another-queue')).toBeNull()
         await db.admin.setFakeNowEpochMs(null)
 

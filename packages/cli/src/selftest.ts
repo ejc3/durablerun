@@ -318,7 +318,9 @@ export interface StepReport {
   readonly found?: string
   /**
    * The label of the batch the store failed, for a step that failed at a batch. A step
-   * sends more batches than its own call's: it reads the state the call left.
+   * sends more batches than its own call's: it reads the state the call left. A step that
+   * ended on an error with no batch failed was answered what raised it, and names the
+   * labels it was answered under, joined by " or ".
    */
   readonly failedAt?: string
 }

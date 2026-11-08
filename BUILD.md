@@ -2705,6 +2705,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
   needs no `changed` entry. `storeOverRecorder` in the identifier surface is
   not a copy: it never calls the real executor, so that a refusal shows as no
   batch reached. No statement, corpus file, or assertion changed.
+  PR5.4 added a second recorder of labels, and it is not a test helper: the
+  CLI's opener keeps, for `selftest` alone, each batch's label and whether the
+  store answered it, and `selftest` prints its labels from that. It is in a
+  command's own path, and `RecordingExecutor` is under core's testing entry,
+  which no command imports. Making the two one moves a name into core's
+  released entry, which was not a change for the last fold of PR5.4. Trigger: a
+  third recorder of labels, or a first change to what either of the two records.
 - **PR3.6 write provenance** — DONE. Every table a compare-and-set targets
   carries `fence_stamp`/`fence_at_ms` (migration v4, DESIGN.md §3.4 rule 8),
   stamps are per STATEMENT, and all thirteen store operations go through
@@ -7362,17 +7369,21 @@ these three things; nothing else in the system does I/O, time, or randomness.
     run to fail when that call is routed to another queue. (7) `purge` is no longer the
     one command that calls the retention port: `selftest` sends each of its calls once,
     and deletes nothing. (8) The seal is the sha256 of the task id, the cause as `explain`
-    names it and the nonce, each followed by a line feed. The second person injects and
-    publishes before the start sample, so the start sample counts the injected task's
-    rows as they stand then. The receipt carries the instant the
+    names it and the nonce, each followed by a line feed. The second person injects,
+    waits until the deployment has taken the task, and publishes before the start
+    sample, so the start sample counts the injected task's rows as they stand once
+    taken. The receipt carries the instant the
     maintainer attests the hash was published, and the checker refuses one after the
     start sample. (9) The checker refuses five things line 44 did not list: a sample taken
     under a test clock, a receipt of a kind it does not know, a member that is missing or
     of the wrong type, a failed-window dry run that is not whole, and one whose failed
     window is longer than the shortest the verb takes, 3,600 seconds, because a dry run
     under a longer window lists too few failed units and the bound drops their rows. It
-    reads the failure of a purge that reached no unit as a run that took nothing and did
-    not finish, so a day's reports go into the receipt as they were printed. (10) The checker's
+    reads the failure of a purge the store failed before any unit, by an outage or a
+    permanent error of its own, as a run that took nothing and did not finish, so a day's
+    reports go into the receipt as they were printed. A refusal of the command is no run:
+    a day that holds one is malformed, and one refused because the test clock was set
+    refuses the week as `test-clock-set`. (10) The checker's
     cases are in packages/cli/test and not in apps/dogfood/test, because the mutation
     audit reads test files under packages/ only, and they hand the checker documents the
     CLI prints. (11) The example's own tests run over the build's packed tarballs in
@@ -7401,13 +7412,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
     its instant, so a bound of each sample can be built. Its trigger: a receipt
     accepted on a week whose purge lost an answer, or a first request for a bound of
     each sample. A mutation audit that reads test
-    files under apps/: a second app whose cases need it.
+    files under apps/: a second app whose cases need it. Decoders that mark their own
+    refusals: `selftest` reports an error it has no name for, thrown after a batch of
+    the step answered, as the database answering otherwise (exit 11), and that rule
+    reads when the error was thrown and not who raised it, so a defect of the CLI at
+    that point exits 11 too, with the error's class under `found`. A decoder that marks
+    the errors it raises would tell a refused answer from a defect of the program. Its
+    trigger: a first exit 11 that is traced to the CLI and not to the database.
   - The week adds 16 seconds to the compatibility harness: on one loaded host the harness
     took 22 seconds at the base and 32 at the head. Under heavier load the same run took
     60 seconds, the week 37 of them. CI's verify job has a 120 minute limit.
   - The fold of the one review (`postmortems/pr5.4-week-receipt-review.md`). It found 14
     things, none HIGH, four MEDIUM and ten LOW, and all count. The bound allows the injected
-    task the rows it comes to hold after the start sample, one wait and one event, which the
+    task the rows it comes to hold after the start sample, which the
     week on alpha.1 measures for both kinds through the operator's cancel. `selftest` reads
     each label it prints from a record of the batches sent, which the opener keeps, and the
     step that was running names the label that failed. An answer it cannot read exits 11 and
@@ -7423,9 +7440,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
     differs from what the review asked: `stats` and `sizes` gained no `--target`, because a
     read takes none, so the three sentences that said otherwise were corrected. A bound of
     runs for each sample is recorded among the options and is not built.
-  - The registry holds 1519 mutations where main held 1482: eleven caught by cases
-    of `selftest`, nineteen by cases of the week receipt's checker, and seven by cases of
-    the week's workflow.
+  - The second round, on that fold alone. It found nine things, all LOW and all made by
+    the fold, and all count, so the two rounds hold 23. Five are fixed. The reader of a
+    purge that reached no unit took any failure of the command, and it takes only a
+    store's own failure now, with a purge refused under a test clock refusing the week for
+    the clock. The allowance of the injected task held a wait the README's steps put
+    before the start sample, and it is one event now, measured from the moment alpha.1
+    has taken the task. A step of `selftest` that ended on a named error after its batch
+    answered printed that batch's label `ok`, and it prints it `unexpected` and names it
+    now. The opener kept the record of batches for every command, and keeps it for
+    `selftest` alone now. The case of the README's causes read to the end of the file,
+    and reads the sealed injection's own section now. Two are recorded and not built:
+    decoders that mark their own refusals, among the options above, and one recorder of
+    labels for the CLI and the tests, under PR3.3e. Two change nothing: three fixes of
+    the fold that had a plant and no red commit, as the fold was told it may, and a
+    step's line that prints its own call's labels beside the label that failed.
+  - The registry holds 1526 mutations where main held 1482: fifteen caught by cases
+    of `selftest` and of the opener, twenty-two by cases of the week receipt's checker,
+    and seven by cases of the week's workflow.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

@@ -60,20 +60,20 @@ export const WEEK_DIGEST_UNIT_ROWS: WeekRows = Object.freeze({
 })
 
 /**
- * The rows the injected task comes to hold after it is enqueued, up to and past the
- * operator's cancel, beyond the task and the run it holds when enqueued. The start sample
- * counts the task as it stands then, and the README's steps of the sealed injection go on
- * to add rows: the deployment parks a task that awaits an event, which is a wait, and the
- * operator's `cancel` writes the event of the task's ending. The week on the release
- * alpha.1 measures both kinds of injected task, one of a name no handler is registered
- * for and one that awaits an event nobody emits, and holds this to the most either held
- * of each table.
+ * The rows the injected task comes to hold after the deployment has taken it, up to and
+ * past the operator's cancel, beyond the rows it holds once taken. The README's steps of
+ * the sealed injection have the deployment take the task, and park one that awaits an
+ * event, before the start sample, so the start sample counts the task with its run and
+ * its wait. What comes after is the operator's `cancel`, which writes the event of the
+ * task's ending. The week on the release alpha.1 measures both kinds of injected task,
+ * one of a name no handler is registered for and one that awaits an event nobody emits,
+ * from the moment each is taken, and holds this to the most either gained of each table.
  */
 export const WEEK_INJECTED_UNIT_ROWS: WeekRows = Object.freeze({
   tasks: 0,
   runs: 0,
   checkpoints: 0,
-  waits: 1,
+  waits: 0,
   events: 1,
 })
 
@@ -215,23 +215,34 @@ export interface PurgeRead {
   readonly taken: readonly UnitRead[]
   /** The units whose purge was sent and not answered: each may have gone. */
   readonly outcomeNotKnown: readonly UnitRead[]
+  /** Whether it is the refusal of a purge because the database's test clock was set. */
+  readonly underATestClock: boolean
 }
 
 /** The members a purge prints once it walked: a purge that failed before its walk prints none of them. */
 const PURGE_WALK_MEMBERS = ['finished', 'more', 'purged', 'wouldPurge', 'outcomeNotKnown']
 
 /**
- * Whether a document is the failure of a purge that reached no unit. A purge the store
- * failed before any unit prints the failure alone, with no queue, and one refused before
- * its walk, for the schema's version or a test clock, prints the failure beside its queue
- * and its policy. Either names an error and holds no member of a walk.
+ * The kinds of error a store's own failure prints under: it could not be reached, or it
+ * answered with a failure of its own. A purge that ends on one was a run of a purge. Every
+ * other kind is a refusal of the command or a defect of the program, and no run.
  */
-function isPurgeThatReachedNoUnit(value: unknown, queue: string): boolean {
+const STORE_FAILURE_KINDS: readonly string[] = ['store-unavailable', 'permanent-store-error']
+/** The kind a purge is refused under because the database's test clock was set. */
+const TEST_CLOCK_KIND = 'fake-clock'
+
+/**
+ * The kind of error a purge that reached no unit ended on, or null when the document is
+ * no such failure. A purge the store failed before any unit prints the failure alone, with
+ * no queue, and one refused before its walk prints the failure beside its queue and its
+ * policy. Either names an error and holds no member of a walk.
+ */
+function kindOfPurgeThatReachedNoUnit(value: unknown, queue: string): string | null {
   const document = documentOf(value, 'purge')
-  if (document === null || !isRecord(document.error) || !isText(document.error.kind)) return false
-  if (!isText(document.exit) || document.exit === 'done') return false
-  if (PURGE_WALK_MEMBERS.some((member) => member in document)) return false
-  return document.queue === undefined || document.queue === queue
+  if (document === null || !isRecord(document.error) || !isText(document.error.kind)) return null
+  if (!isText(document.exit) || document.exit === 'done') return null
+  if (PURGE_WALK_MEMBERS.some((member) => member in document)) return null
+  return document.queue === undefined || document.queue === queue ? document.error.kind : null
 }
 
 /**
@@ -247,10 +258,20 @@ const PURGE_THAT_TOOK_NOTHING: PurgeRead = Object.freeze({
   failedSeconds: null,
   taken: [],
   outcomeNotKnown: [],
+  underATestClock: false,
+})
+/** The refusal of a purge under a test clock: it took nothing too, and the week is refused for the clock. */
+const PURGE_REFUSED_UNDER_A_TEST_CLOCK: PurgeRead = Object.freeze({
+  ...PURGE_THAT_TOOK_NOTHING,
+  underATestClock: true,
 })
 
 export function readPurge(value: unknown, queue: string): PurgeRead | null {
-  if (isPurgeThatReachedNoUnit(value, queue)) return PURGE_THAT_TOOK_NOTHING
+  const failedOn = kindOfPurgeThatReachedNoUnit(value, queue)
+  if (failedOn !== null) {
+    if (STORE_FAILURE_KINDS.includes(failedOn)) return PURGE_THAT_TOOK_NOTHING
+    return failedOn === TEST_CLOCK_KIND ? PURGE_REFUSED_UNDER_A_TEST_CLOCK : null
+  }
   const document = documentOf(value, 'purge', queue)
   if (document === null || !isRecord(document.policy)) return null
   const { execute, finished, more, policy } = document
@@ -262,7 +283,16 @@ export function readPurge(value: unknown, queue: string): PurgeRead | null {
   const taken = readUnits(execute ? document.purged : document.wouldPurge, execute)
   const outcomeNotKnown = readUnits(document.outcomeNotKnown, false)
   if (taken === null || outcomeNotKnown === null) return null
-  return { execute, finished, more, completedSeconds, failedSeconds, taken, outcomeNotKnown }
+  return {
+    execute,
+    finished,
+    more,
+    completedSeconds,
+    failedSeconds,
+    taken,
+    outcomeNotKnown,
+    underATestClock: false,
+  }
 }
 
 /** What the checker reads of an `inspect --key` that found a task: the key's sha256, and how many runs the task holds. */
@@ -512,6 +542,15 @@ export function weekReceiptErrors(candidate: unknown): readonly WeekRefusal[] {
     if (one.stats.fakeClock) {
       refuse('test-clock-set', `${one.name} was taken under a test clock, which is no instant`)
     }
+    if (one.purges.some((purge) => purge.underATestClock)) {
+      refuse(
+        'test-clock-set',
+        `${one.name} holds a purge that was refused because the test clock was set`,
+      )
+    }
+  }
+  if (week.failedDryRun.underATestClock) {
+    refuse('test-clock-set', 'failedDryRun was refused because the test clock was set')
   }
   if (end.stats.atEpochMs - start.stats.atEpochMs < WEEK_SPAN_MS) {
     refuse(

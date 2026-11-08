@@ -6782,10 +6782,17 @@ the calls it reached and `not-run` for the rest. The two reads the refusals rest
 calls of the report too, so a store that fails one of them prints the report as well. Under
 `labels`, each label's result is read from the batches that were sent and not from the step
 that was running, because a step sends more batches than its own call's: it reads the state
-the call left. A label whose batch the store failed prints `failed`, a label the store
+the call left. The opener keeps that record of the batches it sent only for `selftest`,
+the one command that reads it: every other command's opener keeps none, so a long purge or
+sweep holds nothing for each batch, and a case walks the command table and requires that.
+A label whose batch the store failed prints `failed`, a label the store
 answered prints `ok`, and a label that was not sent prints `not-run`. The step that was
 running names the label that failed under `failedAt`. A case refuses every batch of a run
-in turn, a label's later sendings too, and requires exactly that. A call the store failed exits as the failure does, and a
+in turn, a label's later sendings too, and requires exactly that. A step can also end on an
+error with a name of its own when no batch failed: the store answered, and the answer
+raised the error, as a schema version the store refuses does after the batch that read it
+answered. Then the labels the step was answered under are not `ok`: they print `unexpected`
+and the step names them under `failedAt`, and the exit stays the error's. A call the store failed exits as the failure does, and a
 call that answered otherwise exits 11, with what it answered under `found`: a count, a
 flag, an id or a state of the engine's own, and never a stored text.
 
@@ -6802,11 +6809,17 @@ answer of that step: the step prints `unexpected`, and `found` names the error's
 the labels the step was answered under. A step reads its answers together, its call's and
 those of the reads that check it, so when one is off it cannot say which: the labels of
 its call and every label it was answered under print `unexpected`, for an answer it could
-not read and for one it read and found wrong alike. A label prints `ok` only when no step
-that was answered under it found anything off. The generated case requires, of every run a
+not read and for one it read and found wrong alike. A label prints `ok` only when every
+step that was answered under it ended well. The generated case requires, of every run a
 bent answer ended, that the bent label does not print `ok`. The error's words can quote the row, so
 they print only with `--reveal`. An error thrown before the store answered any batch of
-the step is no answer, and stays exit 1. An executor names every error of its driver as an
+the step is no answer, and stays exit 1. The rule reads when the error was thrown and not
+who raised it, so a defect of the CLI that throws one of these after a batch answered
+exits 11 too. That is accepted for two reasons: an answer of the database can raise each
+of these errors, so exit 1 would call a database's answer a defect of the CLI, and the
+report prints the error's class under `found`, which is where a reader starts either way.
+Decoders that mark their own refusals would tell the two apart, and BUILD.md records that
+as an option with its trigger. An executor names every error of its driver as an
 outage, a permanent error or a schema error, so a driver's error is never among these. A
 case bends the answer to every label four ways (every text replaced, every value null, no
 row, one result too few) and requires that no run exits 1. What it leaves is two
@@ -6834,9 +6847,14 @@ printed, and the checker reads a few members of each:
 - `days`: for each day a `stats` report, a `sizes` report, and under `purges` that day's
   `purge --execute` reports, read for their policy, for `finished` and `more`, and for
   each unit's state, the sha256 of its key, and the runs that went with it. A day holds
-  every run's report as printed. A purge that failed before it reached a unit prints its
-  failure and none of those members, and it is read as a run that took nothing and did
-  not finish, so it is no purge of its day and a later run that finished is.
+  every run's report as printed. A purge the store failed before it reached a unit, by
+  an outage or a permanent error of its own, prints its failure and none of those
+  members, and it is read as a run that took nothing and did not finish, so it is no
+  purge of its day and a later run that finished is. A refusal of the command is no run
+  of a purge, and a day that holds one is malformed: the schema's version, a usage error,
+  a port's refusal, and an internal error too. One refusal is read: a purge refused
+  because the database's test clock was set, which prints its failure beside its policy,
+  shows that the clock was set during the week, and the week is refused for that.
 - `failedDryRun`: a dry run of `purge` with `--failed-after 1h` that finished and says no
   more remain, read for its failed window and for the failed units it lists.
 - `lookups`: `inspect --key` reports, each read for the sha256 of the key and for how
@@ -6868,15 +6886,18 @@ two runs and failed ones with five. So the bound of runs also allows every run t
 receipt shows a unit held beyond its first: the rows a purge report prints of a unit it
 purged, and the runs a lookup lists. A unit named by both counts once. A unit whose purge
 was not answered prints no rows, and it is allowed the five attempts of the default retry
-policy. The start sample counts whatever the queue held then, and the injected task is
-enqueued before it, so the start sample counts that task's rows as they stand then. The
-steps of the sealed injection add rows to it after that: the deployment parks a task that
-awaits an event, which is a wait, and the operator's `cancel` writes the event of the
-task's ending. So the bound allows the injected task one wait and one event more. Those
-are measured: the week on the release alpha.1 injects a task of a name no handler is
-registered for and a task that awaits an event nobody emits, reads each one's rows when it
-is enqueued and at the end of every period until the operator has cancelled it, and holds
-the allowance equal to the most either came to hold of each table. A task cleared another
+policy. The start sample counts whatever the queue held then. The steps of the sealed
+injection have the deployment take the injected task before that sample, because the cause
+that is sealed is the one the task holds once taken, and the hash is published before the
+sample. So the start sample counts the task with its run, and with its wait when it
+awaits an event, which the deployment parks as it takes the task. What the steps add
+after the start sample is the operator's `cancel`, which writes the event of the task's
+ending and removes the wait. So the bound allows the injected task one event more, and no
+wait. That is measured: the week on the release alpha.1 injects a task of a name no
+handler is registered for and a task that awaits an event nobody emits, requires
+`explain` to name each one's sealed cause once alpha.1 has taken it, reads each one's rows
+then and at the end of every period until the operator has cancelled it, and holds the
+allowance equal to the most either gained of each table. A task cleared another
 way is not measured and not allowed for: an awaiting task whose event the operator emits
 completes with a checkpoint, where one that is cancelled holds none.
 
@@ -6887,7 +6908,7 @@ read. It refuses a receipt for each thing that is wrong with it:
 | --- | --- |
 | unknown-kind | the receipt is no object, or its `kind` is not `week` |
 | malformed | a member the checker reads is missing or of the wrong type, a document is of another command or another queue, or the failed-window dry run is not whole |
-| test-clock-set | a sample was taken under a test clock, whose instant is no instant |
+| test-clock-set | a sample was taken under a test clock, whose instant is no instant, or a purge of a day or the failed-window dry run was refused because the test clock was set |
 | span-under-seven-days | the end sample is less than 168 hours after the start sample |
 | missing-daily-snapshot | a sample is more than 25 hours after the one before it, or not after it |
 | sizes-over-bound | a table's count at any sample is over its bound, or is a count the command capped |

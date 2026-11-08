@@ -19,9 +19,9 @@ import {
  * The week it models: a digest is enqueued each hour from the start sample on. A sample of
  * `stats` and `sizes` is taken each day, and after it a purge under a window of a day. One
  * period failed after five attempts, and a purge with no failed window keeps it. One
- * period was tried twice. One task that awaits an event nobody emits was injected before
- * the start sample, the deployment parked it, and the operator cancelled it on the second
- * day, as the README's steps of the sealed injection say.
+ * period was tried twice. One task that awaits an event nobody emits was injected, and the
+ * deployment parked it, before the start sample, and the operator cancelled it after the
+ * third day's sample, as the README's steps of the sealed injection say.
  */
 
 const QUEUE = 'digest'
@@ -41,15 +41,18 @@ const runsOf = (index: number): number =>
 const rowsOf = (index: number): WeekRows => ({ ...WEEK_DIGEST_UNIT_ROWS, runs: runsOf(index) })
 /** The runs the week's units held beyond the first of each. */
 export const RUNS_BEYOND_THE_FIRST = runsOf(FAILED_PERIOD) - 1 + runsOf(RETRIED_PERIOD) - 1
-/** What the queue held at the start sample: the injected task as it was enqueued, its task and one run. */
-export const START_ROWS: WeekRows = { tasks: 1, runs: 1, checkpoints: 0, waits: 0, events: 0 }
+/**
+ * What the queue held at the start sample: the injected task as the deployment parked it,
+ * which the README's steps put before that sample. Its task, one run and its wait.
+ */
+export const START_ROWS: WeekRows = { tasks: 1, runs: 1, checkpoints: 0, waits: 1, events: 0 }
 /**
  * The injected task after the start sample, as the week on the release alpha.1 measures
- * one: a wait once the deployment parked it, and once the operator cancelled it no wait
- * and the event of its ending.
+ * one: parked as it was, and once the operator cancelled it no wait and the event of its
+ * ending.
  */
-const PARKED: WeekRows = { ...START_ROWS, waits: 1 }
-const CANCELLED: WeekRows = { ...START_ROWS, events: 1 }
+const PARKED: WeekRows = START_ROWS
+const CANCELLED: WeekRows = { ...START_ROWS, waits: 0, events: 1 }
 /** The operator cancels the injected task after the sample of this day. */
 const CANCELLED_AFTER_DAY = 2
 const injectedOn = (day: number): WeekRows => (day <= CANCELLED_AFTER_DAY ? PARKED : CANCELLED)

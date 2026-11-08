@@ -22650,7 +22650,7 @@ MUTATION_SPECS.extend(
 VERDICTS["week-receipt-allows-the-injected-task-its-rows"] = ExpectedVerdict(
     "behavior",
     "packages/cli/test/week-receipt.test.ts",
-    "the week receipt checker allows the injected task the rows it comes to hold after the start sample: its wait once the deployment parked it, and the event of its ending once the operator cancelled it",
+    "the week receipt checker allows the injected task the rows it comes to hold after the start sample, which counted it parked: the event of its ending once the operator cancelled it, and no wait",
     "mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows",
 )
 MUTATION_SPECS.extend(
@@ -22706,8 +22706,8 @@ MUTATION_SPECS.extend(
         (
             "week-receipt-reads-a-purge-that-reached-no-unit",
             "apps/dogfood/src/week-receipt.ts",
-            "  if (isPurgeThatReachedNoUnit(value, queue)) return PURGE_THAT_TOOK_NOTHING\n",
-            "  if (isPurgeThatReachedNoUnit(value, queue)) return null\n",
+            "    if (STORE_FAILURE_KINDS.includes(failedOn)) return PURGE_THAT_TOOK_NOTHING\n",
+            "    if (STORE_FAILURE_KINDS.includes(failedOn)) return null\n",
             "the failure of a purge that reached no unit is no document the checker reads, so a receipt that holds a day's reports as printed is refused",
         ),
     )
@@ -22827,6 +22827,116 @@ MUTATION_SPECS.extend(
 )
 VERDICTS["cli-selftest-reads-a-label-from-its-last-batch"] = VERDICTS[
     "cli-selftest-prints-a-label-by-what-was-sent"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
+            "packages/cli/src/main.ts",
+            "        ...(answered.length > 0 ? { failedAt: answered.join(' or ') } : {}),\n",
+            "        ...(answered.length < 0 ? { failedAt: answered.join(' or ') } : {}),\n",
+            "a step that ends on a named error raised from an answer prints failed with no failedAt, so the report does not say which answer the step failed on",
+        ),
+    )
+)
+VERDICTS["cli-selftest-names-the-labels-a-step-that-failed-was-answered-under"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read names the label of a schema version the store refuses after the batch was answered: the step failed there, the label is not ok, and the exit is the schema's",
+    "mutation-verdict:behavior:cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-marks-the-labels-a-step-that-failed-was-answered-under",
+            "packages/cli/src/main.ts",
+            "      if (answered.length > 0) ended.answeredOtherwise = answered\n",
+            "      if (answered.length < 0) ended.answeredOtherwise = answered\n",
+            "a step that ends on a named error raised from an answer leaves that answer's label printed ok, so the report says the database answered a batch well that the step failed on",
+        ),
+    )
+)
+VERDICTS["cli-selftest-marks-the-labels-a-step-that-failed-was-answered-under"] = VERDICTS[
+    "cli-selftest-names-the-labels-a-step-that-failed-was-answered-under"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-keeps-what-is-sent-for-selftest-alone",
+            "packages/cli/src/main.ts",
+            "      keepsWhatIsSent: spec.verb === 'selftest',\n",
+            "      keepsWhatIsSent: spec.verb !== 'help',\n",
+            "every command asks the opener for a record of its batches, so a long purge or sweep holds an entry for each batch that nothing reads",
+        ),
+    )
+)
+VERDICTS["cli-keeps-what-is-sent-for-selftest-alone"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "the record of what a command sent is kept for selftest alone: every other command that opens a store asks the opener for none",
+    "mutation-verdict:behavior:cli-keeps-what-is-sent-for-selftest-alone",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-opener-keeps-a-record-only-when-asked",
+            "packages/cli/src/open-store.ts",
+            "    options.keepsWhatIsSent === true\n",
+            "    options.keepsWhatIsSent !== null\n",
+            "the opener keeps a record of every batch whether or not the command asked for one, so a command that reads none holds an entry for each batch it sends",
+        ),
+    )
+)
+VERDICTS["cli-opener-keeps-a-record-only-when-asked"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/open-store.test.ts",
+    "the store opener keeps a record of the batches it sends only when it is asked to, and hands out the record it holds",
+    "mutation-verdict:behavior:cli-opener-keeps-a-record-only-when-asked",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-reads-no-refusal-of-a-purge-as-a-run",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (STORE_FAILURE_KINDS.includes(failedOn)) return PURGE_THAT_TOOK_NOTHING\n",
+            "    if (failedOn !== TEST_CLOCK_KIND) return PURGE_THAT_TOOK_NOTHING\n",
+            "a refusal of the command, for the schema's version or a usage error, reads as a run of a purge that took nothing, so a day that holds one is accepted",
+        ),
+    )
+)
+VERDICTS["week-receipt-reads-no-refusal-of-a-purge-as-a-run"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker reads no refusal of the command as a run of a purge: a day that holds one is malformed, and one refused because the test clock was set refuses the week for the clock",
+    "mutation-verdict:behavior:week-receipt-reads-no-refusal-of-a-purge-as-a-run",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-refuses-a-purge-refused-under-a-test-clock",
+            "apps/dogfood/src/week-receipt.ts",
+            "  ...PURGE_THAT_TOOK_NOTHING,\n  underATestClock: true,\n",
+            "  ...PURGE_THAT_TOOK_NOTHING,\n  underATestClock: false,\n",
+            "a purge refused because the test clock was set reads as a run that took nothing, so a week whose clock was set between two samples is accepted",
+        ),
+    )
+)
+VERDICTS["week-receipt-refuses-a-purge-refused-under-a-test-clock"] = VERDICTS[
+    "week-receipt-reads-no-refusal-of-a-purge-as-a-run"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-allows-the-injected-task-no-wait",
+            "apps/dogfood/src/week-receipt.ts",
+            "  checkpoints: 0,\n  waits: 0,\n  events: 1,\n",
+            "  checkpoints: 0,\n  waits: 1,\n  events: 1,\n",
+            "the bound allows the injected task a wait beyond the one the start sample counted, so a stray wait is accepted at every sample of the week",
+        ),
+    )
+)
+VERDICTS["week-receipt-allows-the-injected-task-no-wait"] = VERDICTS[
+    "week-receipt-allows-the-injected-task-its-rows"
 ]
 
 MUTATIONS = [
@@ -26773,7 +26883,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1519:
+        if len(MUTATIONS) != 1526:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

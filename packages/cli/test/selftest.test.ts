@@ -3,12 +3,13 @@ import {
   QUEUE_TABLES,
   type SqlExecutor,
   type SqlResult,
+  StoreUnavailableError,
 } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, NOT_SENT_BY_SELFTEST } from '../src/commands.js'
 import { exitCode } from '../src/exit.js'
-import { type OpenedStore, type StoreOpener, openStore } from '../src/open-store.js'
+import { type OpenedStore, type StoreOpener, openStore, storeTarget } from '../src/open-store.js'
 import { SELFTEST_TASK } from '../src/selftest.js'
 import {
   type CliDb,
@@ -232,6 +233,43 @@ const refusingTheBatchAt =
     }
   }
 
+describe('the record of what a command sent', () => {
+  it('is kept for selftest alone: every other command that opens a store asks the opener for none', async () => {
+    // A line each command's parser takes, made from the command table: a word for each
+    // argument and for each flag it requires. The opener notes what it is asked and opens
+    // nothing, so no value of the line is read.
+    const url = 'file:/a-directory-that-is-not-there/db.sqlite'
+    const target = await storeTarget(url)
+    const asked: Record<string, boolean> = {}
+    for (const spec of STORE_COMMANDS) {
+      const flags = Object.entries(spec.flags).flatMap(([name, flag]) =>
+        flag.required !== true
+          ? []
+          : flag.type === 'boolean'
+            ? [`--${name}`]
+            : [`--${name}`, name === 'target' ? target : 'a-word'],
+      )
+      const opener: StoreOpener = async (_url, _token, _ids, options = {}) => {
+        asked[spec.verb] = options.keepsWhatIsSent === true
+        throw new StoreUnavailableError('nothing is opened here')
+      }
+      const run = await runCli(
+        [spec.verb, ...spec.positionals.map(() => 'a-word'), ...flags],
+        { DURABLERUN_STORE_URL: url },
+        opener,
+      )
+      expect({ verb: spec.verb, exit: run.exit }).toEqual({
+        verb: spec.verb,
+        exit: exitCode('unavailable'),
+      })
+    }
+    expect(asked, 'mutation-verdict:behavior:cli-keeps-what-is-sent-for-selftest-alone').toEqual(
+      Object.fromEntries(STORE_COMMANDS.map(({ verb }) => [verb, verb === 'selftest'])),
+    )
+    expect(Object.keys(asked).length).toBeGreaterThan(10)
+  })
+})
+
 describe('what selftest says of a store that refuses one batch', () => {
   it('prints each label by what was sent, for every label it sends: the label the store refused as failed, the labels answered before it as ok, and the rest as not-run', async () => {
     // The batches of a run nothing fails, in the order they are sent.
@@ -372,6 +410,35 @@ describe('what selftest says of a database whose answer cannot be read', () => {
       })
     }))
 
+  it("names the label of a schema version the store refuses after the batch was answered: the step failed there, the label is not ok, and the exit is the schema's", () =>
+    onDb('selftest-refused-version', async (db) => {
+      const everyValueNull = BENT['every value null']
+      if (everyValueNull === undefined) throw new Error('no such bend')
+      const run = await runCli(
+        line(db),
+        db.env,
+        openerWrapping(answering('migrate:version', everyValueNull)),
+      )
+      const answer = report(run.stdout)
+      const { 'migrate:version': version, ...others } = answer.labels ?? {}
+      expect(
+        {
+          exit: run.exit,
+          steps: (answer.steps ?? [])
+            .filter((step) => step.result !== 'not-run')
+            .map(({ call, result, failedAt }) => ({ call, result, failedAt })),
+          version,
+          others: [...new Set(Object.values(others))],
+        },
+        'mutation-verdict:behavior:cli-selftest-names-the-labels-a-step-that-failed-was-answered-under',
+      ).toEqual({
+        exit: exitCode('schema'),
+        steps: [{ call: 'admin.schemaVersion', result: 'failed', failedAt: 'migrate:version' }],
+        version: 'unexpected',
+        others: ['not-run'],
+      })
+    }))
+
   it('exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise', async () => {
     const labels = [...new Set(DECLARED)]
     const exits = new Map<number, number>()
@@ -385,6 +452,18 @@ describe('what selftest says of a database whose answer cannot be read', () => {
           // A run that the bent answer ended never prints the bent label as ok, and what it
           // says was refused never names another label alone: a step that was answered under
           // two labels read them together.
+          // A step that ends on an error with no batch failed was answered what raised it:
+          // it names the labels it was answered under, and the bent one is not ok.
+          const stopped = (report(run.stdout).steps ?? []).find((step) => step.result === 'failed')
+          if (
+            stopped !== undefined &&
+            (stopped.failedAt?.split(' or ').includes(label) !== true ||
+              report(run.stdout).labels?.[label] !== 'unexpected')
+          ) {
+            printedOk.push(
+              `${label}, ${how}: failed at ${stopped.failedAt}, ${report(run.stdout).labels?.[label]}`,
+            )
+          }
           if (run.exit === exitCode('failed')) {
             const answer = report(run.stdout)
             const found = (answer.steps ?? []).find((step) => step.result === 'unexpected')?.found

@@ -361,15 +361,18 @@ jobs:
               return repaired.replace(table, table + entries)
           if digest == 'd92ef6f06c840199a9b596620f0d89a4cec25739e956601708b777e621f5f975':
               # The self-test command, the week receipt's checker and the workflow of the week
-              # register thirty-seven mutations: eleven caught by cases of `selftest`, nineteen by
-              # cases of the week receipt's checker, and seven by cases that read the week's
-              # workflow. Their cases carry thirty-one verdict markers, because six of the
-              # mutations are caught under the marker of another. Each marker is newer than the
-              # base registry, so each is exempted there. No base entry is re-aimed.
+              # register forty-four mutations: fifteen caught by cases of `selftest` and of the
+              # opener, twenty-two by cases of the week receipt's checker, and seven by cases that
+              # read the week's workflow. Their cases carry thirty-five verdict markers, because
+              # nine of the mutations are caught under the marker of another. Each marker is newer
+              # than the base registry, so each is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
+                  "mutation-verdict:behavior:cli-keeps-what-is-sent-for-selftest-alone",
+                  "mutation-verdict:behavior:cli-opener-keeps-a-record-only-when-asked",
                   "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",
                   "mutation-verdict:behavior:cli-selftest-declares-or-names-every-label",
                   "mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under",
+                  "mutation-verdict:behavior:cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
                   "mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent",
                   "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
                   "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
@@ -385,6 +388,7 @@ jobs:
                   "mutation-verdict:behavior:week-receipt-counts-a-unit-whose-answer-was-lost",
                   "mutation-verdict:behavior:week-receipt-fails-closed",
                   "mutation-verdict:behavior:week-receipt-reads-a-purge-that-reached-no-unit",
+                  "mutation-verdict:behavior:week-receipt-reads-no-refusal-of-a-purge-as-a-run",
                   "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
                   "mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound",
                   "mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge",

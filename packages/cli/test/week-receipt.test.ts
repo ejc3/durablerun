@@ -277,6 +277,13 @@ describe('the week receipt checker', () => {
     ])
   })
 
+  /** The well-formed week with one more report first among its third day's purges. */
+  const withInTheThirdDay = (report: Json): WeekReceipt => {
+    const receipt = genuineWeek()
+    receipt.days[2]?.purges.unshift(report)
+    return receipt
+  }
+
   it('reads the failure of a purge that reached no unit as a run that took nothing and did not finish: a day that holds it beside a run that finished is accepted, and a day that holds it alone ran no purge', () => {
     // What a purge prints when the store fails before any unit: the failure, and no queue.
     const bare = (): Json => ({
@@ -285,22 +292,13 @@ describe('the week receipt checker', () => {
       error: { kind: 'store-unavailable', name: 'StoreUnavailableError' },
       exit: 'unavailable',
     })
-    // What it prints when it is refused before its walk: the failure beside what was asked.
-    const refusedBeforeTheWalk = (): Json => ({
+    // And when the store answers with a failure of its own.
+    const permanent = (): Json => ({
       ...bare(),
-      queue: 'digest',
-      execute: true,
-      policy: { completedSeconds: 86_400, cancelledSeconds: 86_400, failedSeconds: null },
-      limit: 100,
-      error: { kind: 'schema', message: 'a purge needs the version of the build' },
-      exit: 'schema',
+      error: { kind: 'permanent-store-error', name: 'PermanentStoreError' },
+      exit: 'permanent',
     })
-    const withInTheThirdDay = (report: Json): WeekReceipt => {
-      const receipt = genuineWeek()
-      receipt.days[2]?.purges.unshift(report)
-      return receipt
-    }
-    for (const report of [bare(), refusedBeforeTheWalk()]) {
+    for (const report of [bare(), permanent()]) {
       // The day's reports as printed: the run that failed, then the one that finished.
       expect(
         weekReceiptErrors(withInTheThirdDay(report)),
@@ -320,7 +318,7 @@ describe('the week receipt checker', () => {
     // ended well, one whose error is no object or names no kind, one of another command, and
     // one that holds a member of a walk, which is read as a whole report and lacks its rest.
     for (const [name, report] of Object.entries({
-      'another queue': { ...refusedBeforeTheWalk(), queue: 'another-queue' },
+      'another queue': { ...bare(), queue: 'another-queue' },
       'ended well': { ...bare(), exit: 'done' },
       'no exit': { ...bare(), exit: undefined },
       'an error that is no object': { ...bare(), error: 'store-unavailable' },
@@ -336,6 +334,61 @@ describe('the week receipt checker', () => {
         name,
         causes: ['malformed'],
       })
+    }
+  })
+
+  it('reads no refusal of the command as a run of a purge: a day that holds one is malformed, and one refused because the test clock was set refuses the week for the clock', () => {
+    // What a purge prints when it is refused before its walk: the failure beside what was asked.
+    const refused = (error: Json, exit: string): Json => ({
+      command: 'purge',
+      dialect: { scheme: 'libsql:' },
+      queue: 'digest',
+      execute: true,
+      policy: { completedSeconds: 86_400, cancelledSeconds: 86_400, failedSeconds: null },
+      limit: 100,
+      error,
+      exit,
+    })
+    const underATestClock = (): Json =>
+      refused({ kind: 'fake-clock', message: "the database's test clock is set" }, 'usage')
+    // The day's reports as the README says to keep them: the refusal, then the run that
+    // finished once the clock was cleared. The clock was set during the week.
+    expect(
+      causes(withInTheThirdDay(underATestClock())),
+      'mutation-verdict:behavior:week-receipt-reads-no-refusal-of-a-purge-as-a-run',
+    ).toEqual(['test-clock-set'])
+    const everyDay = genuineWeek()
+    for (const day of everyDay.days) day.purges.unshift(underATestClock())
+    expect(causes(everyDay)).toEqual(everyDay.days.map(() => 'test-clock-set'))
+    // As the dry run it is refused for the clock too, and is no whole dry run.
+    const asTheDryRun = genuineWeek()
+    asTheDryRun.failedDryRun = underATestClock()
+    expect([...new Set(causes(asTheDryRun))].sort()).toEqual([
+      'malformed',
+      'sizes-over-bound',
+      'test-clock-set',
+    ])
+    // Of another queue it is no document of the week.
+    expect(causes(withInTheThirdDay({ ...underATestClock(), queue: 'another-queue' }))).toEqual([
+      'malformed',
+    ])
+    // Every other refusal, and a defect of the program, is no run of a purge: the store's
+    // version, a database that was never migrated, a usage error, a port's refusal, and an
+    // internal error, each beside what was asked and each alone as a bare failure prints.
+    for (const [kind, exit] of [
+      ['schema', 'schema'],
+      ['not-initialized', 'schema'],
+      ['usage', 'usage'],
+      ['refused', 'refused'],
+      ['internal', 'internal'],
+    ] as const) {
+      const beside = refused({ kind, message: 'refused' }, exit)
+      const alone = { command: 'purge', dialect: { scheme: 'libsql:' }, error: { kind }, exit }
+      expect({
+        kind,
+        beside: causes(withInTheThirdDay(beside)),
+        alone: causes(withInTheThirdDay(alone)),
+      }).toEqual({ kind, beside: ['malformed'], alone: ['malformed'] })
     }
   })
 
@@ -428,30 +481,33 @@ describe('the week receipt checker', () => {
     expect(causes(both)).toEqual(['sizes-over-bound'])
   })
 
-  it('allows the injected task the rows it comes to hold after the start sample: its wait once the deployment parked it, and the event of its ending once the operator cancelled it', () => {
-    // The start sample counted the injected task as it was enqueued. The README's own
-    // steps then have the deployment take it and the operator cancel it.
+  it('allows the injected task the rows it comes to hold after the start sample, which counted it parked: the event of its ending once the operator cancelled it, and no wait', () => {
+    // The README's own steps have the deployment take the injected task, and park it,
+    // before the start sample, so that sample counted its wait. The operator's cancel
+    // comes after.
     const receipt = genuineWeek()
     expect(
       weekReceiptErrors(receipt),
       'mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows',
     ).toEqual([])
     // The well-formed week stands at that allowance: at its bound of waits while the task
-    // is parked, and of events once it was cancelled.
+    // is parked, which is the start sample's one wait, and of events once it was cancelled.
     const countOf = (day: number, table: string): unknown =>
       ((receipt.days[day]?.sizes.tables as Json)[table] as Json).count
     expect(INJECTED_BEYOND_THE_START).toEqual({
       tasks: 0,
       runs: 0,
       checkpoints: 0,
-      waits: 1,
+      waits: 0,
       events: 1,
     })
+    expect(START_ROWS.waits).toBe(1)
     expect({ waits: countOf(0, 'waits'), events: countOf(3, 'events') }).toEqual({
       waits: boundOf('waits'),
       events: boundOf('events'),
     })
-    // One row more of either is refused: the allowance is the injected task's and no more.
+    // One row more of either is refused: a second wait beside the parked one at any later
+    // sample, and a second event.
     for (const [day, table] of [
       [0, 'waits'],
       [3, 'events'],

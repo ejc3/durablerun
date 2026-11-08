@@ -334,19 +334,34 @@ export async function week(consumer: string, dir: string): Promise<string> {
 
     /**
      * The rows of each injected task's unit, table by table, as the model of retention
-     * counts a unit: when the task was enqueued, and the most it held at the end of any
-     * period after, up to and past the operator's cancel.
+     * counts a unit: once alpha.1 has taken the task, which is when `explain` first names
+     * the cause the task keeps, and the most it held at the end of any period after, up to
+     * and past the operator's cancel. The README has the start sample taken after that
+     * moment, so the rows a task gains from it on are the ones the start sample lacks.
      */
-    const injected = new Map<string, { enqueued: WeekRows; most: WeekRows }>()
+    const injected = new Map<string, { cause: string; taken: WeekRows | null; most: WeekRows }>()
     const unitRows = async (taskId: string): Promise<WeekRows> =>
       purgeOracle(await dumpOf(file), now, QUEUE, { taskId }, WINDOWS).rows
-    const inject = async (taskId: string): Promise<void> => {
-      const enqueued = await unitRows(taskId)
-      injected.set(taskId, { enqueued, most: enqueued })
+    const inject = async (taskId: string, cause: string): Promise<void> => {
+      const answer = await cli(file, ['explain', taskId, '--queue', QUEUE])
+      must(
+        answer.cause === 'pending-due-unclaimed',
+        `explain named ${String(answer.cause)} for an injected task alpha.1 had not taken`,
+      )
+      injected.set(taskId, { cause, taken: null, most: await unitRows(taskId) })
     }
     const measureTheInjected = async (): Promise<void> => {
       for (const [taskId, rows] of injected) {
         const held = await unitRows(taskId)
+        if (rows.taken === null) {
+          const answer = await cli(file, ['explain', taskId, '--queue', QUEUE])
+          must(
+            answer.cause === rows.cause,
+            `explain named ${String(answer.cause)} for an injected task after the period's passes, and alpha.1 was to have taken it as ${rows.cause}`,
+          )
+          rows.taken = held
+          rows.most = held
+        }
         rows.most = Object.fromEntries(
           QUEUE_TABLES.map((table) => [table, Math.max(rows.most[table], held[table])]),
         ) as WeekRows
@@ -358,13 +373,13 @@ export async function week(consumer: string, dir: string): Promise<string> {
       await setNow(startMs)
       if (period === PLAN.unregistered) {
         planted.unregistered = await enqueue('not-deployed-yet', 'planted-unregistered', null)
-        await inject(planted.unregistered)
+        await inject(planted.unregistered, 'never-started-alpha1-form')
       }
       if (period === PLAN.awaitNobodyEmits) {
         planted.awaitNobodyEmits = await enqueue(tasks.WAIT_FOR_READY_TASK, 'planted-await', {
           eventName: 'approval-nobody-gives',
         })
-        await inject(planted.awaitNobodyEmits)
+        await inject(planted.awaitNobodyEmits, 'awaiting-an-untimed-event')
       }
       if (period === PLAN.awaitEmitted) {
         planted.awaitEmitted = await enqueue(tasks.WAIT_FOR_READY_TASK, 'awaits-ready', {
@@ -448,17 +463,22 @@ export async function week(consumer: string, dir: string): Promise<string> {
       if (period <= PLAN.operatorLooks) await measureTheInjected()
     }
     // The week receipt's bound allows an injected task the rows it comes to hold after the
-    // start sample. That allowance is what this measures, of both kinds of injected task:
-    // table by table, the most either held beyond what it held when it was enqueued.
-    const beyondTheEnqueue = Object.fromEntries(
+    // start sample, which the README has taken once the deployment took the task. That
+    // allowance is what this measures, of both kinds of injected task: table by table, the
+    // most either held beyond what it held when alpha.1 had taken it.
+    const beyondTheTaking = Object.fromEntries(
       QUEUE_TABLES.map((table) => [
         table,
-        Math.max(...[...injected.values()].map((rows) => rows.most[table] - rows.enqueued[table])),
+        Math.max(
+          ...[...injected.values()].map((rows) => rows.most[table] - (rows.taken?.[table] ?? 0)),
+        ),
       ]),
     )
     must(
-      injected.size === 2 && isDeepStrictEqual(beyondTheEnqueue, { ...WEEK_INJECTED_UNIT_ROWS }),
-      `the injected tasks came to hold ${JSON.stringify(beyondTheEnqueue)} beyond their rows when enqueued, and the week receipt allows ${JSON.stringify(WEEK_INJECTED_UNIT_ROWS)}`,
+      injected.size === 2 &&
+        [...injected.values()].every((rows) => rows.taken !== null) &&
+        isDeepStrictEqual(beyondTheTaking, { ...WEEK_INJECTED_UNIT_ROWS }),
+      `the injected tasks came to hold ${JSON.stringify(beyondTheTaking)} beyond their rows once alpha.1 had taken them, and the week receipt allows ${JSON.stringify(WEEK_INJECTED_UNIT_ROWS)}`,
     )
 
     // What alpha.1 made of the week, read through alpha.1's own getTaskResult and through

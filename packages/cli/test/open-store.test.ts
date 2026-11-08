@@ -39,6 +39,53 @@ function refusalOf(url: string): Promise<string> {
 }
 
 describe('the store opener', () => {
+  it('keeps a record of the batches it sends only when it is asked to, and hands out the record it holds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-cli-opener-record-'))
+    try {
+      const url = `file:${join(dir, 'db.sqlite')}`
+      const keeping = await openStore(url, undefined, testIdSource('o'), {
+        mayCreate: true,
+        keepsWhatIsSent: true,
+      })
+      try {
+        await keeping.admin.schemaVersion().catch(() => undefined)
+        const record = keeping.sent()
+        expect(
+          record.length,
+          'mutation-verdict:behavior:cli-opener-keeps-a-record-only-when-asked',
+        ).toBeGreaterThan(0)
+        // The label of each batch and whether it was answered, and nothing a command holds.
+        expect(record.map((batch) => Object.keys(batch).sort())).toEqual(
+          record.map(() => ['answered', 'label']),
+        )
+        // The record is handed out as it is held: no copy for each call, and a later batch
+        // is in what an earlier call handed out.
+        await keeping.admin.schemaVersion().catch(() => undefined)
+        expect(keeping.sent()).toBe(record)
+        expect(record.length).toBeGreaterThan(1)
+      } finally {
+        await keeping.close()
+      }
+      // Asked for no record, or told nothing, the store holds nothing for a batch.
+      for (const options of [{}, { keepsWhatIsSent: false }]) {
+        const store = await openStore(url, undefined, testIdSource('o'), options)
+        try {
+          await store.admin.schemaVersion()
+          await store.admin.schemaVersion()
+          expect(
+            store.sent(),
+            'mutation-verdict:behavior:cli-opener-keeps-a-record-only-when-asked',
+          ).toEqual([])
+          expect(Object.isFrozen(store.sent())).toBe(true)
+        } finally {
+          await store.close()
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('returns ports narrowed to the calls a command may make, and no executor', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'durablerun-cli-opener-'))
     try {
@@ -62,15 +109,10 @@ describe('the store opener', () => {
           'sent',
           'window',
         ])
-        // What was sent is a record: the label of each batch and whether it was answered,
-        // copied out, so nothing a command holds reaches the executor.
+        // A store that was not asked to keep a record of what it sends keeps none.
         await store.admin.schemaVersion().catch(() => undefined)
-        const record = store.sent()
-        expect(record.length).toBeGreaterThan(0)
-        expect(record.map((batch) => Object.keys(batch).sort())).toEqual(
-          record.map(() => ['answered', 'label']),
-        )
-        expect(store.sent()).not.toBe(record)
+        expect(store.sent()).toEqual([])
+        expect(Object.isFrozen(store.sent())).toBe(true)
         expect(Object.keys(store.admin).sort()).toEqual(['migrate', 'nowEpochMs', 'schemaVersion'])
         // Two reads, the five calls the drive verbs are, and the read of the next wake.
         expect(Object.keys(store.scheduler).sort()).toEqual([

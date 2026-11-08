@@ -83,7 +83,11 @@ export interface OpenedStore {
   readonly scheduler: CliScheduler
   readonly operator: CliOperator
   readonly retention: CliRetention
-  /** Every batch the ports sent so far, in order. It is a record, and it sends nothing. */
+  /**
+   * The batches the ports sent so far, in order, when the command asked for the record to
+   * be kept, and nothing otherwise. It is a record: it sends nothing, and it is handed out
+   * as it is held, to be read and not changed.
+   */
   sent(): readonly SentBatch[]
   close(): Promise<void>
 }
@@ -118,9 +122,12 @@ export function keepingWhatIsSent(real: SqlExecutor): {
         }
       },
     },
-    sent: () => [...batches],
+    sent: () => batches,
   }
 }
+
+/** What a store that keeps no record hands out: nothing, however many batches it sent. */
+const NOTHING_KEPT: readonly SentBatch[] = Object.freeze([])
 
 export interface OpenOptions {
   /**
@@ -129,6 +136,11 @@ export interface OpenOptions {
    * client creates the file it is pointed at.
    */
   readonly mayCreate?: boolean
+  /**
+   * Whether to keep a record of every batch sent. Only the command that reads the record
+   * asks for it, so a long run of any other command holds nothing for each batch.
+   */
+  readonly keepsWhatIsSent?: boolean
   /** For tests: wraps the executor every port sends through, to watch it or to fail it. */
   readonly wrapExecutor?: (executor: SqlExecutor) => SqlExecutor
 }
@@ -362,7 +374,11 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   if (scheme === undefined || loader === undefined) throw new StoreUrlError(unknownScheme())
   const opened = await loader(url, token, options.mayCreate === true, target)
   // The record is kept outside a test's wrapper, so it sees the batch as the ports did.
-  const kept = keepingWhatIsSent(options.wrapExecutor?.(opened.executor) ?? opened.executor)
+  const wrapped = options.wrapExecutor?.(opened.executor) ?? opened.executor
+  const kept =
+    options.keepsWhatIsSent === true
+      ? keepingWhatIsSent(wrapped)
+      : { executor: wrapped, sent: () => NOTHING_KEPT }
   const db = kept.executor
   const admin = opened.admin(db)
   const scheduler = opened.scheduler(db, ids)

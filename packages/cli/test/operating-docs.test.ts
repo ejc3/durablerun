@@ -69,8 +69,21 @@ describe('the documents of operating a deployment', () => {
   })
 
   it('names, in the steps of the sealed injection, only causes explain can name and refusals the checker makes, and BUILD.md names the same ones', () => {
+    // The steps are the sealed injection's own section: from its label to the next heading,
+    // or to the end of the file. A section written after it names what it likes.
+    const sectionFrom = (text: string, label: string): string => {
+      const from = text.slice(text.indexOf(label))
+      const nextHeading = from.search(/\n#{1,6} /)
+      return nextHeading === -1 ? from : from.slice(0, nextHeading)
+    }
+    const label = '**The sealed injection.**'
+    expect(
+      sectionFrom(`# A\n\n${label} \`one-cause\`\n\n## Later\n\n\`store-libsql\`\n`, label),
+    ).toBe(`${label} \`one-cause\`\n`)
+    expect(sectionFrom(`# A\n\n${label} \`one-cause\`\n`, label)).toBe(`${label} \`one-cause\`\n`)
     const readme = read('README.md')
-    const steps = readme.slice(readme.indexOf('**The sealed injection.**'))
+    const steps = sectionFrom(readme, label)
+    expect(steps).toContain('reveals the task id')
     // Every name of the steps that is written as a cause or a refusal is: lower case words
     // joined by hyphens, in backticks.
     const named = [...steps.matchAll(/`([a-z0-9]+(?:-[a-z0-9]+)+)`/g)].map(

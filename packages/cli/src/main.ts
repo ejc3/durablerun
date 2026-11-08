@@ -216,6 +216,8 @@ export async function main(
     // would otherwise leave an empty database behind its refusal.
     store = await opener(url, token, ids, {
       mayCreate: spec.verb === 'migrate' && invocation.booleans.yes === true,
+      // `selftest` alone reads the record of what was sent, so it alone has one kept.
+      keepsWhatIsSent: spec.verb === 'selftest',
     })
   } catch (error) {
     if (error instanceof StoreUrlError) return usageAnswer('usage', error.message)
@@ -1421,10 +1423,16 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
         return
       }
       ended.stopped = failed
+      // An error with a name of its own and no batch that failed was raised from an answer
+      // the store gave, such as a schema version it does not read. The labels the step was
+      // answered under are then not ok, and they are what the step names.
+      const answered = last?.answered === false ? [] : answeredUnder()
+      if (answered.length > 0) ended.answeredOtherwise = answered
       reports.push({
         ...named,
         result: 'failed',
         ...(last?.answered === false ? { failedAt: last.label } : {}),
+        ...(answered.length > 0 ? { failedAt: answered.join(' or ') } : {}),
       })
     }
   }
