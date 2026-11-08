@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { serializeTaskValue, systemIdSource } from '@durablerun/core'
 import { LibsqlExecutor, LibsqlSchedulerStore, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { requireHostedReceiptBaseUrl } from '../src/receipt.js'
+import { prepareSchema } from '../src/schema.js'
 import { ATTEMPT_RECEIPT_TASK, WAIT_FOR_READY_TASK } from '../src/tasks.js'
 
 const RECEIPT_TIMEOUT_MS = 45_000
@@ -181,7 +182,8 @@ const ids = systemIdSource()
 const raw = LibsqlExecutor.open(databaseUrl, databaseAuthToken)
 let attemptTaskId: string
 try {
-  await new LibsqlStoreAdmin(raw).migrate()
+  // The receipt's own JSON is the one document on stdout, so this line goes to stderr.
+  process.stderr.write(`${await prepareSchema(new LibsqlStoreAdmin(raw))}\n`)
   const store = new LibsqlSchedulerStore(raw, ids)
   const spawnedAttempt = await store.spawn(
     queue,
