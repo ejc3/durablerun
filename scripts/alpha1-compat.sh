@@ -74,10 +74,5 @@ done <<< "$pins"
 printf '{"name":"durablerun-alpha1-consumer","private":true,"type":"module"}\n' > "$WORK/package.json"
 npm install --prefix "$WORK" --ignore-scripts --no-audit --no-fund --prefer-offline \
   "$WORK"/assets/*.tgz >/dev/null
-# The example's own sources and scripts, copied beside the installed assets, so that the
-# tasks the week runs and the migrate script it checks resolve the alpha.1 packages, as a
-# deployed checkout of the example does.
-mkdir "$WORK/example"
-cp -R "$ROOT/examples/vercel-turso/"{src,scripts} "$WORK/example/"
 cd "$ROOT"
 node --import tsx packages/cli/test/alpha1-compat.ts "$WORK"

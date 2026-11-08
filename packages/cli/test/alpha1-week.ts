@@ -24,8 +24,9 @@
  * purge differ on.
  */
 import { spawnSync } from 'node:child_process'
+import { cpSync } from 'node:fs'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { QUEUE_TABLES, type RetentionPolicy, systemIdSource } from '@durablerun/core'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
 import {
@@ -86,8 +87,19 @@ const PLAN = {
 
 type Handler = (ctx: unknown, params: unknown) => Promise<unknown>
 
-/** What the week uses of the release alpha.1 and of the example, loaded from the consumer directory. */
+const EXAMPLE = fileURLToPath(new URL('../../../examples/vercel-turso', import.meta.url))
+
+/**
+ * What the week uses of the release alpha.1 and of the example, loaded from the consumer
+ * directory. The example's own sources and scripts are copied beside the installed release
+ * first, so that its tasks and its migrate script resolve the alpha.1 packages, as a
+ * deployed checkout of the example does. The harness makes the copy and not the script
+ * that starts it: the base gate runs main's script over this tree, and main's makes none.
+ */
 async function load(consumer: string) {
+  for (const part of ['src', 'scripts']) {
+    cpSync(join(EXAMPLE, part), join(consumer, 'example', part), { recursive: true })
+  }
   const example = (path: string) => pathToFileURL(join(consumer, 'example', path)).href
   const { core, store } = await loadAlpha1(consumer)
   const sdk = (await import(installedIn(consumer, '@durablerun/sdk/dist/index.js'))) as {
