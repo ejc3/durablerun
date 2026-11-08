@@ -10,16 +10,16 @@ import { testIdSource } from '@durablerun/core/testing'
 import { retention } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { runFuzzScenario } from '../../conformance/src/fuzz.js'
-import { type ProtocolSnapshot, snapshot } from '../../conformance/src/poison-matrix.js'
-import { dumpDifferences, purgeOracle } from '../../conformance/src/retention-oracle.js'
+import { snapshot } from '../../conformance/src/poison-matrix.js'
+import { dumpDifferences } from '../../conformance/src/retention-oracle.js'
 import { KEEPING_FAILED, NAMING_FAILED } from '../../conformance/src/retention-policies.js'
 import { handWrittenTask } from '../../conformance/src/scenario.js'
 import { makeLibsqlFixture } from '../../conformance/test/fixture-libsql.js'
 import { exitCode } from '../src/exit.js'
 import { storeTarget } from '../src/open-store.js'
+import { type ModelledPurge, type PurgeAnswer, againstTheModel, idsOf } from './purge-model.js'
 import {
   type CliDb,
-  type JsonAnswer,
   PURGE_EVERY_STATE,
   PURGE_WINDOWS,
   QUEUE,
@@ -56,12 +56,9 @@ import {
  */
 
 /** A command line without the flags every write takes, and the policy and the limit it names. */
-interface Command {
+interface Command extends ModelledPurge {
   readonly name: string
   readonly flags: readonly string[]
-  readonly policy: RetentionPolicy
-  /** The most units it purges, or null for a dry run, which purges none. */
-  readonly limit: number | null
 }
 
 const dryRun = (name: string): Command => ({
@@ -80,25 +77,6 @@ const purgeOf = (name: string, limit: number | undefined, keepFailed = false): C
   policy: keepFailed ? KEEPING_FAILED : NAMING_FAILED,
   limit: limit ?? 100,
 })
-
-interface Unit {
-  readonly taskId: string
-  readonly state: string
-  readonly rows?: Readonly<Record<string, number>>
-  readonly reasons?: readonly string[]
-}
-
-type PurgeAnswer = JsonAnswer & {
-  readonly purged?: readonly Unit[]
-  readonly wouldPurge?: readonly Unit[]
-  readonly kept?: readonly Unit[]
-  readonly gone?: readonly unknown[]
-  readonly more?: boolean
-  readonly finished?: boolean
-}
-
-const idsOf = (units: readonly Unit[] | undefined): string[] =>
-  (units ?? []).map(({ taskId }) => taskId)
 
 /** The units a command printed as kept, each with its reasons, as one comparable text. */
 const keptOf = (answer: PurgeAnswer): string =>
@@ -130,61 +108,6 @@ async function portVerdicts(
     }
     if (page.next === null) return { wouldGo, keeps }
     after = page.next
-  }
-}
-
-/** What names a task's unit to the model: its id, and the key its row holds in the dump. */
-function unitIn(dump: ProtocolSnapshot, taskId: string) {
-  const key = dump.tasks.find(
-    (row) => row.task_id === taskId && row.queue === QUEUE,
-  )?.idempotency_key
-  return key === null || key === undefined ? { taskId } : { taskId, idempotencyKey: String(key) }
-}
-
-/**
- * One command against the model: the dump before it, the dump after it, and what it
- * printed. Each list is empty when the command did what the model says.
- */
-function againstTheModel(
-  before: ProtocolSnapshot,
-  after: ProtocolSnapshot,
-  nowMs: number,
-  command: Command,
-  answer: PurgeAnswer,
-) {
-  let dump = before
-  const notLetGo: string[] = []
-  const rows: unknown[] = []
-  const modelRows: unknown[] = []
-  for (const unit of answer.purged ?? []) {
-    const said = purgeOracle(dump, nowMs, QUEUE, unitIn(dump, unit.taskId), command.policy)
-    if (said.keptBy.length > 0) notLetGo.push(`${unit.taskId}: ${said.keptBy.join(', ')}`)
-    rows.push([unit.taskId, unit.rows])
-    modelRows.push([unit.taskId, { ...said.rows }])
-    dump = said.after
-  }
-  const letsGoNow = (taskId: string): boolean =>
-    purgeOracle(after, nowMs, QUEUE, unitIn(after, taskId), command.policy).keptBy.length === 0
-  // A run that says no more remain reached its end. A dry run deletes nothing, so what the
-  // model lets go still stands after one, and a run its limit stopped left work behind.
-  const reachedItsEnd = command.limit !== null && answer.more === false
-  return {
-    /** Units printed as purged that the model keeps. */
-    notLetGo,
-    /** What differs between what the model leaves and the dump taken after. */
-    otherChanges: dumpDifferences(dump, after),
-    overTheLimit: Math.max(0, (answer.purged ?? []).length - (command.limit ?? 0)),
-    /** Units that stand, though the run said no more remain and the model lets them go. */
-    leftBehind: reachedItsEnd
-      ? after.tasks
-          .filter((row) => row.queue === QUEUE)
-          .map((row) => String(row.task_id))
-          .filter(letsGoNow)
-      : [],
-    /** Units printed as kept that the model lets go as the database stands. */
-    keptButFree: reachedItsEnd ? idsOf(answer.kept).filter(letsGoNow) : [],
-    rows,
-    modelRows,
   }
 }
 
@@ -238,7 +161,7 @@ describe('purge is the retention port and nothing else', () => {
           )
           const answer = JSON.parse(run.stdout) as PurgeAnswer
           const after = await snapshot(db.raw)
-          const model = againstTheModel(before, after, nowMs, command, answer)
+          const model = againstTheModel(QUEUE, before, after, nowMs, command, answer)
           // A run that says no more remain keeps no unit the model lets go: what a take
           // of the same run freed went with it.
           expect(
@@ -393,7 +316,14 @@ describe('purge over the states a walk of the engine leaves, on libSQL', () => {
             testIdSource(`walk-${asked}`),
           )
           const answer = JSON.parse(run.stdout) as PurgeAnswer
-          const model = againstTheModel(before, await snapshot(subject.raw), nowMs, command, answer)
+          const model = againstTheModel(
+            QUEUE,
+            before,
+            await snapshot(subject.raw),
+            nowMs,
+            command,
+            answer,
+          )
           const found: Record<string, readonly string[]> = {
             'a unit printed as kept is one the model lets go': model.keptButFree,
             'a unit printed as purged is one the model keeps': model.notLetGo,
