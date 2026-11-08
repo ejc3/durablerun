@@ -6464,8 +6464,8 @@ built. The first two are built as planned, and the third the plan did not have.
 
 **The drive verbs.** `enqueue`, `emit`, `cancel`, `retry` and `sweep` each make one call of
 the store's port, and that call is the whole write. The command reads before it and after
-it to say what happened. With its confirmation, and a schema version inside the window of
-its store's reads, a verb always makes its call, and nothing it reads of a task, a run or
+it to say what happened. With its confirmation, arguments the command takes, and a schema
+version inside the window of its store's reads, a verb always makes its call, and nothing it reads of a task, a run or
 an event decides whether a row changes: the port's own guard does. What `cancel` must not
 do to a saga, it asks of that guard (below). A test holds this on every dialect. The
 command runs through `main` against one database, and the port call it is runs against a
@@ -6473,9 +6473,9 @@ twin: a second database built by the same calls with the same seeded ids. Both a
 an id source of one seed, and after each step a dump of every table of the one equals the
 dump of the other, and the command's answer is the port's. Each step also holds that the
 command sent a batch of its port call, a step the port refuses included, so a refusal
-decided from a read fails there. The same is held on libSQL over the states a walk of the
-engine leaves, after every command, with a floor under how many of each outcome the walks
-reach.
+decided from a read fails there. The dumps and the answers are held equal in the same way
+on libSQL over the states a walk of the engine leaves, after every command, with a floor
+under how many of each outcome the walks reach.
 
 - `enqueue <taskName> --key K [--params JSON] --queue Q --target T` is `spawn` under the
   idempotency key. `--key` is required, so the command run again after a lost answer finds
@@ -6504,11 +6504,11 @@ reach.
   the caller passed, in canonical form: the same values, with a fraction read as the double
   nearest it. `emit --payload` is read the same way. A refusal of the port prints its words
   when it is of the queue or of the task name, the two strings the port checks before the
-  key, which core's own check of each decides. Any other refusal may quote the key, so its
+  parameters and the key, which core's own check of each decides. Any other refusal may quote the key, so its
   words print only with `--reveal`. The words are never searched for the key.
 - `emit <eventName> [--payload JSON] --yes --queue Q --target T` is `emitEvent`. The first
-  emit's payload stands. A later emit changes no payload and wakes nothing, and the engine
-  stamps the event's row with the batch that last wrote it. The answer says which this call
+  emit's payload stands. A later emit changes no payload, and wakes nothing in any state an
+  engine path leaves, and the engine stamps the event's row with the batch that last wrote it. The answer says which this call
   was, `created` or `already-emitted`, from the event's state read before the write and its
   stored payload read after (`eventPayload`). It prints the stored payload's byte length
   and sha256 beside those of the payload it sent, and whether the two match. The stored
@@ -6533,9 +6533,11 @@ reach.
   after says why: gone (exit 8), cancelled already (exit 0, `already-cancelled`), rolling
   back with no `--halt-rollback` (exit 2, `confirmation-required`, with the rollback facts
   `taskFacts` carries: the attempts, the budget and every run), ended another way (exit 3,
-  `already-terminal`), or live with a run in another queue, which no engine path writes
-  (exit 3, `run-in-another-queue`). Without `--yes` the command changes nothing, and says
-  from the one read what it would do and which flags it would take.
+  `already-terminal`), live with a run in another queue, which no engine path writes
+  (exit 3, `run-in-another-queue`), or live with nothing in its rows that refuses it,
+  because it changed between the call and the read (exit 3, `not-cancelled`). Without
+  `--yes` the command changes nothing, and says from the one read what it would do and
+  which flags it would take, or exits 8 when that read finds no task.
 - `retry <taskId> --yes --queue Q --target T` is `retryTask`. The one read it makes is
   `taskAdmission`, before the call and after it. When the port answers null it wrote
   nothing, and the read after names why from the guard's own conjuncts. A task that is live
@@ -6557,7 +6559,9 @@ reach.
   from under it is not among them. `stuck` lists what is still owed.
 
 `emit`, `cancel` and `retry` change nothing without `--yes`. They exit 2 with
-`confirmation-required` and print what they would do, from the read before the write.
+`confirmation-required` and print what they would do, from the read before the write,
+unless the command refuses for another cause first: a `cancel` or a `retry` of a task that
+read does not find exits 8, and an `emit` of a reserved name exits 3.
 `enqueue` and `sweep` take no `--yes`: an enqueue under a key and a sweep are what a
 deployment does unasked, and each is safe to send again. Every one of the five names its
 store again with `--target`, as `migrate` does, and a mismatch exits 2 before anything
