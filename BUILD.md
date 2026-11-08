@@ -64,11 +64,12 @@ docs pull request that records the lines as met. Nine of them merged from
 2026-09-24 to 2026-10-06. The work was paused from 2026-10-06 to 2026-11-07,
 PR5.2d merged on 2026-11-07, and PR5.4 on 2026-11-08. Each of the eleven before
 PR5.5 has the postmortem of its reviews under `postmortems/`. PR5.5 also added
-to CI's MySQL job the four test files of the CLI that the job did not run,
-`drive-twin.test.ts`, `drill.test.ts`, `purge-twin.test.ts` and
-`selftest.test.ts`. Lines 38, 39, 43 and 44 cite them for each dialect, CI's
-verify job ran them on libSQL and PostgreSQL, and no job ran them on MySQL,
-where they passed on 2026-11-08 before the change. No milestone is
+to CI's MySQL job the four test files of the CLI that run on each selected
+dialect and that the job did not run, `drive-twin.test.ts`, `drill.test.ts`,
+`purge-twin.test.ts` and `selftest.test.ts`. Lines 38, 39, 43 and 44 cite
+them, lines 38 and 39 for each dialect. CI's verify job ran them on libSQL and
+PostgreSQL, and no job ran them on MySQL, where they passed on 2026-11-08
+before the change. No milestone is
 current: the maintainer has named none. The maintainer's live week on the
 deployed alpha is receipt M1, outside the numbered lines. It is NOT MET, as its
 paragraph below says, and M1 is recorded met only when its receipt exists and
