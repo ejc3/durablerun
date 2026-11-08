@@ -6816,7 +6816,9 @@ raised the error, as a schema version the store refuses does after the batch tha
 answered. Then the labels the step was answered under are not `ok`: they print `unexpected`
 and the step names them under `failedAt`, and the exit stays the error's. A call the store failed exits as the failure does, and a
 call that answered otherwise exits 11, with what it answered under `found`: a count, a
-flag, an id or a state of the engine's own, and never a stored text.
+flag, names of the purge barrier's conditions, or a state as every command prints a stored
+one, the engine's own as it is and any other hidden unless revealed. An id is compared
+and not printed: what prints is whether it is the expected one.
 
 An answer the store cannot read is an answer that is not the engine's, so it exits 11 too
 and never 1, which is a defect of the CLI. Every error the CLI has no name for was asked
