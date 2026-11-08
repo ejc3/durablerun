@@ -6029,8 +6029,9 @@ event `$task-done:<id>`, `explain` reads that task's facts and diagnoses it the 
 and so on for `CHILD_HOPS`, 8 awaits, from the task it was asked about. The answer nests
 each diagnosis under `awaits` and, when a child was followed, names the last under
 `deepest`. The next command is the one for that last task. A task 8 awaits away has its own
-child left unread, so a chain of awaits costs at most nine reads of facts and nine of an
-event's waiters. A task takes the
+child left unread, so a chain of awaits reads the facts of at most nine tasks, each a second
+time only when an instant passes between its two reads (below), and at most nine events'
+waiters. A task takes the
 verdict of what it waits for: `waiting`, `stuck`, `inconsistent` and `unexplained` pass up
 as they are, and a child that is `ok` and has not ended makes its parent `waiting`: that is
 a child whose run is claimed under a live lease, however long it has run.
@@ -6041,7 +6042,7 @@ its await or a cancellation deadline, either of which ends the ring, and `stuck`
 has, because no move can come to such a ring. Its facts say which under `ringEndedBy`, and
 the next command for a ring that is `stuck` is `inspect`. Three cases are `unexplained`: a
 child the queue
-does not hold, a child that was not followed, and a child that has ended. The batch that
+does not hold, a child that was not followed, and a child that is `ok` and has ended. The batch that
 ends a task wakes every run parked on it (section 3.2), and `explain` reads a parent and
 its child in two snapshots. So a run still parked on an ended child was read a moment
 before the child ended, and asking again answers it, or it waits on a task that a build
@@ -6076,7 +6077,9 @@ and as one line to paste (`next.command`). No flag a command does not require is
 added, so no suggestion carries `--yes`, and no cause names `emit`, `cancel` or `retry`:
 for an await with no timeout `explain` prints the event's name as a fact, and whether to
 emit it, and whether to cancel a run that may be healthy, is the operator's call. A
-`waiting` verdict prints no next command.
+task whose own verdict is `waiting` is suggested no command. The command is the last
+task's, so an answer that is `waiting` prints one when the last task it followed is not
+`waiting`, as a child past the hung-run bound is not.
 
 The two causes a sweep clears, `cancellation-deadline-passed` and `lease-lapsed-unswept`,
 print `sweep --queue=<queue> --target=<target>` once they are `stuck`. The three a claim
@@ -6095,8 +6098,9 @@ the loopback address, and each suggestion it is printed runs as it is printed.
 exit code. It exits 10 when a row it read is one `inspect` exits 10 for, the task's or that
 of a child it followed, or when the decoders refuse a checkpoint row it asked for. It exits
 8 when the queue does not hold the task it was asked about, or no task was spawned under
-the key. Its answer is the report the command exists to print, so it prints on stdout
-whatever the exit.
+the key. A diagnosis is the report the command exists to print, so it prints on stdout
+when the command exits 10 as when it exits 0. A task that is not there prints on stderr
+in text.
 
 **What the driver owes a queue.** `stuck --queue Q [--grace D] [--limit N] [--older-than D]
 [--fail-if-any]` lists the runs and tasks of one queue that a move of the driver is owed to,
