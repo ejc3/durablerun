@@ -1,4 +1,4 @@
-import { type SqlExecutor, StoreAccessRefusedError } from '@durablerun/core'
+import type { SqlExecutor } from '@durablerun/core'
 import { CURRENT_SCHEMA_VERSION } from '@durablerun/store-libsql'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS } from '../src/commands.js'
@@ -10,6 +10,7 @@ import {
   onDb,
   openCliDb,
   openerWrapping,
+  refusing,
   runCli,
   seedTasks,
   writeFlags,
@@ -18,25 +19,14 @@ import {
 /**
  * A store that refuses its credential partway through a command (DESIGN.md section 3.11). A
  * refusal met at a command's first batch is held on every dialect by the case that runs
- * every store command against a store that refuses its credential. These hold what a
- * command does when the refusal comes after it has done something: a credential can be
- * revoked while a command runs, and a role can hold the privilege for one statement of a
- * command and lack it for the next. The refusal is injected at the executor, on libSQL,
- * because a command does the same with the type whatever dialect raised it.
+ * every store command against a store that refuses its credential, and the exit of a
+ * refusal at every batch every command sends is held by the fault surface's file. These
+ * hold what three commands print when the refusal comes after they have done something.
+ * The refusal is injected at the executor, on libSQL, because a command does the same with
+ * the type whatever dialect raised it.
  */
 
-/** An executor that refuses one sending of one label as a store refuses a credential. */
-const refusingAt =
-  (site: FaultSite) =>
-  (real: SqlExecutor): SqlExecutor => {
-    let seen = 0
-    return {
-      batch: (label, statements, control) =>
-        label === site.label && ++seen === site.occurrence
-          ? Promise.reject(new StoreAccessRefusedError(`batch(${label}) was refused access`))
-          : real.batch(label, statements, control),
-    }
-  }
+const refusingAt = (site: FaultSite) => (real: SqlExecutor) => refusing(real, site)
 
 const answerOf = (stdout: string) =>
   JSON.parse(stdout) as Record<string, unknown> & { error?: { kind?: string; name?: string } }

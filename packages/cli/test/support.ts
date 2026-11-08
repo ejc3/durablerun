@@ -12,6 +12,7 @@ import {
   type SqlExecutor,
   type SqlRow,
   type StoreAdmin,
+  StoreAccessRefusedError,
   StoreUnavailableError,
 } from '@durablerun/core'
 import { type RecordedBatch, RecordingExecutor, testIdSource } from '@durablerun/core/testing'
@@ -566,6 +567,22 @@ export function faulting(real: SqlExecutor, site: FaultSite, fault: CliFault): S
       }
       return real.batch(label, statements, control)
     },
+  }
+}
+
+/**
+ * An executor that refuses one sending of one label as a store refuses a credential: the
+ * batch is not sent, and the call rejects with StoreAccessRefusedError. A credential can be
+ * revoked while a command runs, and a role can hold the privilege for one statement of a
+ * command and lack it for the next, so a refusal can meet any batch.
+ */
+export function refusing(real: SqlExecutor, site: FaultSite): SqlExecutor {
+  let seen = 0
+  return {
+    batch: (label, statements, control) =>
+      label === site.label && ++seen === site.occurrence
+        ? Promise.reject(new StoreAccessRefusedError(`batch(${label}) was refused access`))
+        : real.batch(label, statements, control),
   }
 }
 

@@ -12,7 +12,7 @@ import {
   declaresLabel,
   faultExit,
 } from '../src/commands.js'
-import { exitCode } from '../src/exit.js'
+import { type ExitName, exitCode } from '../src/exit.js'
 import { openStore } from '../src/open-store.js'
 import { asleep, chainOfAwaits, parkedOnAnEvent } from './explain-seeds.js'
 import { owedToASweep } from './queue-seeds.js'
@@ -33,6 +33,7 @@ import {
   openerWrapping,
   recordingIds,
   recordingOpener,
+  refusing,
   rowsByQueue,
   runCli,
   seedTasks,
@@ -480,6 +481,63 @@ async function faultSurface(
   return cases
 }
 
+/**
+ * The exit a store's refusal of its credential ends in at one batch. It is exit 4 wherever a
+ * store that is unavailable before the batch exits 6. Where the table declares another exit
+ * for that fault, the batch is a read that follows a write the store answered: the write
+ * stands, so the command exits as the table says, 0, and reports the refusal as not read.
+ */
+function refusalExit(spec: CommandSpec, label: string): ExitName {
+  const unavailableBefore = faultExit(spec, label, 'crash-before')
+  return unavailableBefore === 'unavailable' ? 'unauthorized' : unavailableBefore
+}
+
+/** The kind a refused credential prints under, as an error and as a read that did not happen. */
+const REFUSED_KIND = 'store-access-refused'
+
+/**
+ * A refusal of the credential, injected at every batch one command sends from one starting
+ * state, one sending at a time. Counts the two endings: the commands that exited 4, and
+ * the reads after an answered write that exited as the table declares.
+ */
+async function refusalSurface(
+  verb: StoreVerb,
+  scenario: Scenario,
+): Promise<{ refused: number; notRead: number }> {
+  const spec = COMMANDS[verb]
+  const labels = await cleanLabels('libsql', verb, scenario)
+  const met = { refused: 0, notRead: 0 }
+  for (const site of sitesOf(labels)) {
+    const where = `${verb} from ${scenario.name}: a refusal at ${site.label} #${site.occurrence}`
+    const { db, line } = await prepared('libsql', verb, scenario)
+    try {
+      const untouched = await db.dump()
+      const hit = await runCli(
+        line,
+        db.env,
+        openerWrapping((real) => refusing(real, site)),
+      )
+      const expected = refusalExit(spec, site.label)
+      const answer = JSON.parse(hit.stdout) as { error?: { kind?: string } }
+      const asAnError = answer.error?.kind === REFUSED_KIND
+      // The kind stands as a value somewhere in the answer of a read that did not happen.
+      const named = hit.stdout.includes(JSON.stringify(REFUSED_KIND))
+      expect({ where, exit: hit.exit, asAnError, named }).toEqual({
+        where,
+        exit: exitCode(expected),
+        asAnError: expected === 'unauthorized',
+        named: true,
+      })
+      expectNoSentinel(hit, where)
+      if (!spec.writes) expect(await db.dump(), `${where}: a read changed a table`).toBe(untouched)
+      met[expected === 'unauthorized' ? 'refused' : 'notRead']++
+    } finally {
+      await db.close()
+    }
+  }
+  return met
+}
+
 describe('the CLI fault surface', () => {
   it('has scenarios for every store command in the table, and every matrix kind', () => {
     expect(Object.keys(SCENARIOS).sort()).toEqual([...STORE_VERBS].sort())
@@ -509,6 +567,33 @@ describe('the CLI fault surface', () => {
       marker: 'mutation-verdict:behavior:cli-enqueue-spawns-under-its-key',
     })
     expect(cases).toBeGreaterThan(0)
+  })
+
+  // A refusal of the credential is an answer of the store and no crash, so the table
+  // declares no fault kind for it, and it is injected on libSQL alone: a command does the
+  // same with the type whatever dialect raised it, and the case that runs every command
+  // against a store that really refuses its credential runs on every dialect.
+  describe('a refusal of the credential at every batch a store command sends', () => {
+    const met = { refused: 0, notRead: 0 }
+    for (const verb of STORE_VERBS) {
+      it(`${verb} exits 4 at every batch, but for a read that follows a write the store answered, where it exits as the table declares and says what was not read`, async () => {
+        let refused = 0
+        for (const scenario of SCENARIOS[verb]) {
+          const counted = await refusalSurface(verb, scenario)
+          refused += counted.refused
+          met.refused += counted.refused
+          met.notRead += counted.notRead
+        }
+        expect(refused).toBeGreaterThan(0)
+      }, 300_000)
+    }
+
+    it('met both endings: a command that exits 4, and a read after an answered write that does not', () => {
+      expect({ refused: met.refused > 0, notRead: met.notRead > 0 }).toEqual({
+        refused: true,
+        notRead: true,
+      })
+    })
   })
 
   for (const dialect of SELECTED) {
