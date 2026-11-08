@@ -6777,8 +6777,15 @@ It refuses, having written nothing, a database that is not at the build's schema
 rows. It is not refused under a test clock. The queue is its own while it runs too: a
 worker that claims one of its tasks between two calls, or a task another caller enqueues
 there, shows as an answer that is not the expected one. It stops at the first call the
-store fails, or that answers otherwise. The report prints on stdout whatever the exit, with the calls it
-reached and `not-run` for the rest. A call the store failed exits as the failure does, and a
+store fails, or that answers otherwise. The report prints on stdout whatever the exit, with
+the calls it reached and `not-run` for the rest. The two reads the refusals rest on are
+calls of the report too, so a store that fails one of them prints the report as well. Under
+`labels`, each label's result is read from the batches that were sent and not from the step
+that was running, because a step sends more batches than its own call's: it reads the state
+the call left. A label whose batch the store failed prints `failed`, a label the store
+answered prints `ok`, and a label that was not sent prints `not-run`. The step that was
+running names the label that failed under `failedAt`. A case refuses each label in turn and
+requires exactly that. A call the store failed exits as the failure does, and a
 call that answered otherwise exits 11, with what it answered under `found`: a count, a
 flag, an id or a state of the engine's own, and never a stored text. What it leaves is two
 cancelled tasks and the event it emitted, and on PostgreSQL the row that locks that event's

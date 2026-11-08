@@ -9,6 +9,7 @@ import {
   SchemaNotInitializedError,
   type SpawnResult,
   StoreUnavailableError,
+  type TableRows,
   type TaskFacts,
   isLiveState,
   isPortRefusal,
@@ -83,6 +84,7 @@ import { canonicalJson, checkpointView, humanText, resultView } from './render.j
 import { userValue } from './render.js'
 import {
   SELFTEST_TASK,
+  type SelftestStep,
   type StepReport,
   labelResults,
   selftestPort,
@@ -1357,15 +1359,68 @@ const purge: Handler = async (context) => {
  */
 const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
   const queue = invocation.strings.queue ?? ''
-  const refused = await notAtTheBuildsVersion(
-    store,
-    { queue },
-    (build) =>
-      `selftest sends the batches of version ${build}, the build's: migrate the branch or the snapshot first`,
-  )
-  if (refused !== null) return refused
-  const rows = await store.operator.tableRows(queue)
-  const holdsARow = Object.values(rows.tables).some((gauge) => gauge.count > 0)
+  const reports: StepReport[] = []
+  /**
+   * What ended the run, once something did: the failure of a call the store failed, or the
+   * labels of the call that answered otherwise than the engine does.
+   */
+  const ended: { stopped: Answer | null; answeredOtherwise: readonly string[] | null } = {
+    stopped: null,
+    answeredOtherwise: null,
+  }
+  /** Run one step, unless an earlier one ended the run, and add its line to the report. */
+  const run = async ({ port, sends, run: check }: SelftestStep): Promise<void> => {
+    const named = { call: port.call, labels: port.labels, sends }
+    if (ended.stopped !== null || ended.answeredOtherwise !== null) {
+      reports.push({ ...named, result: 'not-run' })
+      return
+    }
+    try {
+      const found = await check()
+      if (found === null) reports.push({ ...named, result: 'ok' })
+      else {
+        ended.answeredOtherwise = port.labels
+        reports.push({ ...named, result: 'unexpected', found })
+      }
+    } catch (error) {
+      ended.stopped = failure(error, reveal)
+      // The batch the store failed is the last one sent, and it need not be this call's.
+      const last = store.sent().at(-1)
+      reports.push({
+        ...named,
+        result: 'failed',
+        ...(last?.answered === false ? { failedAt: last.label } : {}),
+      })
+    }
+  }
+  // The two reads the refusals rest on are calls the table declares too, so each has its
+  // line, and a store that fails one is reported as one that fails any other call is.
+  const read: { refused?: Answer | null; rows?: TableRows } = {}
+  await run({
+    port: selftestPort('admin.schemaVersion'),
+    sends: 'a read of the recorded schema version',
+    run: async () => {
+      read.refused = await notAtTheBuildsVersion(
+        store,
+        { queue },
+        (build) =>
+          `selftest sends the batches of version ${build}, the build's: migrate the branch or the snapshot first`,
+      )
+      return null
+    },
+  })
+  const { refused } = read
+  if (refused !== null && refused !== undefined) return refused
+  await run({
+    port: selftestPort('operator.tableRows'),
+    sends: "a count of the queue's rows, which must be none",
+    run: async () => {
+      read.rows = await store.operator.tableRows(queue)
+      return null
+    },
+  })
+  const { rows } = read
+  const holdsARow = rows !== undefined && Object.values(rows.tables).some(({ count }) => count > 0)
   if (holdsARow) {
     return {
       exit: 'usage',
@@ -1379,34 +1434,10 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       },
     }
   }
-  // The two reads above are calls the table declares too, and both answered.
-  const reports: StepReport[] = (
-    [
-      ['admin.schemaVersion', 'a read of the recorded schema version'],
-      ['operator.tableRows', "a count of the queue's rows, which must be none"],
-    ] as const
-  ).map(([call, sends]) => ({ call, labels: selftestPort(call).labels, sends, result: 'ok' }))
   const runId = ids.uuidv7()
-  let stopped: Answer | null = null
-  let unexpected = false
-  for (const step of selftestSteps(store, { queue, runId })) {
-    const named = { call: step.port.call, labels: step.port.labels, sends: step.sends }
-    if (stopped !== null || unexpected) {
-      reports.push({ ...named, result: 'not-run' })
-      continue
-    }
-    try {
-      const found = await step.run()
-      if (found === null) reports.push({ ...named, result: 'ok' })
-      else {
-        unexpected = true
-        reports.push({ ...named, result: 'unexpected', found })
-      }
-    } catch (error) {
-      stopped = failure(error, reveal)
-      reports.push({ ...named, result: 'failed' })
-    }
-  }
+  for (const step of selftestSteps(store, { queue, runId })) await run(step)
+  const { stopped, answeredOtherwise } = ended
+  const unexpected = answeredOtherwise !== null
   const passed = stopped === null && !unexpected
   return {
     exit: stopped !== null ? stopped.exit : unexpected ? 'failed' : 'done',
@@ -1417,7 +1448,7 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       taskName: SELFTEST_TASK,
       passed,
       steps: reports,
-      labels: labelResults(reports),
+      labels: labelResults(store.sent(), answeredOtherwise ?? []),
       notSent: NOT_SENT_BY_SELFTEST,
       ...(stopped === null ? {} : stopped.view),
       leaves:

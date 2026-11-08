@@ -22316,8 +22316,8 @@ MUTATION_SPECS.extend(
         (
             "cli-selftest-refuses-a-schema-that-is-not-the-builds",
             "packages/cli/src/main.ts",
-            "the build's: migrate the branch or the snapshot first`,\n  )\n  if (refused !== null) return refused\n",
-            "the build's: migrate the branch or the snapshot first`,\n  )\n  if (refused !== null && queue === '') return refused\n",
+            "  if (refused !== null && refused !== undefined) return refused\n",
+            "  if (refused !== null && refused !== undefined && queue === '') return refused\n",
             "selftest sends the build's batches to a database at an older schema version, and writes there",
         ),
         (
@@ -22653,6 +22653,37 @@ VERDICTS["week-receipt-allows-the-injected-task-its-rows"] = ExpectedVerdict(
     "the week receipt checker allows the injected task the rows it comes to hold after the start sample: its wait once the deployment parked it, and the event of its ending once the operator cancelled it",
     "mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows",
 )
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-prints-a-label-by-what-was-sent",
+            "packages/cli/src/open-store.ts",
+            "          batches.push({ label, answered: false })\n",
+            "          batches.push({ label, answered: true })\n",
+            "a batch the store failed is recorded as answered, so selftest prints the label the store refused as ok",
+        ),
+    )
+)
+VERDICTS["cli-selftest-prints-a-label-by-what-was-sent"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a store that refuses one batch prints each label by what was sent, for every label it sends: the label the store refused as failed, the labels answered before it as ok, and the rest as not-run",
+    "mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-step-names-the-label-that-failed",
+            "packages/cli/src/main.ts",
+            "        ...(last?.answered === false ? { failedAt: last.label } : {}),\n",
+            "        ...(last?.answered === false ? {} : {}),\n",
+            "the step that was running no longer names the label of the batch the store failed",
+        ),
+    )
+)
+VERDICTS["cli-selftest-step-names-the-label-that-failed"] = VERDICTS[
+    "cli-selftest-prints-a-label-by-what-was-sent"
+]
 
 MUTATIONS = [
     Mutation(
@@ -26598,7 +26629,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1508:
+        if len(MUTATIONS) != 1510:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

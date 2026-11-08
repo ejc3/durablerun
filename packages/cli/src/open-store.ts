@@ -83,7 +83,43 @@ export interface OpenedStore {
   readonly scheduler: CliScheduler
   readonly operator: CliOperator
   readonly retention: CliRetention
+  /** Every batch the ports sent so far, in order. It is a record, and it sends nothing. */
+  sent(): readonly SentBatch[]
   close(): Promise<void>
+}
+
+/** One batch a command sent: its label, and whether the store answered it. */
+export interface SentBatch {
+  readonly label: string
+  /** False for a batch the store failed, or whose answer never came. */
+  readonly answered: boolean
+}
+
+/**
+ * An executor that keeps the label of every batch sent through it, in the order the
+ * answers came, with whether the store answered. `selftest` reads it to say which label
+ * failed: a call sends more batches than the ones the command table names it for.
+ */
+export function keepingWhatIsSent(real: SqlExecutor): {
+  readonly executor: SqlExecutor
+  sent(): readonly SentBatch[]
+} {
+  const batches: SentBatch[] = []
+  return {
+    executor: {
+      batch: async (label, statements, control) => {
+        try {
+          const answer = await real.batch(label, statements, control)
+          batches.push({ label, answered: true })
+          return answer
+        } catch (error) {
+          batches.push({ label, answered: false })
+          throw error
+        }
+      },
+    },
+    sent: () => [...batches],
+  }
 }
 
 export interface OpenOptions {
@@ -325,7 +361,9 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   const loader = scheme === undefined ? undefined : LOADERS[scheme]
   if (scheme === undefined || loader === undefined) throw new StoreUrlError(unknownScheme())
   const opened = await loader(url, token, options.mayCreate === true, target)
-  const db = options.wrapExecutor?.(opened.executor) ?? opened.executor
+  // The record is kept outside a test's wrapper, so it sees the batch as the ports did.
+  const kept = keepingWhatIsSent(options.wrapExecutor?.(opened.executor) ?? opened.executor)
+  const db = kept.executor
   const admin = opened.admin(db)
   const scheduler = opened.scheduler(db, ids)
   const operator = opened.operator(db)
@@ -374,6 +412,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       purgeAdmission: (queue: string, unit: PurgeUnitTarget, policy: RetentionPolicy) =>
         retention.purgeAdmission(queue, unit, policy),
     }),
+    sent: kept.sent,
     close: () => opened.close(),
   }
 }

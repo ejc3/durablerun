@@ -59,8 +59,18 @@ describe('the store opener', () => {
           'retention',
           'scheduler',
           'scheme',
+          'sent',
           'window',
         ])
+        // What was sent is a record: the label of each batch and whether it was answered,
+        // copied out, so nothing a command holds reaches the executor.
+        await store.admin.schemaVersion().catch(() => undefined)
+        const record = store.sent()
+        expect(record.length).toBeGreaterThan(0)
+        expect(record.map((batch) => Object.keys(batch).sort())).toEqual(
+          record.map(() => ['answered', 'label']),
+        )
+        expect(store.sent()).not.toBe(record)
         expect(Object.keys(store.admin).sort()).toEqual(['migrate', 'nowEpochMs', 'schemaVersion'])
         // Two reads, the five calls the drive verbs are, and the read of the next wake.
         expect(Object.keys(store.scheduler).sort()).toEqual([

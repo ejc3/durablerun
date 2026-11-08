@@ -6,7 +6,7 @@ import {
   type RetentionPolicy,
 } from '@durablerun/core'
 import { COMMANDS, type PortUse } from './commands.js'
-import type { OpenedStore } from './open-store.js'
+import type { OpenedStore, SentBatch } from './open-store.js'
 
 /**
  * What `selftest` does: the calls it makes against a queue of its own, in order, and what
@@ -316,21 +316,34 @@ export interface StepReport {
   readonly result: StepResult
   /** What the call answered, when it is not what the engine answers. */
   readonly found?: string
+  /**
+   * The label of the batch the store failed, for a step that failed at a batch. A step
+   * sends more batches than its own call's: it reads the state the call left.
+   */
+  readonly failedAt?: string
 }
 
 /**
- * Each batch label selftest declares, with its result: `ok` when every step that sends it
- * passed, the result of the step that did not otherwise, and `not-run` for a label whose
- * steps were not reached.
+ * Each batch label selftest declares, with its result, read from the batches that were
+ * sent and not from the step that was running: `failed` for a label whose last batch the
+ * store did not answer, `ok` for one the store answered, and `not-run` for one that was
+ * not sent. A label of the call whose answer was not the engine's reads `unexpected`.
  */
-export function labelResults(steps: readonly StepReport[]): Record<string, StepResult> {
-  const worst: readonly StepResult[] = ['failed', 'unexpected', 'not-run', 'ok']
+export function labelResults(
+  sent: readonly SentBatch[],
+  answeredOtherwise: readonly string[],
+): Record<string, StepResult> {
   const results: Record<string, StepResult> = {}
-  for (const port of COMMANDS.selftest.ports) {
-    for (const label of port.labels) {
-      const of = steps.filter((step) => step.labels.includes(label)).map((step) => step.result)
-      results[label] = worst.find((result) => of.includes(result)) ?? 'not-run'
-    }
+  for (const label of COMMANDS.selftest.ports.flatMap((port) => port.labels)) {
+    const last = sent.findLast((batch) => batch.label === label)
+    results[label] =
+      last?.answered === false
+        ? 'failed'
+        : answeredOtherwise.includes(label)
+          ? 'unexpected'
+          : last === undefined
+            ? 'not-run'
+            : 'ok'
   }
   return results
 }

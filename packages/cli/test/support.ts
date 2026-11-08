@@ -44,7 +44,7 @@ import {
 } from '../../conformance/test/dialect-selection.js'
 import { COMMANDS, type CliFault, type CommandSpec, VERBS } from '../src/commands.js'
 import { type Io, main } from '../src/main.js'
-import { type StoreOpener, openStore } from '../src/open-store.js'
+import { type StoreOpener, keepingWhatIsSent, openStore } from '../src/open-store.js'
 
 /** The dialects this run exercises, read from the one selection parser. */
 export const SELECTED: readonly EnrolledDialect[] = parseDialectSelection(
@@ -456,16 +456,20 @@ export function openerWrapping(wrap: (executor: SqlExecutor) => SqlExecutor): St
  */
 export const openerOver =
   (db: { readonly raw: SqlExecutor; readonly admin: StoreAdmin }): StoreOpener =>
-  async (_url, _token, ids: IdSource) => ({
-    scheme: 'file:',
-    window: READABLE_SCHEMA_WINDOW,
-    notes: SCHEMA_VERSION_NOTES,
-    admin: db.admin,
-    scheduler: new LibsqlSchedulerStore(db.raw, ids),
-    operator: operatorReads(db.raw),
-    retention: retention(db.raw, ids),
-    close: async () => undefined,
-  })
+  async (_url, _token, ids: IdSource) => {
+    const kept = keepingWhatIsSent(db.raw)
+    return {
+      scheme: 'file:',
+      window: READABLE_SCHEMA_WINDOW,
+      notes: SCHEMA_VERSION_NOTES,
+      admin: db.admin,
+      scheduler: new LibsqlSchedulerStore(kept.executor, ids),
+      operator: operatorReads(kept.executor),
+      retention: retention(kept.executor, ids),
+      sent: kept.sent,
+      close: async () => undefined,
+    }
+  }
 
 /** Where a fault meets a batch: the label, and which of its sendings, counted from one. */
 export interface FaultSite {
