@@ -132,7 +132,7 @@ The fix for finding 3 made the first. It reported an answer that could not be re
 
 The fix for finding 2 made the second, a hold that could not fail for what it claims. Its case refused every batch under one label, so each run stopped where the label is first sent, and a report that read a label from its first batch passed.
 
-Were the fixes reviewed as new code? The first fold was: the narrow second review read it, and found the nine. The last fold, which answers those nine, was not, and no review follows it. It is small: one commit of content over sixteen files, of which four are product source. It was re-tested, by what the evidence lists, and its mechanisms were audited above. Two folds in two rounds, PR5.2d's and this one, were each tested green and then read, and thirteen and nine things were found. So the measured expectation for a fold that is tested and not read is that it holds defects, and the last fold is such a fold.
+Were the fixes reviewed as new code? The first fold was: the narrow second review read it, and found the nine. The last fold, which answers those nine, was not, and no review follows it. It is small: one commit of content over sixteen files, of which four are product source, and one more that adds a marker to two expectations of a test. It was re-tested, by what the evidence lists, and its mechanisms were audited above. Two folds in two rounds, PR5.2d's and this one, were each tested green and then read, and thirteen and nine things were found. So the measured expectation for a fold that is tested and not read is that it holds defects, and the last fold is such a fold.
 
 ## Evidence
 
