@@ -948,9 +948,10 @@ accepts it.
     be sent. The checker is apps/dogfood/src/week-receipt.ts, which receipt.ts
     exports and `pnpm week-receipt` runs. Its cases are in
     packages/cli/test/week-receipt.test.ts, where the mutation audit reads
-    them: "accepts the well-formed receipt", one case for each of the eight
-    doctored receipts, named "refuses <what is wrong>, for that cause and no
-    other", and "exits 0 for the well-formed receipt and 1 for each doctored
+    them: "accepts the well-formed receipt", one case for each of the nine
+    doctored receipts, which are the line's eight and one for a failed window
+    longer than the shortest the verb takes, named "refuses <what is wrong>,
+    for that cause and no other", and "exits 0 for the well-formed receipt and 1 for each doctored
     one, naming its cause", which is the line's red. Each doctored receipt is
     the well-formed one with one thing broken by one function. "refuses the
     receipt with any member it reads taken away, or of another type" records
@@ -985,8 +986,9 @@ was published, since the checker can prove only the hash. The operator, holding
 the CLI and the store URL, finds the cause with `pnpm cli stuck --queue digest
 --older-than <age>`, names it with `explain`, and clears it, adding `--yes`
 themselves. At the end the receipt gains a dry run of `purge` with
-`--failed-after` and an `inspect --key` report for each period no purge report
-names. `pnpm week-receipt <receipt.json>`, line 44's checker, accepts
+`--failed-after 1h`, the shortest window the verb takes, so that it lists every
+failed unit the week kept, and an `inspect --key` report for each period no
+purge report names. `pnpm week-receipt <receipt.json>`, line 44's checker, accepts
 the receipt. The README's section "Operating a deployment" holds the steps.
 NOT MET: it waits on the supplies and decisions held for the maintainer below.
 
@@ -7352,9 +7354,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     publishes before the start sample, so the start sample counts the injected task's
     rows as they stand then. The receipt carries the instant the
     maintainer attests the hash was published, and the checker refuses one after the
-    start sample. (9) The checker refuses four things line 44 did not list: a sample taken
+    start sample. (9) The checker refuses five things line 44 did not list: a sample taken
     under a test clock, a receipt of a kind it does not know, a member that is missing or
-    of the wrong type, and a failed-window dry run that is not whole. (10) The checker's
+    of the wrong type, a failed-window dry run that is not whole, and one whose failed
+    window is longer than the shortest the verb takes, 3,600 seconds, because a dry run
+    under a longer window lists too few failed units and the bound drops their rows. It
+    reads the failure of a purge that reached no unit as a run that took nothing and did
+    not finish, so a day's reports go into the receipt as they were printed. (10) The checker's
     cases are in packages/cli/test and not in apps/dogfood/test, because the mutation
     audit reads test files under packages/ only, and they hand the checker documents the
     CLI prints. (11) The example's own tests run over the build's packed tarballs in

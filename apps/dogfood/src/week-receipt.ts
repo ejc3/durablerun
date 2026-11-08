@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { DEFAULT_MAX_ATTEMPTS, QUEUE_TABLES, type QueueTable } from '@durablerun/core'
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  MIN_RETENTION_SECONDS,
+  QUEUE_TABLES,
+  type QueueTable,
+} from '@durablerun/core'
 
 /**
  * The receipt of a week of the recurring workflow on a deployment, and its checker
@@ -113,6 +118,7 @@ export const WEEK_REFUSALS = [
   'explanation-differs-from-the-seal',
   'day-without-purge',
   'no-selftest-record',
+  'failed-window-too-long',
 ] as const
 export type WeekRefusalCause = (typeof WEEK_REFUSALS)[number]
 
@@ -211,7 +217,40 @@ export interface PurgeRead {
   readonly outcomeNotKnown: readonly UnitRead[]
 }
 
+/** The members a purge prints once it walked: a purge that failed before its walk prints none of them. */
+const PURGE_WALK_MEMBERS = ['finished', 'more', 'purged', 'wouldPurge', 'outcomeNotKnown']
+
+/**
+ * Whether a document is the failure of a purge that reached no unit. A purge the store
+ * failed before any unit prints the failure alone, with no queue, and one refused before
+ * its walk, for the schema's version or a test clock, prints the failure beside its queue
+ * and its policy. Either names an error and holds no member of a walk.
+ */
+function isPurgeThatReachedNoUnit(value: unknown, queue: string): boolean {
+  const document = documentOf(value, 'purge')
+  if (document === null || !isRecord(document.error) || !isText(document.error.kind)) return false
+  if (!isText(document.exit) || document.exit === 'done') return false
+  if (PURGE_WALK_MEMBERS.some((member) => member in document)) return false
+  return document.queue === undefined || document.queue === queue
+}
+
+/**
+ * What the failure of a purge that reached no unit reads as: a run that took nothing and
+ * did not finish. It deleted nothing, so it reads as no run with `--execute`, and it names
+ * no window the bound could take.
+ */
+const PURGE_THAT_TOOK_NOTHING: PurgeRead = Object.freeze({
+  execute: false,
+  finished: false,
+  more: false,
+  completedSeconds: 0,
+  failedSeconds: null,
+  taken: [],
+  outcomeNotKnown: [],
+})
+
 export function readPurge(value: unknown, queue: string): PurgeRead | null {
+  if (isPurgeThatReachedNoUnit(value, queue)) return PURGE_THAT_TOOK_NOTHING
   const document = documentOf(value, 'purge', queue)
   if (document === null || !isRecord(document.policy)) return null
   const { execute, finished, more, policy } = document
@@ -512,6 +551,15 @@ export function weekReceiptErrors(candidate: unknown): readonly WeekRefusal[] {
     refuse(
       'malformed',
       'failedDryRun is not a whole dry run under a failed window: it must name --failed-after, no --execute, and say no more remain',
+    )
+  }
+  // The bound allows a failed unit's rows only where the dry run lists the unit, and a dry
+  // run lists a failed unit once it is a failed window old. Under the shortest window the
+  // verb takes it lists every failed unit the week's purges kept.
+  if (failedDryRun.failedSeconds !== null && failedDryRun.failedSeconds > MIN_RETENTION_SECONDS) {
+    refuse(
+      'failed-window-too-long',
+      `failedDryRun names a failed window of ${failedDryRun.failedSeconds} seconds, and it must name the shortest the verb takes, ${MIN_RETENTION_SECONDS}, to list every failed unit the week kept`,
     )
   }
   const found = periodsFound(week, start.stats.atEpochMs)

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { QUEUE_TABLES, type QueueTable } from '@durablerun/core'
+import { MIN_RETENTION_SECONDS, QUEUE_TABLES, type QueueTable } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 // The checker is taken from receipt.ts, which exit test line 44 names as its home.
 import { weekReceiptErrors } from '../../../apps/dogfood/src/receipt.js'
@@ -98,7 +98,10 @@ interface Doctored {
   breaks(receipt: WeekReceipt): void
 }
 
-/** The eight doctored receipts of line 44, each the well-formed one with one thing broken. */
+/**
+ * The doctored receipts, each the well-formed one with one thing broken: the eight of line
+ * 44, and one for the failed window, a cause the checker has gained since.
+ */
 const DOCTORED: readonly Doctored[] = [
   {
     name: 'six days between the first snapshot and the last',
@@ -165,6 +168,14 @@ const DOCTORED: readonly Doctored[] = [
     breaks: (receipt) => {
       // biome-ignore lint/performance/noDelete: the member is taken away, not set to undefined.
       delete receipt.selftest
+    },
+  },
+  {
+    name: 'a dry run whose failed window is longer than the shortest the verb takes',
+    cause: 'failed-window-too-long',
+    // One second over the shortest window, and the units it lists stay as they were.
+    breaks: (receipt) => {
+      ;(receipt.failedDryRun.policy as Json).failedSeconds = MIN_RETENTION_SECONDS + 1
     },
   },
 ]
@@ -246,6 +257,86 @@ describe('the week receipt checker', () => {
       'no-selftest-record',
       'mutation-verdict:behavior:week-receipt-refuses-no-selftest-record',
     )
+  })
+
+  it('refuses a dry run whose failed window is longer than the shortest the verb takes, for that cause and no other', () => {
+    refusedForItsCause(
+      'failed-window-too-long',
+      'mutation-verdict:behavior:week-receipt-refuses-a-failed-window-too-long',
+    )
+    // The well-formed receipt's dry run is under the shortest window, which is accepted.
+    expect((genuineWeek().failedDryRun.policy as Json).failedSeconds).toBe(MIN_RETENTION_SECONDS)
+    // A dry run under the week's own window lists no failed unit, since none is that old.
+    // It is refused by that name, beside the counts its bound no longer allows.
+    const underTheWeeksWindow = genuineWeek()
+    ;(underTheWeeksWindow.failedDryRun.policy as Json).failedSeconds = 7 * 24 * 3_600
+    underTheWeeksWindow.failedDryRun.wouldPurge = []
+    expect([...new Set(causes(underTheWeeksWindow))].sort()).toEqual([
+      'failed-window-too-long',
+      'sizes-over-bound',
+    ])
+  })
+
+  it('reads the failure of a purge that reached no unit as a run that took nothing and did not finish: a day that holds it beside a run that finished is accepted, and a day that holds it alone ran no purge', () => {
+    // What a purge prints when the store fails before any unit: the failure, and no queue.
+    const bare = (): Json => ({
+      command: 'purge',
+      dialect: { scheme: 'libsql:' },
+      error: { kind: 'store-unavailable', name: 'StoreUnavailableError' },
+      exit: 'unavailable',
+    })
+    // What it prints when it is refused before its walk: the failure beside what was asked.
+    const refusedBeforeTheWalk = (): Json => ({
+      ...bare(),
+      queue: 'digest',
+      execute: true,
+      policy: { completedSeconds: 86_400, cancelledSeconds: 86_400, failedSeconds: null },
+      limit: 100,
+      error: { kind: 'schema', message: 'a purge needs the version of the build' },
+      exit: 'schema',
+    })
+    const withInTheThirdDay = (report: Json): WeekReceipt => {
+      const receipt = genuineWeek()
+      receipt.days[2]?.purges.unshift(report)
+      return receipt
+    }
+    for (const report of [bare(), refusedBeforeTheWalk()]) {
+      // The day's reports as printed: the run that failed, then the one that finished.
+      expect(
+        weekReceiptErrors(withInTheThirdDay(report)),
+        'mutation-verdict:behavior:week-receipt-reads-a-purge-that-reached-no-unit',
+      ).toEqual([])
+      // It is no purge of the day: a day that holds nothing else ran none.
+      const alone = genuineWeek()
+      purgesMovedToTheNextDay(alone, 3)
+      alone.days[3]?.purges.push(report)
+      expect(causes(alone)).toEqual(['day-without-purge'])
+      // And it is no dry run under a failed window.
+      const asTheDryRun = genuineWeek()
+      asTheDryRun.failedDryRun = report
+      expect([...new Set(causes(asTheDryRun))].sort()).toEqual(['malformed', 'sizes-over-bound'])
+    }
+    // A document that is not that failure is still refused: one of another queue, one that
+    // ended well, one whose error is no object or names no kind, one of another command, and
+    // one that holds a member of a walk, which is read as a whole report and lacks its rest.
+    for (const [name, report] of Object.entries({
+      'another queue': { ...refusedBeforeTheWalk(), queue: 'another-queue' },
+      'ended well': { ...bare(), exit: 'done' },
+      'no exit': { ...bare(), exit: undefined },
+      'an error that is no object': { ...bare(), error: 'store-unavailable' },
+      'an error of no kind': { ...bare(), error: { name: 'StoreUnavailableError' } },
+      'no error': { ...bare(), error: undefined },
+      'another command': { ...bare(), command: 'sizes' },
+      'says it finished': { ...bare(), finished: true },
+      'says more remain': { ...bare(), more: false },
+      'lists purged units': { ...bare(), purged: [] },
+      'lists units in doubt': { ...bare(), outcomeNotKnown: [] },
+    })) {
+      expect({ name, causes: causes(withInTheThirdDay(report)) }).toEqual({
+        name,
+        causes: ['malformed'],
+      })
+    }
   })
 
   it('accepts a count at the bound, and 160 periods found: each refusal starts one past its floor', () => {
@@ -564,8 +655,8 @@ describe('the week receipt checker as a command', () => {
         out: 'the week receipt is accepted\n',
         err: '',
       })
-      // Line 44 lists eight, and each is refused for a cause of its own.
-      expect(new Set(DOCTORED.map((one) => one.cause)).size).toBe(8)
+      // Line 44 lists eight and the failed window is the ninth, each refused for a cause of its own.
+      expect(new Set(DOCTORED.map((one) => one.cause)).size).toBe(9)
       for (const [index, one] of DOCTORED.entries()) {
         const run = check([file(`doctored-${index}`, doctored(one))])
         expect({ name: one.name, exit: run.exit, out: run.out }).toEqual({

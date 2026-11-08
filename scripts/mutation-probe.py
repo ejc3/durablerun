@@ -22701,6 +22701,40 @@ VERDICTS["cli-selftest-reads-a-refused-row-as-an-answer"] = ExpectedVerdict(
     "what selftest says of a database whose answer cannot be read exits 11 and never 1 when the database answers a row the decoders refuse: the step is unexpected, the label is the one that was answered, and the row prints only with --reveal",
     "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
 )
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-reads-a-purge-that-reached-no-unit",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (isPurgeThatReachedNoUnit(value, queue)) return PURGE_THAT_TOOK_NOTHING\n",
+            "  if (isPurgeThatReachedNoUnit(value, queue)) return null\n",
+            "the failure of a purge that reached no unit is no document the checker reads, so a receipt that holds a day's reports as printed is refused",
+        ),
+    )
+)
+VERDICTS["week-receipt-reads-a-purge-that-reached-no-unit"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker reads the failure of a purge that reached no unit as a run that took nothing and did not finish: a day that holds it beside a run that finished is accepted, and a day that holds it alone ran no purge",
+    "mutation-verdict:behavior:week-receipt-reads-a-purge-that-reached-no-unit",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-refuses-a-failed-window-too-long",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (failedDryRun.failedSeconds !== null && failedDryRun.failedSeconds > MIN_RETENTION_SECONDS) {\n",
+            "  if (failedDryRun.failedSeconds !== null && failedDryRun.failedSeconds < 0) {\n",
+            "a dry run under a failed window too long to list every failed unit is accepted",
+        ),
+    )
+)
+VERDICTS["week-receipt-refuses-a-failed-window-too-long"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a dry run whose failed window is longer than the shortest the verb takes, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-failed-window-too-long",
+)
 
 MUTATIONS = [
     Mutation(
@@ -26646,7 +26680,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1511:
+        if len(MUTATIONS) != 1513:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

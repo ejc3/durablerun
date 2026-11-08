@@ -6828,9 +6828,12 @@ printed, and the checker reads a few members of each:
   test clock is set, and a `sizes` report, read for each table's count.
 - `days`: for each day a `stats` report, a `sizes` report, and under `purges` that day's
   `purge --execute` reports, read for their policy, for `finished` and `more`, and for
-  each unit's state, the sha256 of its key, and the runs that went with it.
-- `failedDryRun`: a dry run of `purge` with `--failed-after` that finished and says no
-  more remain, read for the failed units it lists.
+  each unit's state, the sha256 of its key, and the runs that went with it. A day holds
+  every run's report as printed. A purge that failed before it reached a unit prints its
+  failure and none of those members, and it is read as a run that took nothing and did
+  not finish, so it is no purge of its day and a later run that finished is.
+- `failedDryRun`: a dry run of `purge` with `--failed-after 1h` that finished and says no
+  more remain, read for its failed window and for the failed units it lists.
 - `lookups`: `inspect --key` reports, each read for the sha256 of the key and for how
   many runs the task holds.
 - `seal`, `injection`, `explanation` and `attestation`: the hash a second person
@@ -6847,7 +6850,10 @@ counts.
 The bound of a table is the start sample's count, plus a digest unit's rows for each hour
 of the completed window and 25 more, plus a digest unit's rows for each failed unit the
 dry run lists. A daily purge leaves standing the units of its window and of the day and
-the hour until the next, and a purge with no failed window keeps every failed unit. A
+the hour until the next, and a purge with no failed window keeps every failed unit. A dry
+run lists a failed unit once it is a failed window old, so a dry run under a long window
+lists too few and the bound drops their rows. The dry run is therefore taken under the
+shortest window the verb takes, an hour, and the checker refuses a longer one by name. A
 digest unit's rows are its task, one run, the checkpoint of its read and of its sleep, and
 its completion event, which is what the simulated week of section 3.12 measures, and a
 case holds the two equal. A unit that was tried again holds a run for each attempt, and so
@@ -6884,6 +6890,7 @@ read. It refuses a receipt for each thing that is wrong with it:
 | explanation-differs-from-the-seal | the `explain` report is of another task than the sealed one, or names another cause |
 | day-without-purge | a day holds no `purge --execute` report that finished |
 | no-selftest-record | the receipt holds no report of a `selftest` that passed |
+| failed-window-too-long | the dry run's failed window is longer than 3,600 seconds, the shortest the verb takes |
 
 It fails closed. A case records every member the checker reads of a well-formed receipt
 and requires a refusal with each one taken away, and with each one of another type. The

@@ -18,7 +18,9 @@ import {
   PURGE_EVERY_STATE,
   PURGE_WINDOWS,
   QUEUE,
+  faulting,
   onDb,
+  openerWrapping,
   rowsByQueue,
   runCli,
   seedTasks,
@@ -150,6 +152,42 @@ describe('the week receipt reads what the CLI prints', () => {
         expect(readSelftest(await printed(db, ['selftest', '--queue', QUEUE, ...target]))).toBe(
           false,
         )
+
+        // A purge the store fails before any unit prints its failure and no queue, and one
+        // refused under a test clock prints its failure beside what was asked. Each reads as
+        // a run that took nothing and did not finish.
+        const tookNothing = {
+          execute: false,
+          finished: false,
+          more: false,
+          completedSeconds: 0,
+          failedSeconds: null,
+          taken: [],
+          outcomeNotKnown: [],
+        }
+        const purgeLine = ['purge', ...PURGE_WINDOWS, '--execute', ...writeFlags(db), '--json']
+        const outage = await runCli(
+          purgeLine,
+          db.env,
+          openerWrapping((real) =>
+            faulting(real, { label: 'purge-candidates', occurrence: 1 }, 'crash-before'),
+          ),
+        )
+        const failed = JSON.parse(outage.stdout) as Record<string, unknown>
+        expect({ exit: outage.exit, members: Object.keys(failed).sort() }).toEqual({
+          exit: 6,
+          members: ['command', 'dialect', 'error', 'exit'],
+        })
+        expect(
+          readPurge(failed, QUEUE),
+          'mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints',
+        ).toEqual(tookNothing)
+        await db.admin.setFakeNowEpochMs(1_700_000_000_000)
+        const underATestClock = await runCli(purgeLine, db.env)
+        expect(underATestClock.exit).toBe(2)
+        expect(readPurge(JSON.parse(underATestClock.stdout), QUEUE)).toEqual(tookNothing)
+        expect(readPurge(JSON.parse(underATestClock.stdout), 'another-queue')).toBeNull()
+        await db.admin.setFakeNowEpochMs(null)
 
         // A document of another queue, or of another command, is none a reader takes.
         const sizes = await printed(db, ['sizes', '--queue', QUEUE])

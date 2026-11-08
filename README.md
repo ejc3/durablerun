@@ -232,9 +232,12 @@ A week receipt is one JSON document that holds what the CLI printed with
 - `selftest`: the report of step 3;
 - `start` and `end`: a `stats` report and a `sizes` report of the queue;
 - `days`: for each day, a `stats` report, a `sizes` report, and the day's
-  `purge --execute` reports;
-- `failedDryRun`: a dry run of `purge` with `--failed-after`, which lists the
-  failed tasks a purge without that flag keeps;
+  `purge --execute` reports, every run's as printed, a run that failed beside
+  the one that finished;
+- `failedDryRun`: a dry run of `purge` with `--failed-after 1h`, taken after
+  the end sample beside the windows the week's purges ran under. An hour is
+  the shortest window the verb takes, so the dry run lists every failed task
+  the week's purges kept. The checker refuses a longer failed window;
 - `lookups`: an `inspect --key` report for each period no purge report names;
 - `seal`, `injection`, `explanation` and `attestation`: the sealed injection,
   below.
