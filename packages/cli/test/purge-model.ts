@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type { RetentionPolicy } from '@durablerun/core'
 import type { ProtocolSnapshot } from '../../conformance/src/poison-matrix.js'
 import { dumpDifferences, purgeOracle } from '../../conformance/src/retention-oracle.js'
@@ -93,4 +94,23 @@ export function againstTheModel(
     rows,
     modelRows,
   }
+}
+
+/** What a command did otherwise than the model says, each in a line, or nothing. */
+export function modelDifferences(model: ReturnType<typeof againstTheModel>): string[] {
+  const lists: Record<string, readonly string[]> = {
+    'a unit printed as kept is one the model lets go': model.keptButFree,
+    'a unit printed as purged is one the model keeps': model.notLetGo,
+    'the dump is not what the model leaves': model.otherChanges,
+    'a unit the model lets go stands, though no more remain': model.leftBehind,
+  }
+  return [
+    ...Object.entries(lists)
+      .filter(([, list]) => list.length > 0)
+      .map(([what, list]) => `${what}: ${list.slice(0, 3).join('; ')}`),
+    ...(model.overTheLimit > 0 ? ['more went than the limit'] : []),
+    ...(isDeepStrictEqual(model.rows, model.modelRows)
+      ? []
+      : ['the rows printed are not the rows the model says went']),
+  ]
 }

@@ -10,8 +10,10 @@ name: operable-week
 # and the variables DURABLERUN_WEEK_STORE_URL (the same URL, which pins the database),
 # DURABLERUN_WEEK_COMPLETED_AFTER and DURABLERUN_WEEK_CANCELLED_AFTER (the purge's two
 # windows, as `purge` takes them). The job holds a database credential, which is full admin,
-# so it first requires the secret URL to be the one the variable pins. No command's output
-# goes to the log: each report is a file, and the files are the job's artifact.
+# so it first requires the secret URL to be the one the variable pins, and each command
+# names its `--target` from the pinned URL, so the CLI refuses a credential of another
+# database too. No command's output goes to the log: each report is a file, and the files
+# are the job's artifact.
 
 on:
   schedule:
@@ -46,6 +48,9 @@ jobs:
       DURABLERUN_WEEK_REF: main
       DURABLERUN_WEEK_COMPLETED_AFTER: ${{ vars.DURABLERUN_WEEK_COMPLETED_AFTER }}
       DURABLERUN_WEEK_CANCELLED_AFTER: ${{ vars.DURABLERUN_WEEK_CANCELLED_AFTER }}
+      DURABLERUN_WEEK_EXPECTED_STORE_URL: ${{ vars.DURABLERUN_WEEK_STORE_URL }}
+      # The most runs of the daily purge in one job.
+      DURABLERUN_WEEK_PURGE_RUNS: '50'
     steps:
       - name: Check out this public repository without a token
         env:
@@ -66,7 +71,6 @@ jobs:
         env:
           DURABLERUN_STORE_URL: ${{ secrets.DURABLERUN_WEEK_STORE_URL }}
           DURABLERUN_STORE_TOKEN: ${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}
-          DURABLERUN_WEEK_EXPECTED_STORE_URL: ${{ vars.DURABLERUN_WEEK_STORE_URL }}
         run: |
           if [ -z "$DURABLERUN_STORE_URL" ] || [ -z "$DURABLERUN_STORE_TOKEN" ]; then
             echo 'Configure repository secrets DURABLERUN_WEEK_STORE_URL and DURABLERUN_WEEK_STORE_TOKEN.' >&2
@@ -90,7 +94,7 @@ jobs:
           DURABLERUN_STORE_URL: ${{ secrets.DURABLERUN_WEEK_STORE_URL }}
           DURABLERUN_STORE_TOKEN: ${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}
         run: |
-          target="${DURABLERUN_STORE_URL#libsql://}"
+          target="${DURABLERUN_WEEK_EXPECTED_STORE_URL#libsql://}"
           target="${target%%[/?#]*}"
           period="$(date -u +%Y-%m-%dT%H)"
           params="$(printf '{"repository":"%s","ref":"%s"}' "$DURABLERUN_WEEK_REPOSITORY" "$DURABLERUN_WEEK_REF")"
@@ -108,7 +112,7 @@ jobs:
             echo 'Configure repository variables DURABLERUN_WEEK_COMPLETED_AFTER and DURABLERUN_WEEK_CANCELLED_AFTER.' >&2
             exit 1
           fi
-          target="${DURABLERUN_STORE_URL#libsql://}"
+          target="${DURABLERUN_WEEK_EXPECTED_STORE_URL#libsql://}"
           target="${target%%[/?#]*}"
           day="$(date -u +%Y-%m-%dT%H%M)"
           code=0
@@ -129,8 +133,8 @@ jobs:
             [ "$code" -eq 0 ] || exit "$code"
             more="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).more === true' "$report")"
             [ "$more" = 'true' ] || break
-            if [ "$run" -ge 50 ]; then
-              echo 'purge still says more remain after 50 runs' >&2
+            if [ "$run" -ge "$DURABLERUN_WEEK_PURGE_RUNS" ]; then
+              echo "purge still says more remain after $run runs" >&2
               exit 1
             fi
           done

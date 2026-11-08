@@ -409,14 +409,14 @@ export function withoutMinted(dump: string, minted: readonly string[]): string {
 }
 
 /**
- * A dump's rows as `<table> <row>` lines, those that name one queue apart from the rest. A
- * row names its queue as the value of a column, so it holds the name in quotes.
+ * A dump's rows as `<table> <row>` lines, those of one queue apart from the rest. A row is
+ * of the queue its `queue` column names, and a row of a table with no such column is of
+ * none.
  */
 export function rowsByQueue(
   dump: string,
   queue: string,
 ): { readonly ofTheQueue: string[]; readonly elsewhere: string[] } {
-  const named = JSON.stringify(queue)
   const ofTheQueue: string[] = []
   const elsewhere: string[] = []
   for (const line of dump.split('\n')) {
@@ -424,7 +424,8 @@ export function rowsByQueue(
     const table = line.slice(0, at)
     if (table === 'objects') continue
     for (const row of JSON.parse(line.slice(at + 1)) as string[]) {
-      ;(row.includes(named) ? ofTheQueue : elsewhere).push(`${table} ${row}`)
+      const columns = Object.fromEntries(JSON.parse(row) as [string, unknown][])
+      ;(columns.queue === queue ? ofTheQueue : elsewhere).push(`${table} ${row}`)
     }
   }
   return { ofTheQueue, elsewhere }
@@ -799,6 +800,28 @@ export const PURGE_WINDOWS: readonly string[] = [
 
 /** The windows of a policy that names every ended state. */
 export const PURGE_EVERY_STATE: readonly string[] = [...PURGE_WINDOWS, '--failed-after', '1h']
+
+/**
+ * The commands that write through a store and are no drive verb, each with the file that
+ * holds its cases: `migrate` writes the schema, `purge` deletes through the retention
+ * port, and `selftest` sends the calls of the others to a queue of its own. Every other
+ * command that writes is a drive verb, so a new one joins the drive verbs' cases until
+ * someone names it here.
+ */
+const WRITES_WITH_CASES_OF_THEIR_OWN: Readonly<Record<string, string>> = {
+  migrate: 'migrate.test.ts',
+  purge: 'purge.test.ts and purge-twin.test.ts',
+  selftest: 'selftest.test.ts',
+}
+
+/** The drive verbs as the command table gives them: every command that writes but those above. */
+export const driveVerbsOfTheTable = () =>
+  VERBS.filter(
+    (verb) =>
+      COMMANDS[verb].opensStore &&
+      COMMANDS[verb].writes &&
+      !Object.hasOwn(WRITES_WITH_CASES_OF_THEIR_OWN, verb),
+  )
 
 /** What a run changed: its answer, and whether a dump of every table is as it was before. */
 export async function changedBy<T>(db: CliDb, run: () => Promise<T>) {

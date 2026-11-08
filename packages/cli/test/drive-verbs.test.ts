@@ -11,7 +11,7 @@ import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { RETRY_REFUSALS } from '../../conformance/src/operator-admission.js'
 import { Q as PLANTED_IN } from '../../conformance/src/operator-reads.js'
-import { COMMANDS, SWEEP_DEFAULT_LIMIT, VERBS } from '../src/commands.js'
+import { COMMANDS, SWEEP_DEFAULT_LIMIT } from '../src/commands.js'
 import { CAUSE_OF_CONJUNCT, RETRY_CAUSES } from '../src/drive.js'
 import { exitCode } from '../src/exit.js'
 import { type StoreOpener, openStore } from '../src/open-store.js'
@@ -26,6 +26,7 @@ import {
   SENTINEL,
   type SeededTasks,
   changedBy,
+  driveVerbsOfTheTable,
   onDb,
   recordingOpener,
   rollingBack,
@@ -123,19 +124,7 @@ const CAUSE_NAMED: Readonly<Record<RetryGuardConjunct, string>> = {
 
 describe('the drive verbs on libSQL', () => {
   it('are the commands of the table that write through a store, and each requires --target and --queue', () => {
-    // `migrate` writes the schema, `purge` deletes through the retention port, and
-    // `selftest` sends the calls of the others to a queue of its own. Each has cases of its
-    // own, and every other command that writes is a drive verb.
-    expect(
-      VERBS.filter(
-        (verb) =>
-          COMMANDS[verb].opensStore &&
-          COMMANDS[verb].writes &&
-          verb !== 'migrate' &&
-          verb !== 'purge' &&
-          verb !== 'selftest',
-      ),
-    ).toEqual(WRITE_VERBS)
+    expect(driveVerbsOfTheTable()).toEqual(WRITE_VERBS)
     for (const verb of WRITE_VERBS) {
       const { flags } = COMMANDS[verb]
       expect({

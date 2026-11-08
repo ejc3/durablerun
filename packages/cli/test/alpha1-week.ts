@@ -24,27 +24,28 @@
  * purge differ on.
  */
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { isDeepStrictEqual } from 'node:util'
-import { type RetentionPolicy, systemIdSource } from '@durablerun/core'
+import { QUEUE_TABLES, type RetentionPolicy, systemIdSource } from '@durablerun/core'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
 import {
+  HOUR_MS,
   WEEK_DIGEST_UNIT_ROWS,
-  WEEK_TABLES,
+  WEEK_PERIODS,
+  digestKey,
+  digestPeriod,
   readPurge,
   readSelftest,
+  sha256,
 } from '../../../apps/dogfood/src/week-receipt.js'
 import { type ProtocolSnapshot, snapshot } from '../../conformance/src/poison-matrix.js'
 import { dumpDifferences } from '../../conformance/src/retention-oracle.js'
-import { type PurgeAnswer, againstTheModel, idsOf } from './purge-model.js'
+import { type Alpha1Store, installedIn, loadAlpha1 } from './alpha1-release.js'
+import { type PurgeAnswer, againstTheModel, idsOf, modelDifferences } from './purge-model.js'
 import { runCli } from './support.js'
 
 const QUEUE = 'digest'
-const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
-export const WEEK_PERIODS = 168
 /** How far in the past the week starts, and so how far in the past it ends: three days. */
 const WEEK_STARTS_AGO_MS = 10 * DAY_MS
 /**
@@ -52,8 +53,11 @@ const WEEK_STARTS_AGO_MS = 10 * DAY_MS
  * within six minutes of the start of its hour, so no unit ends within twenty minutes of
  * the instant the window cuts at, however long the harness has run by then.
  */
-const WINDOW = '7170m'
-const WINDOW_SECONDS = 7170 * 60
+const WINDOW_MINUTES = 7170
+const WINDOW = `${WINDOW_MINUTES}m`
+const WINDOW_SECONDS = WINDOW_MINUTES * 60
+/** The periods those windows let go: the week's first five days and the hour after them. */
+const PERIODS_PURGED = 121
 /** The longest the harness may have run when it purges, for the windows to cut where they are meant to. */
 const PURGE_STARTS_WITHIN_MS = 20 * 60_000
 /** The instants of a period, in seconds after its start, at which the worker makes a pass. */
@@ -80,54 +84,17 @@ const PLAN = {
   deadline: 42,
 } as const
 
-interface Alpha1Claimed {
-  readonly runId: string
-  readonly taskId: string
-  readonly claimToken: string
-  readonly claimGen: number
-}
-interface Alpha1Store {
-  spawn(
-    queue: string,
-    name: string,
-    params: string,
-    options?: object,
-  ): Promise<{ taskId: string; created: boolean }>
-  claim(
-    queue: string,
-    token: string,
-    options: { leaseSeconds: number; limit: number },
-  ): Promise<Alpha1Claimed[]>
-  activate(queue: string, runId: string, token: string, gen: number): Promise<unknown>
-  getTaskResult(
-    queue: string,
-    taskId: string,
-  ): Promise<{ state: string; completedPayloadJson?: string } | null>
-}
 type Handler = (ctx: unknown, params: unknown) => Promise<unknown>
 
 /** What the week uses of the release alpha.1 and of the example, loaded from the consumer directory. */
 async function load(consumer: string) {
-  const installed = (path: string) => pathToFileURL(join(consumer, 'node_modules', path)).href
   const example = (path: string) => pathToFileURL(join(consumer, 'example', path)).href
-  const core = (await import(installed('@durablerun/core/dist/index.js'))) as {
-    systemIdSource(): { token(): string }
-  }
-  const sdk = (await import(installed('@durablerun/sdk/dist/index.js'))) as {
+  const { core, store } = await loadAlpha1(consumer)
+  const sdk = (await import(installedIn(consumer, '@durablerun/sdk/dist/index.js'))) as {
     runClaimedRun(
       deps: { store: Alpha1Store; clock: object; registry: ReadonlyMap<string, Handler> },
       invocation: { queue: string; runId: string; claimToken: string; claimGen: number },
     ): Promise<{ kind: string }>
-  }
-  const store = (await import(installed('@durablerun/store-libsql/dist/index.js'))) as {
-    LibsqlExecutor: { open(url: string): { close(): void } }
-    LibsqlSchedulerStore: new (db: object, ids: object) => Alpha1Store
-    LibsqlStoreAdmin: new (
-      db: object,
-    ) => {
-      migrate(): Promise<void>
-      setFakeNowEpochMs(epochMs: number | null): Promise<void>
-    }
   }
   const digest = (await import(example('src/periodic-digest.ts'))) as {
     PERIODIC_DIGEST_TASK: string
@@ -140,16 +107,8 @@ async function load(consumer: string) {
   return { core, sdk, store, digest, tasks }
 }
 
-const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
-
-/** The period an instant is in, as the key of its digest names it: the UTC hour. */
-const periodOf = (epochMs: number): string => new Date(epochMs).toISOString().slice(0, 13)
-const keyOf = (epochMs: number): string => `digest-${periodOf(epochMs)}`
-
-class WeekFailure extends Error {}
-
 function must(condition: boolean, message: string): asserts condition {
-  if (!condition) throw new WeekFailure(`the week on alpha.1: ${message}`)
+  if (!condition) throw new Error(`the week on alpha.1: ${message}`)
 }
 
 /** One command of the current CLI against the week's database, with its JSON answer. */
@@ -333,16 +292,10 @@ export async function week(consumer: string, dir: string): Promise<string> {
     }
 
     const target = ['--queue', QUEUE, '--target', file]
+    const enqueued = (taskName: string, key: string, params: unknown) =>
+      cli(file, ['enqueue', taskName, '--key', key, '--params', JSON.stringify(params), ...target])
     const enqueue = async (taskName: string, key: string, params: unknown): Promise<string> => {
-      const answer = await cli(file, [
-        'enqueue',
-        taskName,
-        '--key',
-        key,
-        '--params',
-        JSON.stringify(params),
-        ...target,
-      ])
+      const answer = await enqueued(taskName, key, params)
       must(answer.created === true, `enqueue under ${key} created nothing`)
       return String(answer.taskId)
     }
@@ -393,22 +346,14 @@ export async function week(consumer: string, dir: string): Promise<string> {
         planted.deadline = spawned.taskId
       }
 
-      const key = keyOf(startMs)
+      const key = digestKey(digestPeriod(startMs))
       const taskId = await enqueue(digest.PERIODIC_DIGEST_TASK, key, DIGEST_PARAMS)
       digests.push({ taskId, key, period })
       if (period === PLAN.lostLaunch) lost.add(taskId)
       if (period === PLAN.workerDies) dying.add(taskId)
       // The enqueue again, as after a lost answer: the key finds the task, and nothing is made.
       if (period % 24 === 0) {
-        const again = await cli(file, [
-          'enqueue',
-          digest.PERIODIC_DIGEST_TASK,
-          '--key',
-          key,
-          '--params',
-          JSON.stringify(DIGEST_PARAMS),
-          ...target,
-        ])
+        const again = await enqueued(digest.PERIODIC_DIGEST_TASK, key, DIGEST_PARAMS)
         must(
           again.created === false && again.taskId === taskId && again.taskNameMatches === true,
           `enqueue repeated under ${key} answered ${JSON.stringify(again)}`,
@@ -531,16 +476,7 @@ export async function week(consumer: string, dir: string): Promise<string> {
       const after = await dumpOf(file)
       const model = againstTheModel(QUEUE, before, after, nowMs, { policy, limit }, answer)
       const differed = [
-        ...model.notLetGo.map((unit) => `a unit printed as purged is one the model keeps: ${unit}`),
-        ...model.otherChanges.map((change) => `the dump is not what the model leaves: ${change}`),
-        ...model.leftBehind.map((unit) => `a unit the model lets go stands: ${unit}`),
-        ...model.keptButFree.map(
-          (unit) => `a unit printed as kept is one the model lets go: ${unit}`,
-        ),
-        ...(model.overTheLimit > 0 ? ['more went than the limit'] : []),
-        ...(isDeepStrictEqual(model.rows, model.modelRows)
-          ? []
-          : ['the rows printed are not the rows the model says went']),
+        ...modelDifferences(model),
         ...(answer.finished === true ? [] : ['the run did not finish']),
         ...((answer.gone ?? []).length === 0 ? [] : ['a unit was gone']),
       ]
@@ -565,7 +501,7 @@ export async function week(consumer: string, dir: string): Promise<string> {
         // reader reads the runs the verb printed.
         if (!digestKeys.has(key)) continue
         const rows = (unit as { rows?: Record<string, number> }).rows ?? {}
-        for (const table of WEEK_TABLES) {
+        for (const table of QUEUE_TABLES) {
           must(
             table === 'runs' || Number(rows[table]) <= WEEK_DIGEST_UNIT_ROWS[table],
             `${name}: a ${unit.state} digest unit held ${rows[table]} rows of ${table}, and the week receipt's bound allows ${WEEK_DIGEST_UNIT_ROWS[table]}`,
@@ -609,7 +545,7 @@ export async function week(consumer: string, dir: string): Promise<string> {
     const purged = [...purgedStates.values()].reduce((sum, count) => sum + count, 0)
     must(purged > 0, 'the purged set is empty')
     must(
-      boundedUnits === 121,
+      boundedUnits === PERIODS_PURGED,
       `${boundedUnits} purged digest units were held to the receipt's rows`,
     )
     // A unit tried again holds a run for each attempt, which the receipt's bound allows
@@ -633,8 +569,8 @@ export async function week(consumer: string, dir: string): Promise<string> {
     const gone = digests.filter(({ key }) => purgedKeys.has(sha256(key)))
     const standing = digests.filter(({ key }) => !purgedKeys.has(sha256(key)))
     must(
-      gone.length === 121 && gone.every(({ period }) => period <= 120),
-      `${gone.length} periods went, and the windows cut after period 120`,
+      gone.length === PERIODS_PURGED && gone.every(({ period }) => period < PERIODS_PURGED),
+      `${gone.length} periods went, and the windows cut after period ${PERIODS_PURGED - 1}`,
     )
     for (const { taskId, key } of [gone[0], standing[0]].filter((entry) => entry !== undefined)) {
       const found = purgedKeys.has(sha256(key)) ? 8 : 0

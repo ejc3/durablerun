@@ -2,14 +2,16 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { QUEUE_TABLES, type QueueTable } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
+// The checker is taken from receipt.ts, which exit test line 44 names as its home.
 import { weekReceiptErrors } from '../../../apps/dogfood/src/receipt.js'
 import {
+  HOUR_MS,
   WEEK_DIGEST_UNIT_ROWS,
   WEEK_PERIODS,
   WEEK_PERIODS_REQUIRED,
-  WEEK_REFUSALS,
-  WEEK_TABLES,
+  WEEK_SPAN_MS,
   type WeekRefusalCause,
   checkWeekReceiptFile,
   digestKey,
@@ -28,6 +30,7 @@ import {
   type WeekReceipt,
   genuineWeek,
   keyOfPeriod,
+  lookup,
 } from './week-fixture.js'
 
 /**
@@ -60,7 +63,7 @@ function purgesMovedToTheNextDay(receipt: WeekReceipt, day: number): void {
  * models: the start sample's rows, a unit's rows for each hour of the window and 25 more
  * and for the one failed unit, and of runs the ones its units held beyond their first.
  */
-const boundOf = (table: (typeof WEEK_TABLES)[number]): number =>
+const boundOf = (table: QueueTable): number =>
   START_ROWS[table] +
   (WINDOW_HOURS + 25 + 1) * WEEK_DIGEST_UNIT_ROWS[table] +
   (table === 'runs' ? RUNS_BEYOND_THE_FIRST : 0)
@@ -104,7 +107,7 @@ const DOCTORED: readonly Doctored[] = [
       const squeeze = (sample: { stats: Json }): void =>
         setInstant(
           sample,
-          START_MS + Math.floor(((instantOf(sample) - START_MS) * 6 * 24 * 3_600_000) / span),
+          START_MS + Math.floor(((instantOf(sample) - START_MS) * 6 * 24 * HOUR_MS) / span),
         )
       receipt.days.forEach(squeeze)
       squeeze(receipt.end)
@@ -169,10 +172,10 @@ const doctored = (one: Doctored): WeekReceipt => {
   return receipt
 }
 
-/** The doctored receipt at `index` of the list is refused for the cause its entry gives, and for no other. */
-function refusedForItsCause(index: number, marker: string): void {
-  const one = DOCTORED[index]
-  if (one === undefined) throw new Error(`no doctored receipt ${index}`)
+/** The doctored receipt of that cause is refused for it, and for no other. */
+function refusedForItsCause(cause: WeekRefusalCause, marker: string): void {
+  const one = DOCTORED.find((entry) => entry.cause === cause)
+  if (one === undefined) throw new Error(`no doctored receipt is refused for ${cause}`)
   expect({ name: one.name, causes: causes(doctored(one)) }, marker).toEqual({
     name: one.name,
     causes: [one.cause],
@@ -187,62 +190,64 @@ describe('the week receipt checker', () => {
   })
 
   it('refuses six days between the first snapshot and the last, for that cause and no other', () => {
-    refusedForItsCause(0, 'mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days')
+    refusedForItsCause(
+      'span-under-seven-days',
+      'mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days',
+    )
   })
 
   it('refuses a missing daily snapshot, for that cause and no other', () => {
-    refusedForItsCause(1, 'mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot')
+    refusedForItsCause(
+      'missing-daily-snapshot',
+      'mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot',
+    )
   })
 
   it('refuses a sizes count one row over the bound, for that cause and no other', () => {
-    refusedForItsCause(2, 'mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound')
+    refusedForItsCause(
+      'sizes-over-bound',
+      'mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound',
+    )
   })
 
   it('refuses fewer than 160 of 168 periods found, for that cause and no other', () => {
-    refusedForItsCause(3, 'mutation-verdict:behavior:week-receipt-refuses-fewer-than-160-periods')
+    refusedForItsCause(
+      'periods-missing',
+      'mutation-verdict:behavior:week-receipt-refuses-fewer-than-160-periods',
+    )
   })
 
   it('refuses a sealed hash that is not the sha256 of the injected task id, cause and nonce, for that cause and no other', () => {
     refusedForItsCause(
-      4,
+      'seal-mismatch',
       'mutation-verdict:behavior:week-receipt-refuses-a-seal-that-does-not-match',
     )
   })
 
   it('refuses an explanation that names another cause than the seal, for that cause and no other', () => {
     refusedForItsCause(
-      5,
+      'explanation-differs-from-the-seal',
       'mutation-verdict:behavior:week-receipt-refuses-an-explanation-of-another-cause',
     )
   })
 
   it('refuses a day with no purge --execute, for that cause and no other', () => {
-    refusedForItsCause(6, 'mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge')
+    refusedForItsCause(
+      'day-without-purge',
+      'mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge',
+    )
   })
 
   it('refuses no selftest record, for that cause and no other', () => {
-    refusedForItsCause(7, 'mutation-verdict:behavior:week-receipt-refuses-no-selftest-record')
-  })
-
-  it('lists eight doctored receipts, each with a cause of its own, in the order of the cases above', () => {
-    expect(DOCTORED.map((one) => one.name)).toEqual([
-      'six days between the first snapshot and the last',
-      'a missing daily snapshot',
-      'a sizes count one row over the bound',
-      'fewer than 160 of 168 periods found',
-      'a sealed hash that is not the sha256 of the injected task id, cause and nonce',
-      'an explanation that names another cause than the seal',
-      'a day with no purge --execute',
-      'no selftest record',
-    ])
-    expect(DOCTORED.length).toBe(8)
-    expect(new Set(DOCTORED.map((one) => one.cause)).size).toBe(8)
-    for (const one of DOCTORED) expect(WEEK_REFUSALS).toContain(one.cause)
+    refusedForItsCause(
+      'no-selftest-record',
+      'mutation-verdict:behavior:week-receipt-refuses-no-selftest-record',
+    )
   })
 
   it('accepts a count at the bound, and 160 periods found: each refusal starts one past its floor', () => {
     const atTheBound = genuineWeek()
-    for (const table of WEEK_TABLES) {
+    for (const table of QUEUE_TABLES) {
       const day = atTheBound.days[3]
       if (day !== undefined) setCount(day, table, boundOf(table))
     }
@@ -252,9 +257,9 @@ describe('the week receipt checker', () => {
     expect(weekReceiptErrors(enough)).toEqual([])
     // A week and no less: one millisecond under seven days is refused, and seven days is not.
     const short = genuineWeek()
-    setInstant(short.end, START_MS + 7 * 24 * 3_600_000 - 1)
+    setInstant(short.end, START_MS + WEEK_SPAN_MS - 1)
     expect(causes(short)).toEqual(['span-under-seven-days'])
-    setInstant(short.end, START_MS + 7 * 24 * 3_600_000)
+    setInstant(short.end, START_MS + WEEK_SPAN_MS)
     expect(weekReceiptErrors(short)).toEqual([])
   })
 
@@ -310,11 +315,11 @@ describe('the week receipt checker', () => {
     expect(causes(purged)).toEqual(['sizes-over-bound'])
     // The lookup of the failed unit lists one run: its other four are not allowed.
     const looked = genuineWeek()
-    const lookup = looked.lookups.find(
+    const ofTheFailed = looked.lookups.find(
       (one) => ((one.task as Json).idempotencyKey as Json).sha256 === keyOfPeriod(FAILED_PERIOD),
     )
-    if (lookup === undefined) throw new Error('the week looks up no failed period')
-    lookup.runs = [(lookup.runs as unknown[])[0]]
+    if (ofTheFailed === undefined) throw new Error('the week looks up no failed period')
+    ofTheFailed.runs = [(ofTheFailed.runs as unknown[])[0]]
     expect([...new Set(causes(looked))]).toEqual(['sizes-over-bound'])
     // A unit looked up one day and purged on a later one counts once.
     const both = genuineWeek()
@@ -323,11 +328,7 @@ describe('the week receipt checker', () => {
       (unit) => unit.idempotencyKeySha256 === keyOfPeriod(RETRIED_PERIOD),
     )
     if (retried === undefined) throw new Error('the fourth day purges no retried period')
-    both.lookups.push({
-      ...(both.lookups[0] as Json),
-      task: { idempotencyKey: { bytes: 20, sha256: keyOfPeriod(RETRIED_PERIOD) } },
-      runs: [{ attempt: 1 }, { attempt: 2 }],
-    })
+    both.lookups.push(lookup(RETRIED_PERIOD))
     const fourth = both.days[3]
     if (fourth !== undefined) setCount(fourth, 'runs', boundOf('runs') + 1)
     expect(causes(both)).toEqual(['sizes-over-bound'])
@@ -341,11 +342,7 @@ describe('the week receipt checker', () => {
     const receipt = genuineWeek()
     unitsDropped(receipt, 9)
     for (const index of [-3, -2, -1, 169, 170, 171, 172, 173, 174]) {
-      receipt.lookups.push({
-        ...(receipt.lookups[0] as Json),
-        task: { idempotencyKey: { bytes: 20, sha256: keyOfPeriod(index) } },
-        runs: [{ attempt: 1 }],
-      })
+      receipt.lookups.push(lookup(index))
     }
     expect(causes(receipt)).toEqual(['periods-missing'])
   })
@@ -402,7 +399,7 @@ describe('the week receipt checker', () => {
     listed.push({ ...(listed[0] as Json), taskId: 'another-failed-task' })
     const day = twoFailed.days[3]
     if (day === undefined) throw new Error('the week has no fourth day')
-    for (const table of WEEK_TABLES) {
+    for (const table of QUEUE_TABLES) {
       setCount(day, table, boundOf(table) + WEEK_DIGEST_UNIT_ROWS[table])
     }
     expect(causes(twoFailed)).toEqual([])
@@ -528,6 +525,8 @@ describe('the week receipt checker as a command', () => {
         out: 'the week receipt is accepted\n',
         err: '',
       })
+      // Line 44 lists eight, and each is refused for a cause of its own.
+      expect(new Set(DOCTORED.map((one) => one.cause)).size).toBe(8)
       for (const [index, one] of DOCTORED.entries()) {
         const run = check([file(`doctored-${index}`, doctored(one))])
         expect({ name: one.name, exit: run.exit, out: run.out }).toEqual({

@@ -6739,11 +6739,11 @@ port's answers is held in core, over a port held in memory (section 3.12).
 a queue of its own, and says what each call answered. It is for a branch or a snapshot of a
 database, before the database itself is migrated or purged for the first time: a database
 that refuses a batch, or answers one otherwise than the engine does, is found there and not
-during an incident. It spawns two tasks and emits one event and deletes nothing. It spawns a task
-under a key and spawns it again, which must find the first. It spawns a second task whose
-cancellation deadline passes as it is spawned. It reads the first task by its key, its
-snapshot, its outcome, its checkpoints and what the guards say of it, then what the driver
-owes the queue, the queue's live tasks by age, its gauges and its next wake. It sweeps,
+during an incident. It spawns two tasks and emits one event and deletes nothing. It spawns
+a task under a key and spawns it again, which must find the first. It spawns a second task
+whose cancellation deadline passes as it is spawned, and reads that task by its key. It
+reads the first task's snapshot, its outcome, its checkpoints and what the guards say of
+it, then what the driver owes the queue, the queue's live tasks by age, its gauges and its next wake. It sweeps,
 which must cancel the second task and leave the first. It reads an event of its own, the
 waits on it, emits it and reads the payload back. It asks for a revival of the first task,
 which the guard must refuse, cancels that task, lists what a purge may take, which must be
@@ -6783,12 +6783,12 @@ call that answered otherwise exits 11, with what it answered under `found`: a co
 flag, an id or a state of the engine's own, and never a stored text. What it leaves is two
 cancelled tasks and the event it emitted, and on PostgreSQL the row that locks that event's
 name. A purge takes the tasks once they are a window old, and no purge takes an event a
-caller emitted. A run that stopped before its
-cancellation leaves its first task pending, which no worker runs, because no handler is
-registered under its name: `stuck --older-than` lists it and `cancel` ends it. So a run
-after a lost answer names another queue: on the queue it wrote to it is refused. The fault surface holds that at
-every batch it sends: the same line is refused there and changes nothing once a row was
-written, and on another queue it passes and leaves the rows a run without a fault leaves.
+caller emitted. A run that stopped earlier leaves the tasks it had spawned pending, which
+no worker runs, because no handler is registered under their name: `stuck --older-than`
+lists them and `cancel` ends each. So a run after a lost answer names another queue: on the
+queue it wrote to it is refused. The fault surface holds that at every batch it sends: the
+same line is refused there and changes nothing once a row was written, and on another
+queue it passes and leaves the rows a run without a fault leaves.
 
 **The week receipt.** A week of the recurring workflow on a deployment is shown by one
 JSON document, the week receipt, and `apps/dogfood/src/week-receipt.ts` checks it. `pnpm
@@ -6867,8 +6867,9 @@ operator started is the maintainer's attestation. The steps of the sealed inject
 the README's section "Operating a deployment". `.github/workflows/operable-week.yml`
 makes the hourly enqueue, the daily samples and the daily purge of such a week. Its one
 job runs only while a repository variable is set, it requires the secret store URL to
-equal the URL another variable pins before any command runs, and it writes each report to
-a file of the run's artifact and none to the log. Cases read the file and run its steps
+equal the URL another variable pins before any command runs, it names each command's
+`--target` from the pinned URL, so the CLI refuses a credential of another database too,
+and it writes each report to a file of the run's artifact and none to the log. Cases read the file and run its steps
 against a stand-in for the CLI: the enqueue is under the hour's key, and the purge runs
 again until the verb says no more remain.
 

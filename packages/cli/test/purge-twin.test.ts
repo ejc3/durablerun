@@ -17,7 +17,13 @@ import { handWrittenTask } from '../../conformance/src/scenario.js'
 import { makeLibsqlFixture } from '../../conformance/test/fixture-libsql.js'
 import { exitCode } from '../src/exit.js'
 import { storeTarget } from '../src/open-store.js'
-import { type ModelledPurge, type PurgeAnswer, againstTheModel, idsOf } from './purge-model.js'
+import {
+  type ModelledPurge,
+  type PurgeAnswer,
+  againstTheModel,
+  idsOf,
+  modelDifferences,
+} from './purge-model.js'
 import {
   type CliDb,
   PURGE_EVERY_STATE,
@@ -324,19 +330,7 @@ describe('purge over the states a walk of the engine leaves, on libSQL', () => {
             command,
             answer,
           )
-          const found: Record<string, readonly string[]> = {
-            'a unit printed as kept is one the model lets go': model.keptButFree,
-            'a unit printed as purged is one the model keeps': model.notLetGo,
-            'the dump is not what the model leaves': model.otherChanges,
-            'a unit the model lets go stands, though no more remain': model.leftBehind,
-          }
-          for (const [what, list] of Object.entries(found)) {
-            if (list.length > 0) differed.push(`${where}: ${what}: ${list.slice(0, 3).join('; ')}`)
-          }
-          if (model.overTheLimit > 0) differed.push(`${where}: more went than the limit`)
-          if (!isDeepStrictEqual(model.rows, model.modelRows)) {
-            differed.push(`${where}: the rows printed are not the rows the model says went`)
-          }
+          differed.push(...modelDifferences(model).map((line) => `${where}: ${line}`))
           if (
             said !== null &&
             !isDeepStrictEqual(

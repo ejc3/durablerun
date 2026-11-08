@@ -14,10 +14,8 @@ database. Do not point the migrator or receipt at another application's database
    `DURABLERUN_API_TOKEN` and `CRON_SECRET` distinct. The latter is the Bearer
    credential Vercel adds to cron requests.
 2. Run `pnpm install --frozen-lockfile`, then `pnpm typecheck`, `pnpm test`, and `pnpm migrate`.
-   `pnpm migrate` prepares a database recorded below schema version 5, the
-   version of the release these packages are. It leaves a database at or above
-   that version as it is and says so in one line, because the durablerun CLI
-   may have taken that database further (see "A digest for each period").
+   `pnpm migrate` leaves a database at or above schema version 5 as it is (see
+   "A digest for each period").
 3. Create a Vercel project from this directory, add the five runtime variables
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DURABLERUN_QUEUE`,
    `DURABLERUN_API_TOKEN`, and `CRON_SECRET`), and deploy it. `api/*.ts` pins

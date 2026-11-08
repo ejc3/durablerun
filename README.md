@@ -189,8 +189,8 @@ command, and each is safe to stop after.
 **Find, explain, act.** `stuck` lists what the driver owes a queue, and with
 `--older-than` every live task older than a duration. `explain` names one cause
 for a task, from a closed table, with a verdict and the next command to read.
-`cancel`, `retry` and `emit` change nothing without `--yes`, and no command
-suggests `--yes` for you.
+`cancel`, `retry` and `emit` change nothing without `--yes`. No command line
+`explain` suggests carries `--yes`: the operator adds it.
 
 ```sh
 pnpm cli stuck --queue example-queue --older-than 1d
@@ -220,13 +220,15 @@ It is off: its one job runs only while the repository variable
 the pinned database each hour, and once a day it records `stats` and `sizes`
 and then runs `purge --execute` until the verb says no more remain. It holds a
 database credential, so it first requires the secret URL to equal the URL a
-repository variable pins. Its reports are files in the run's artifact, and no
-report goes to the log. The file's first comment lists the secrets and
+repository variable pins, and it names each command's `--target` from the
+pinned URL. Its reports are files in the run's artifact, and no report goes to
+the log. The file's first comment lists the secrets and
 variables it needs.
 
 A week receipt is one JSON document that holds what the CLI printed with
 `--json` during a week of at least 168 hours:
 
+- `kind`, which is `week`, and `queue`, the week's queue;
 - `selftest`: the report of step 3;
 - `start` and `end`: a `stats` report and a `sizes` report of the queue;
 - `days`: for each day, a `stats` report, a `sizes` report, and the day's
@@ -237,17 +239,10 @@ A week receipt is one JSON document that holds what the CLI printed with
 - `seal`, `injection`, `explanation` and `attestation`: the sealed injection,
   below.
 
-`pnpm week-receipt <receipt.json>` checks it and exits 0 when it
-accepts the receipt. It refuses, each by a name: a span under seven days, a
-sample more than 25 hours after the one before it, a table over its bound,
-fewer than 160 of the 168 periods found, a hash that is not the seal's, an
-explanation of another task or cause, a day with no purge, no selftest report,
-a sample taken under a test clock, and any member that is missing or of the
-wrong type. The bound of a table is the start sample's count, plus a digest's
-rows for each hour of the completed window and 25 more, plus a digest's rows
-for each failed task the dry run lists. A task that was tried again holds a run
-for each attempt, so the bound of runs also allows the runs a purge report or a
-lookup shows beyond a task's first.
+`pnpm week-receipt <receipt.json>` checks it. It exits 0 when it accepts the
+receipt, and 1 when it refuses it, with a line for each cause. DESIGN.md
+section 3.11, "The week receipt", holds the members it reads, the causes it
+refuses for, and the bound it holds each table's row count to.
 
 **The sealed injection.** It shows that an operator who holds only the CLI and
 the store URL finds a stuck task nobody told them about. The checker can prove

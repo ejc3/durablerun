@@ -7372,8 +7372,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a whole hour skips a period, and the floor of 160 of 168 absorbs it: a week that
     finds fewer than 160 periods for that reason alone. A mutation audit that reads test
     files under apps/: a second app whose cases need it.
-  - The week adds 37 seconds to the compatibility harness on a loaded host, where the
-    harness took 22 seconds before it. CI's verify job has a 120 minute limit.
+  - The week adds 16 seconds to the compatibility harness: on one loaded host the harness
+    took 22 seconds at the base and 32 at the head. Under heavier load the same run took
+    60 seconds, the week 37 of them. CI's verify job has a 120 minute limit.
   - The registry holds 1507 mutations where main held 1482: five caught by cases
     of `selftest`, sixteen by cases of the week receipt's checker, and four by cases of the
     week's workflow.

@@ -1,14 +1,14 @@
-import { createHash } from 'node:crypto'
+import { QUEUE_TABLES } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
   WEEK_DIGEST_UNIT_ROWS,
-  WEEK_TABLES,
   readExplanation,
   readLookup,
   readPurge,
   readSelftest,
   readSizes,
   readStats,
+  sha256,
 } from '../../../apps/dogfood/src/week-receipt.js'
 import { DIGEST_UNIT_ROWS } from '../../conformance/src/retention-soak.js'
 import {
@@ -32,8 +32,6 @@ import {
  * readers what the commands printed, so a member the CLI renames is one a reader no longer
  * finds, and the case fails.
  */
-
-const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
 
 /** What a command prints with `--json`. */
 async function printed(db: CliDb, argv: readonly string[]): Promise<unknown> {
@@ -64,7 +62,7 @@ describe('the week receipt reads what the CLI prints', () => {
         // `sizes` counts the queue's rows, table by table.
         const rows = rowsByQueue(await db.dump(), QUEUE).ofTheQueue
         const counted = Object.fromEntries(
-          WEEK_TABLES.map((table) => [
+          QUEUE_TABLES.map((table) => [
             table,
             rows.filter((row) => row.startsWith(`${table} `)).length,
           ]),
@@ -166,6 +164,6 @@ describe('the week receipt reads what the CLI prints', () => {
       WEEK_DIGEST_UNIT_ROWS,
       'mutation-verdict:behavior:week-receipt-unit-rows-are-the-measured-rows',
     ).toEqual(DIGEST_UNIT_ROWS)
-    expect([...WEEK_TABLES].sort()).toEqual(Object.keys(DIGEST_UNIT_ROWS).sort())
+    expect([...QUEUE_TABLES].sort()).toEqual(Object.keys(DIGEST_UNIT_ROWS).sort())
   })
 })

@@ -5,7 +5,7 @@ import {
   PURGE_BARRIER_CONDITIONS,
   type RetentionPolicy,
 } from '@durablerun/core'
-import { COMMANDS, NOT_SENT_BY_SELFTEST, type PortUse } from './commands.js'
+import { COMMANDS, type PortUse } from './commands.js'
 import type { OpenedStore } from './open-store.js'
 
 /**
@@ -59,7 +59,7 @@ export interface SelftestStep {
 }
 
 /** The call of that name as the command table declares it for selftest. */
-function declared(call: PortUse['call']): PortUse {
+export function selftestPort(call: PortUse['call']): PortUse {
   const port = COMMANDS.selftest.ports.find((use) => use.call === call)
   if (port === undefined) throw new Error(`the command table declares no ${call} for selftest`)
   return port
@@ -111,7 +111,7 @@ export function selftestSteps(
     call: PortUse['call'],
     sends: string,
     run: () => Promise<string | null>,
-  ): SelftestStep => ({ port: declared(call), sends, run })
+  ): SelftestStep => ({ port: selftestPort(call), sends, run })
 
   return [
     step('admin.nowEpochMs', "a read of the database's clock", async () => {
@@ -334,6 +334,3 @@ export function labelResults(steps: readonly StepReport[]): Record<string, StepR
   }
   return results
 }
-
-/** The labels selftest does not send, each with why, as the command table holds them. */
-export const notSentView = (): Record<string, string> => ({ ...NOT_SENT_BY_SELFTEST })

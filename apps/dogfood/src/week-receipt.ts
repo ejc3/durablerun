@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { DEFAULT_MAX_ATTEMPTS } from '@durablerun/core'
+import { DEFAULT_MAX_ATTEMPTS, QUEUE_TABLES, type QueueTable } from '@durablerun/core'
 
 /**
  * The receipt of a week of the recurring workflow on a deployment, and its checker
@@ -23,21 +23,20 @@ import { DEFAULT_MAX_ATTEMPTS } from '@durablerun/core'
  * receipt carries and the checker holds to the start sample's instant.
  */
 
-/** The tables whose rows `sizes` counts and the bound is over. */
-export const WEEK_TABLES = ['tasks', 'runs', 'checkpoints', 'waits', 'events'] as const
-export type WeekTable = (typeof WEEK_TABLES)[number]
-export type WeekRows = Readonly<Record<WeekTable, number>>
+/** A count for each table whose rows `sizes` counts, which are core's tables of a queue. */
+export type WeekRows = Readonly<Record<QueueTable, number>>
 
 /** The periods of a week, one an hour. */
 export const WEEK_PERIODS = 168
 /** How many of them must be found. */
 export const WEEK_PERIODS_REQUIRED = 160
 
-const HOUR_MS = 3_600_000
+export const HOUR_MS = 3_600_000
 /** The least a week spans, from the start sample to the end sample. */
 export const WEEK_SPAN_MS = WEEK_PERIODS * HOUR_MS
-/** The most that may pass between one sample and the next: a day and an hour. */
-export const WEEK_SAMPLE_GAP_MS = 25 * HOUR_MS
+/** The most hours that may pass between one sample and the next: a day and an hour. */
+export const WEEK_SAMPLE_GAP_HOURS = 25
+export const WEEK_SAMPLE_GAP_MS = WEEK_SAMPLE_GAP_HOURS * HOUR_MS
 
 /**
  * The rows one digest unit holds once it ended: its task, one run, the checkpoint of its
@@ -62,7 +61,9 @@ export const digestPeriod = (epochMs: number): string =>
 /** The idempotency key a period's task is enqueued under. */
 export const digestKey = (period: string): string => `digest-${period}`
 
-const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
+/** The sha256 of a text, in hex, as the CLI prints the digest of a key. */
+export const sha256 = (text: string): string =>
+  createHash('sha256').update(text, 'utf8').digest('hex')
 
 /** The sealed injection: what a second person hashes before the week and reveals after it. */
 export interface WeekInjection {
@@ -141,8 +142,8 @@ export function readStats(value: unknown, queue: string): StatsRead | null {
 export function readSizes(value: unknown, queue: string): WeekRows | null {
   const document = documentOf(value, 'sizes', queue)
   if (document === null || document.exit !== 'done' || !isRecord(document.tables)) return null
-  const counts: Partial<Record<WeekTable, number>> = {}
-  for (const table of WEEK_TABLES) {
+  const counts: Partial<Record<QueueTable, number>> = {}
+  for (const table of QUEUE_TABLES) {
     const gauge = document.tables[table]
     if (!isRecord(gauge) || !isCount(gauge.count) || typeof gauge.atLeast !== 'boolean') return null
     counts[table] = gauge.atLeast ? Number.POSITIVE_INFINITY : gauge.count
@@ -251,8 +252,10 @@ interface Sample {
 
 /** A receipt as the checker read it: every member once, into what the checks use. */
 interface WeekRead {
-  /** The start sample, each day's, and the end sample, in the receipt's order. */
-  readonly samples: readonly Sample[]
+  readonly start: Sample
+  /** Each day's sample, with that day's purge reports, in the receipt's order. */
+  readonly days: readonly Sample[]
+  readonly end: Sample
   readonly selftest: boolean
   readonly failedDryRun: PurgeRead
   readonly lookups: readonly LookupRead[]
@@ -270,47 +273,47 @@ function readWeek(receipt: Json): { read: WeekRead } | { malformed: string[] } {
     return fallback
   }
   const queue = isText(receipt.queue) ? receipt.queue : missing('queue is not a name', '')
+  /** A list read item by item: each item that does not read is named, and left out. */
+  const listOf = <T>(
+    name: string,
+    value: unknown,
+    what: string,
+    readOne: (item: unknown) => T | null,
+  ): T[] => {
+    if (!Array.isArray(value)) return missing(`${name} is not a list`, [])
+    return value.flatMap((item, index) => {
+      const one = readOne(item)
+      return one === null ? missing(`${name}[${index}] is not ${what}`, []) : [one]
+    })
+  }
 
   const sample = (name: string, value: unknown, withPurges: boolean): Sample | null => {
     if (!isRecord(value)) return missing(`${name} is not a sample`, null)
     const stats = readStats(value.stats, queue)
     const sizes = readSizes(value.sizes, queue)
-    const purges: PurgeRead[] = []
-    if (withPurges) {
-      if (!Array.isArray(value.purges)) malformed.push(`${name}.purges is not a list`)
-      else {
-        for (const [index, report] of value.purges.entries()) {
-          const purge = readPurge(report, queue)
-          if (purge === null) {
-            malformed.push(`${name}.purges[${index}] is not a purge report of the queue`)
-          } else purges.push(purge)
-        }
-      }
-    }
+    const purges = withPurges
+      ? listOf(`${name}.purges`, value.purges, 'a purge report of the queue', (report) =>
+          readPurge(report, queue),
+        )
+      : []
     if (stats === null) malformed.push(`${name}.stats is not a stats report of the queue`)
     if (sizes === null) malformed.push(`${name}.sizes is not a sizes report of the queue`)
     return stats === null || sizes === null ? null : { name, stats, sizes, purges }
   }
-  const days = Array.isArray(receipt.days) ? receipt.days : missing('days is not a list', [])
-  const samples = [
-    sample('start', receipt.start, false),
-    ...days.map((day, index) => sample(`days[${index}]`, day, true)),
-    sample('end', receipt.end, false),
-  ].filter((one) => one !== null)
+  const start = sample('start', receipt.start, false)
+  const listed = Array.isArray(receipt.days) ? receipt.days : missing('days is not a list', [])
+  const days = listed.flatMap((day, index) => {
+    const one = sample(`days[${index}]`, day, true)
+    return one === null ? [] : [one]
+  })
+  const end = sample('end', receipt.end, false)
 
   const failedDryRun = readPurge(receipt.failedDryRun, queue)
   if (failedDryRun === null) malformed.push('failedDryRun is not a purge report of the queue')
 
-  const lookups: LookupRead[] = []
-  if (!Array.isArray(receipt.lookups)) malformed.push('lookups is not a list')
-  else {
-    for (const [index, document] of receipt.lookups.entries()) {
-      const found = readLookup(document, queue)
-      if (found === null) {
-        malformed.push(`lookups[${index}] is not an inspect of a task of the queue`)
-      } else lookups.push(found)
-    }
-  }
+  const lookups = listOf('lookups', receipt.lookups, 'an inspect of a task of the queue', (one) =>
+    readLookup(one, queue),
+  )
 
   const seal = isRecord(receipt.seal) ? receipt.seal.sha256 : undefined
   const sealSha256 = isText(seal) ? seal : missing('seal.sha256 is not a hash', '')
@@ -335,10 +338,21 @@ function readWeek(receipt: Json): { read: WeekRead } | { malformed: string[] } {
     ? published
     : missing('attestation.sealPublishedAtEpochMs is not an instant', 0)
 
-  if (malformed.length > 0 || failedDryRun === null || explanation === null) return { malformed }
+  // Every member that did not read is named above, so a null here has its line already.
+  if (
+    malformed.length > 0 ||
+    start === null ||
+    end === null ||
+    failedDryRun === null ||
+    explanation === null
+  ) {
+    return { malformed }
+  }
   return {
     read: {
-      samples,
+      start,
+      days,
+      end,
       selftest: readSelftest(receipt.selftest),
       failedDryRun,
       lookups,
@@ -352,7 +366,7 @@ function readWeek(receipt: Json): { read: WeekRead } | { malformed: string[] } {
 
 /** The purge reports of the week that deleted: every day's, with `--execute`. */
 const executed = (week: WeekRead): PurgeRead[] =>
-  week.samples.flatMap((one) => one.purges.filter((purge) => purge.execute))
+  week.days.flatMap((one) => one.purges.filter((purge) => purge.execute))
 
 /**
  * The runs the receipt shows its units held beyond the first of each. A purge report
@@ -387,17 +401,16 @@ function runsBeyondTheFirst(week: WeekRead): number {
  * every run the receipt shows a unit held beyond its first.
  */
 function boundOf(week: WeekRead): WeekRows {
-  const [start] = week.samples
   const windowHours = Math.ceil(
     Math.max(0, ...executed(week).map((purge) => purge.completedSeconds)) / 3_600,
   )
   const failedUnits = week.failedDryRun.taken.filter((unit) => unit.state === 'failed').length
   const beyondTheFirst = runsBeyondTheFirst(week)
   return Object.fromEntries(
-    WEEK_TABLES.map((table) => [
+    QUEUE_TABLES.map((table) => [
       table,
-      (start?.sizes[table] ?? 0) +
-        (windowHours + 25 + failedUnits) * WEEK_DIGEST_UNIT_ROWS[table] +
+      week.start.sizes[table] +
+        (windowHours + WEEK_SAMPLE_GAP_HOURS + failedUnits) * WEEK_DIGEST_UNIT_ROWS[table] +
         (table === 'runs' ? beyondTheFirst : 0),
     ]),
   ) as WeekRows
@@ -433,13 +446,10 @@ export function weekReceiptErrors(candidate: unknown): readonly WeekRefusal[] {
   const refuse = (cause: WeekRefusalCause, detail: string): void => {
     refusals.push({ cause, detail })
   }
-  const start = week.samples[0]
-  const end = week.samples.at(-1)
-  if (start === undefined || end === undefined) {
-    return [{ cause: 'malformed', detail: 'the receipt holds no start sample and end sample' }]
-  }
+  const { start, days, end } = week
+  const samples = [start, ...days, end]
 
-  for (const one of week.samples) {
+  for (const one of samples) {
     if (one.stats.fakeClock) {
       refuse('test-clock-set', `${one.name} was taken under a test clock, which is no instant`)
     }
@@ -450,18 +460,20 @@ export function weekReceiptErrors(candidate: unknown): readonly WeekRefusal[] {
       `the end sample is ${end.stats.atEpochMs - start.stats.atEpochMs} ms after the start sample, under ${WEEK_SPAN_MS}`,
     )
   }
-  week.samples.slice(1).forEach((one, index) => {
-    const gap = one.stats.atEpochMs - (week.samples[index]?.stats.atEpochMs ?? 0)
+  let before = start
+  for (const one of [...days, end]) {
+    const gap = one.stats.atEpochMs - before.stats.atEpochMs
     if (gap <= 0 || gap > WEEK_SAMPLE_GAP_MS) {
       refuse(
         'missing-daily-snapshot',
         `${one.name} is ${gap} ms after the sample before it, and a sample follows the last within ${WEEK_SAMPLE_GAP_MS}`,
       )
     }
-  })
+    before = one
+  }
   const bound = boundOf(week)
-  for (const one of week.samples) {
-    for (const table of WEEK_TABLES) {
+  for (const one of samples) {
+    for (const table of QUEUE_TABLES) {
       if (one.sizes[table] > bound[table]) {
         refuse(
           'sizes-over-bound',
@@ -507,7 +519,7 @@ export function weekReceiptErrors(candidate: unknown): readonly WeekRefusal[] {
       'the explanation is not of the sealed task, or names another cause than the sealed one',
     )
   }
-  for (const one of week.samples.slice(1, -1)) {
+  for (const one of days) {
     if (!one.purges.some((purge) => purge.execute && purge.finished)) {
       refuse('day-without-purge', `${one.name} holds no purge --execute that finished`)
     }

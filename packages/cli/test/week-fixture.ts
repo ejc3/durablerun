@@ -1,11 +1,13 @@
-import { createHash } from 'node:crypto'
+import { QUEUE_TABLES } from '@durablerun/core'
 import {
+  HOUR_MS,
   WEEK_DIGEST_UNIT_ROWS,
-  WEEK_TABLES,
+  WEEK_PERIODS,
   type WeekRows,
   digestKey,
   digestPeriod,
   sealOf,
+  sha256,
 } from '../../../apps/dogfood/src/week-receipt.js'
 
 /**
@@ -21,8 +23,7 @@ import {
  * sample counts its rows.
  */
 
-export const QUEUE = 'digest'
-const HOUR_MS = 3_600_000
+const QUEUE = 'digest'
 const DAY_MS = 24 * HOUR_MS
 /** The start sample: twenty minutes past an hour. */
 export const START_MS = Date.UTC(2026, 0, 5, 9, 20)
@@ -42,37 +43,31 @@ export const RUNS_BEYOND_THE_FIRST = runsOf(FAILED_PERIOD) - 1 + runsOf(RETRIED_
 /** What the queue held at the start sample: the injected task, parked on its event. */
 export const START_ROWS: WeekRows = { tasks: 1, runs: 1, checkpoints: 1, waits: 1, events: 0 }
 
-export const sha256 = (text: string): string =>
-  createHash('sha256').update(text, 'utf8').digest('hex')
-
 /** The sha256 of the key the task of the week's `index`th period is enqueued under. */
 export const keyOfPeriod = (index: number): string =>
   sha256(digestKey(digestPeriod(START_MS + index * HOUR_MS)))
 
 type Json = Record<string, unknown>
 
-const dialect = { scheme: 'libsql:', schemaWindow: { oldest: 5, newest: 12 } }
-
-const stats = (atEpochMs: number): Json => ({
-  command: 'stats',
+/** A report as a command prints one that ended well, about the week's queue unless `rest` names another. */
+const printed = (command: string, rest: Json): Json => ({
+  command,
   exit: 'done',
   queue: QUEUE,
-  dialect,
-  databaseNowEpochMs: atEpochMs,
-  fakeClock: false,
-  summary: 'active',
+  dialect: { scheme: 'libsql:', schemaWindow: { oldest: 5, newest: 12 } },
+  ...rest,
 })
 
-const sizes = (rows: WeekRows): Json => ({
-  command: 'sizes',
-  exit: 'done',
-  queue: QUEUE,
-  dialect,
-  cap: 1_000_000,
-  tables: Object.fromEntries(
-    WEEK_TABLES.map((table) => [table, { count: rows[table], atLeast: false }]),
-  ),
-})
+const stats = (atEpochMs: number): Json =>
+  printed('stats', { databaseNowEpochMs: atEpochMs, fakeClock: false, summary: 'active' })
+
+const sizes = (rows: WeekRows): Json =>
+  printed('sizes', {
+    cap: 1_000_000,
+    tables: Object.fromEntries(
+      QUEUE_TABLES.map((table) => [table, { count: rows[table], atLeast: false }]),
+    ),
+  })
 
 const unit = (index: number, state: string): Json => ({
   taskId: `task-of-period-${index}`,
@@ -82,41 +77,46 @@ const unit = (index: number, state: string): Json => ({
   idempotencyKeySha256: keyOfPeriod(index),
 })
 
-const policy = (failedSeconds: number | null): Json => ({
-  completedSeconds: WINDOW_HOURS * 3_600,
-  cancelledSeconds: WINDOW_HOURS * 3_600,
-  failedSeconds,
-})
+/** A purge report that finished: a dry run lists its units as ones it would purge. */
+const purgeReport = (
+  execute: boolean,
+  failedSeconds: number | null,
+  units: readonly Json[],
+): Json =>
+  printed('purge', {
+    execute,
+    policy: {
+      completedSeconds: WINDOW_HOURS * 3_600,
+      cancelledSeconds: WINDOW_HOURS * 3_600,
+      failedSeconds,
+    },
+    limit: 100,
+    examined: units.length,
+    [execute ? 'purged' : 'wouldPurge']: units,
+    kept: [],
+    gone: [],
+    outcomeNotKnown: [],
+    finished: true,
+    more: false,
+  })
 
-const purged = (periods: readonly number[]): Json => ({
-  command: 'purge',
-  exit: 'done',
-  queue: QUEUE,
-  dialect,
-  execute: true,
-  policy: policy(null),
-  limit: 100,
-  examined: periods.length,
-  purged: periods.map((index) => ({ ...unit(index, 'completed'), rows: rowsOf(index) })),
-  kept: [],
-  gone: [],
-  outcomeNotKnown: [],
-  finished: true,
-  more: false,
-})
+const purged = (periods: readonly number[]): Json =>
+  purgeReport(
+    true,
+    null,
+    periods.map((index) => ({ ...unit(index, 'completed'), rows: rowsOf(index) })),
+  )
 
-const lookup = (index: number): Json => ({
-  command: 'inspect',
-  exit: 'done',
-  queue: QUEUE,
-  dialect,
-  task: {
-    taskId: `task-of-period-${index}`,
-    state: index === FAILED_PERIOD ? 'failed' : 'completed',
-    idempotencyKey: { bytes: 20, sha256: keyOfPeriod(index) },
-  },
-  runs: Array.from({ length: runsOf(index) }, (_, attempt) => ({ attempt: attempt + 1 })),
-})
+/** The `inspect --key` report of the task of the week's `index`th period, with a run for each attempt. */
+export const lookup = (index: number): Json =>
+  printed('inspect', {
+    task: {
+      taskId: `task-of-period-${index}`,
+      state: index === FAILED_PERIOD ? 'failed' : 'completed',
+      idempotencyKey: { bytes: 20, sha256: keyOfPeriod(index) },
+    },
+    runs: Array.from({ length: runsOf(index) }, (_, attempt) => ({ attempt: attempt + 1 })),
+  })
 
 const range = (from: number, to: number): number[] =>
   Array.from({ length: Math.max(0, to - from) }, (_, offset) => from + offset)
@@ -134,7 +134,7 @@ function rowsOn(day: number): WeekRows {
   const gone = new Set(range(1, day).flatMap(purgedOn))
   const standing = enqueued.filter((index) => !gone.has(index))
   return Object.fromEntries(
-    WEEK_TABLES.map((table) => [
+    QUEUE_TABLES.map((table) => [
       table,
       START_ROWS[table] + standing.reduce((sum, index) => sum + rowsOf(index)[table], 0),
     ]),
@@ -147,19 +147,13 @@ export const INJECTION = {
   nonce: 'a-nonce-of-the-second-person',
 }
 
-/** A day of the receipt as the tests name it: the sample and the purge reports after it. */
-export interface Day {
-  stats: Json
-  sizes: Json
-  purges: Json[]
-}
-
 export interface WeekReceipt {
   kind: string
   queue: string
   selftest?: Json
   start: { stats: Json; sizes: Json }
-  days: Day[]
+  /** Each day's sample, and the purge reports after it. */
+  days: { stats: Json; sizes: Json; purges: Json[] }[]
   end: { stats: Json; sizes: Json }
   failedDryRun: Json
   lookups: Json[]
@@ -180,45 +174,20 @@ export function genuineWeek(): WeekReceipt {
   return {
     kind: 'week',
     queue: QUEUE,
-    selftest: {
-      command: 'selftest',
-      exit: 'done',
-      queue: 'selftest-before-the-week',
-      dialect,
-      passed: true,
-    },
+    selftest: printed('selftest', { queue: 'selftest-before-the-week', passed: true }),
     start: { stats: stats(START_MS), sizes: sizes(START_ROWS) },
     days,
     end: { stats: stats(START_MS + 7 * DAY_MS + 5 * 60_000), sizes: sizes(rowsOn(7)) },
-    failedDryRun: {
-      command: 'purge',
-      exit: 'done',
-      queue: QUEUE,
-      dialect,
-      execute: false,
-      policy: policy(3_600),
-      limit: 1_000,
-      examined: 1,
-      wouldPurge: [unit(FAILED_PERIOD, 'failed')],
-      kept: [],
-      gone: [],
-      outcomeNotKnown: [],
-      finished: true,
-      more: false,
-    },
+    failedDryRun: purgeReport(false, 3_600, [unit(FAILED_PERIOD, 'failed')]),
     // Every period no purge report names: the failed one, and those still within the window.
-    lookups: [FAILED_PERIOD, ...range(lastPurged + 1, 168)].map(lookup),
+    lookups: [FAILED_PERIOD, ...range(lastPurged + 1, WEEK_PERIODS)].map(lookup),
     seal: { sha256: sealOf(INJECTION) },
     injection: { ...INJECTION },
-    explanation: {
-      command: 'explain',
-      exit: 'done',
-      queue: QUEUE,
-      dialect,
+    explanation: printed('explain', {
       taskId: INJECTION.taskId,
       cause: INJECTION.cause,
       verdict: 'waiting',
-    },
+    }),
     attestation: { attestedBy: 'the maintainer', sealPublishedAtEpochMs: START_MS - HOUR_MS },
   }
 }

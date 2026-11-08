@@ -12,6 +12,7 @@ import {
   QUEUE,
   SELECTED,
   STORE_COMMANDS,
+  changedBy,
   faulting,
   onDb,
   openCliDb,
@@ -183,12 +184,13 @@ describe('what selftest refuses, having written nothing', () => {
   it('refuses a queue that holds a row with exit 2, prints the counts, and sends only reads', () =>
     onDb('selftest-not-empty', async (db) => {
       await seedTasks(db)
-      const before = await db.dump()
       const recording = recordingOpener()
-      const run = await runCli(['selftest', ...writeFlags(db), '--json'], db.env, recording.opener)
+      const { out: run, unchanged } = await changedBy(db, () =>
+        runCli(['selftest', ...writeFlags(db), '--json'], db.env, recording.opener),
+      )
       const answer = report(run.stdout)
       expect(
-        { exit: run.exit, kind: answer.error?.kind, unchanged: (await db.dump()) === before },
+        { exit: run.exit, kind: answer.error?.kind, unchanged },
         'mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows',
       ).toEqual({ exit: exitCode('usage'), kind: 'queue-not-empty', unchanged: true })
       expect(recording.sent().map((batch) => batch.mode)).toEqual(['read', 'read'])
@@ -198,15 +200,10 @@ describe('what selftest refuses, having written nothing', () => {
   it("refuses a database below the build's schema version with exit 5, at a version its reads accept, and changes nothing", async () => {
     const db = await openCliDb('libsql', 'selftest-older', 5)
     try {
-      const before = await db.dump()
-      const run = await runCli(line(db), db.env)
+      const { out: run, unchanged } = await changedBy(db, () => runCli(line(db), db.env))
       const answer = report(run.stdout)
       expect(
-        {
-          exit: run.exit,
-          recorded: answer.recordedSchemaVersion,
-          unchanged: (await db.dump()) === before,
-        },
+        { exit: run.exit, recorded: answer.recordedSchemaVersion, unchanged },
         'mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds',
       ).toEqual({ exit: exitCode('schema'), recorded: 5, unchanged: true })
       expect(answer.error?.message).toContain('migrate the branch or the snapshot first')

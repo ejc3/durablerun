@@ -19,6 +19,7 @@ import {
   COMMANDS,
   type CommandSpec,
   type Invocation,
+  NOT_SENT_BY_SELFTEST,
   STUCK_DEFAULT_LIMIT,
   SWEEP_DEFAULT_LIMIT,
   TICK_DEFAULT_TIMEOUT_SECONDS,
@@ -84,7 +85,7 @@ import {
   SELFTEST_TASK,
   type StepReport,
   labelResults,
-  notSentView,
+  selftestPort,
   selftestSteps,
 } from './selftest.js'
 
@@ -1363,16 +1364,14 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       `selftest sends the batches of version ${build}, the build's: migrate the branch or the snapshot first`,
   )
   if (refused !== null) return refused
-  const held = sizesView(await store.operator.tableRows(queue))
-  const holdsARow = Object.values<{ readonly count: number }>(
-    held.tables as Record<string, { readonly count: number }>,
-  ).some(({ count }) => count > 0)
+  const rows = await store.operator.tableRows(queue)
+  const holdsARow = Object.values(rows.tables).some((gauge) => gauge.count > 0)
   if (holdsARow) {
     return {
       exit: 'usage',
       view: {
         queue,
-        ...held,
+        ...sizesView(rows),
         error: {
           kind: 'queue-not-empty',
           message: `the queue ${queue} holds rows, and selftest runs on a queue of its own that holds none: its checks count the queue's rows. Name another queue. Nothing was changed`,
@@ -1380,16 +1379,13 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       },
     }
   }
-  const [versionRead, rowsRead] = COMMANDS.selftest.ports
-  const reports: StepReport[] = [versionRead, rowsRead].map((port) => ({
-    call: port?.call ?? '',
-    labels: port?.labels ?? [],
-    sends:
-      port === versionRead
-        ? 'a read of the recorded schema version'
-        : "a count of the queue's rows, which must be none",
-    result: 'ok',
-  }))
+  // The two reads above are calls the table declares too, and both answered.
+  const reports: StepReport[] = (
+    [
+      ['admin.schemaVersion', 'a read of the recorded schema version'],
+      ['operator.tableRows', "a count of the queue's rows, which must be none"],
+    ] as const
+  ).map(([call, sends]) => ({ call, labels: selftestPort(call).labels, sends, result: 'ok' }))
   const runId = ids.uuidv7()
   let stopped: Answer | null = null
   let unexpected = false
@@ -1422,10 +1418,10 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       passed,
       steps: reports,
       labels: labelResults(reports),
-      notSent: notSentView(),
+      notSent: NOT_SENT_BY_SELFTEST,
       ...(stopped === null ? {} : stopped.view),
       leaves:
-        'two cancelled tasks and the event it emitted, when every call was reached. A purge takes the tasks once they are a window old, and no purge takes an event a caller emitted. A run that stopped before its cancellation leaves its first task pending, which cancel ends',
+        'two cancelled tasks and the event it emitted, when every call was reached. A purge takes the tasks once they are a window old, and no purge takes an event a caller emitted. A run that stopped earlier leaves the tasks it had spawned pending, and cancel ends each',
     },
   }
 }

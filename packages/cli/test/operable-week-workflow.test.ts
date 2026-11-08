@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
 import { digestKey, digestPeriod } from '../../../apps/dogfood/src/week-receipt.js'
 import { parseInvocation } from '../src/commands.js'
+import { storeTarget } from '../src/open-store.js'
 import { ROOT } from './support.js'
 
 /**
@@ -13,8 +14,8 @@ import { ROOT } from './support.js'
  * database credential, writes each hour and deletes each day. These cases read the workflow
  * file: its one job is off until one repository variable is set, the job requires the
  * pinned database before any step holds the credential, and its two command steps, run here
- * against a stand-in for `pnpm`, send the commands as the verbs take them, each report to a
- * file and nothing of a report to the log.
+ * against a stand-in for `pnpm`, send the commands as the verbs take them, each naming the
+ * pinned database as its target, each report to a file and nothing of a report to the log.
  */
 
 interface Step {
@@ -57,7 +58,7 @@ const ENQUEUE = 'Enqueue the digest of this hour under its key'
 const DAILY = 'Sample the queue, then purge until nothing more stands'
 
 /** Whether a step, or a job's own environment, is handed a secret. */
-const holdsASecret = (value: unknown): boolean => JSON.stringify(value ?? {}).includes('secrets.')
+const holdsASecret = (value: unknown): boolean => /\bsecrets\b/.test(JSON.stringify(value ?? {}))
 
 const stepNamed = (name: string): Step => {
   const step = job.steps.find((one) => one.name === name)
@@ -133,10 +134,15 @@ function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
   }
 }
 
-/** What the workflow hands its command steps, with a store URL that carries a path and a query. */
+/** The pinned URL of the cases, which carries a path and a query. */
+const PINNED_URL = 'libsql://week-database.example/path?mode=x'
+
+/** What the workflow hands its command steps. */
 const STEP_ENV = {
-  DURABLERUN_STORE_URL: 'libsql://week-database.example/path?mode=x',
+  DURABLERUN_STORE_URL: PINNED_URL,
   DURABLERUN_STORE_TOKEN: 'a-token',
+  DURABLERUN_WEEK_EXPECTED_STORE_URL: PINNED_URL,
+  DURABLERUN_WEEK_PURGE_RUNS: '50',
   DURABLERUN_WEEK_QUEUE: 'digest',
   DURABLERUN_WEEK_REPOSITORY: 'example-owner/example-repository',
   DURABLERUN_WEEK_REF: 'main',
@@ -171,6 +177,11 @@ describe('the workflow of the operable week', () => {
   it('requires the pinned database before any step holds the credential, and no action and no job environment holds it', () => {
     expect(holdsASecret(workflow.env)).toBe(false)
     expect(holdsASecret(job.env)).toBe(false)
+    // The pinned URL is a variable, which every step may read: the guard compares the secret
+    // with it, and each command names its target from it.
+    expect(job.env?.DURABLERUN_WEEK_EXPECTED_STORE_URL).toBe(
+      '${{ vars.DURABLERUN_WEEK_STORE_URL }}',
+    )
     const guard = job.steps.findIndex((step) => step.name === GUARD)
     expect({
       guard: guard >= 0,
@@ -185,7 +196,6 @@ describe('the workflow of the operable week', () => {
     expect(step.env).toEqual({
       DURABLERUN_STORE_URL: '${{ secrets.DURABLERUN_WEEK_STORE_URL }}',
       DURABLERUN_STORE_TOKEN: '${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}',
-      DURABLERUN_WEEK_EXPECTED_STORE_URL: '${{ vars.DURABLERUN_WEEK_STORE_URL }}',
     })
     const gate = (env: Record<string, string>): number | null =>
       spawnSync('bash', ['-c', step.run ?? ''], {
@@ -214,7 +224,7 @@ describe('the workflow of the operable week', () => {
     ).toEqual({ exact: 0, another: 1, noPin: 1, noUrl: 1, noToken: 1, notRemote: 1 })
   }, 60_000)
 
-  it('enqueues the digest of the hour under its key, as the verb takes it, with its report in a file', () => {
+  it('enqueues the digest of the hour under its key, as the verb takes it, with its report in a file', async () => {
     const before = digestKey(digestPeriod(Date.now()))
     const run = runStep(stepNamed(ENQUEUE), STEP_ENV)
     const after = digestKey(digestPeriod(Date.now()))
@@ -243,11 +253,18 @@ describe('the workflow of the operable week', () => {
       key: true,
       params: { repository: 'example-owner/example-repository', ref: 'main' },
       queue: 'digest',
-      // What \`--target\` names for a libSQL server: the URL's host, without its path or query.
-      target: 'week-database.example',
+      // What the CLI itself names as the target of the pinned URL: its host.
+      target: await storeTarget(PINNED_URL),
       json: true,
       reveal: false,
     })
+    // The target is the pinned database's whatever the credential opens, so the CLI refuses
+    // a credential of another database even where the guard was taken out.
+    const another = runStep(stepNamed(ENQUEUE), {
+      ...STEP_ENV,
+      DURABLERUN_STORE_URL: 'libsql://another-database.example',
+    })
+    expect(parseInvocation(another.sent[0] ?? []).strings.target).toBe('week-database.example')
     // The report and what the command wrote on stderr are files, and neither is in the log.
     const names = Object.keys(run.files).sort()
     expect(names.length).toBe(2)
@@ -263,7 +280,7 @@ describe('the workflow of the operable week', () => {
     })
   }, 60_000)
 
-  it('samples the queue and then purges with --execute until the verb says no more remain, as the verbs take them', () => {
+  it('samples the queue and then purges with --execute until the verb says no more remain, as the verbs take them', async () => {
     const step = stepNamed(DAILY)
     const run = runStep(step, { ...STEP_ENV, STUB_MORE: '2' })
     const sent = run.sent.map((argv) => parseInvocation(argv))
@@ -288,7 +305,7 @@ describe('the workflow of the operable week', () => {
       expect({ strings: purge.strings, execute: purge.booleans.execute }).toEqual({
         strings: {
           queue: 'digest',
-          target: 'week-database.example',
+          target: await storeTarget(PINNED_URL),
           'completed-after': '7d',
           'cancelled-after': '14d',
         },
@@ -319,28 +336,21 @@ describe('the workflow of the operable week', () => {
     const { DURABLERUN_WEEK_CANCELLED_AFTER: _unset, ...noWindow } = STEP_ENV
     const refused = runStep(step, noWindow)
     expect({ status: refused.status, sent: refused.sent }).toEqual({ status: 1, sent: [] })
-    // A purge that never says no more remain ends after fifty runs, and fails the job.
-    const endless = runStep(step, { ...STEP_ENV, STUB_MORE: '1000' })
+    // A purge that never says no more remain ends at the job's cap of runs, and fails the
+    // job. The cap is fifty, and the case runs the step under a cap of three.
+    expect(job.env?.DURABLERUN_WEEK_PURGE_RUNS).toBe('50')
+    const endless = runStep(step, {
+      ...STEP_ENV,
+      DURABLERUN_WEEK_PURGE_RUNS: '3',
+      STUB_MORE: '1000',
+    })
     expect({
       status: endless.status,
       purges: endless.sent.filter((argv) => argv[0] === 'purge').length,
-    }).toEqual({ status: 1, purges: 50 })
+    }).toEqual({ status: 1, purges: 3 })
   }, 300_000)
 
-  it("sends every command's report to a file, keeps the files as the job's artifact whatever the job does, and prints no report", () => {
-    const lines = job.steps
-      .flatMap((step) => (step.run ?? '').split('\n'))
-      .filter((line) => line.includes('pnpm --silent cli '))
-    expect(lines.length).toBe(4)
-    for (const line of lines) {
-      expect({ line, toFiles: / > "[^"]+" 2> "[^"]+" \|\| code=\$\?$/.test(line) }).toEqual({
-        line,
-        toFiles: true,
-      })
-    }
-    for (const step of job.steps) {
-      expect(/\btee\b|--reveal|\bcat\b/.test(step.run ?? '')).toBe(false)
-    }
+  it("keeps the report files as the job's artifact, whatever the job does", () => {
     const last = job.steps.at(-1)
     expect({ uses: last?.uses, when: last?.if, path: last?.with?.path }).toEqual({
       uses: 'actions/upload-artifact@v4',
