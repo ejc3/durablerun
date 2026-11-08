@@ -7509,12 +7509,15 @@ parent keeps, a failed task an operator revives, and a task an operator cancels.
   completion event, which is what BUILD.md's exit test line 44 builds its bound from.
 
 Every number is the same on the three dialects, because the week runs under fake time and
-names its tasks by the hour they arrived in. Each hold is shown failing, on libSQL, over a
+names its tasks by the hour they arrived in. The pass, the bound, the vacuity check, the
+endings and the waits are each shown failing, on libSQL, over a
 week that does what the hold forbids (`conformance/test/retention-soak-reds.test.ts`): a
 purge that deletes nothing, a policy that lets nothing go, a purge that reads a shorter
 age than the policy names, a driver stopped for a simulated day, and a store that leaves a
 wait behind when it ends a run. The week under a policy that lets nothing go keeps no unit
 by its parent and none by a held outcome, so it is the control of those two counts as well.
+Three holds have no failing week in that file: the sampled outcomes, the queue that ends
+empty, and the rows of a digest unit.
 
 A week runs inside one fixture, and on libSQL none of its batches lets the event loop turn:
 measured, a pending timer fired once in a week that ran for 8 to 13 seconds. A test worker
@@ -7522,8 +7525,8 @@ whose loop does not turn for a minute fails its run with every test passing. So 
 asks its fixture for a turn at each simulated day. The member of the fixture contract it
 asks through, `turn`, is one every fixture implements, as a turn of the event loop from a
 zero-delay timer, so the shared suite calls nothing a dialect may leave out. A case on every
-selected dialect holds that a timer armed to fire again and again fires at least once in
-each of the nine days the passes run for. It can fail on libSQL alone: a batch of PostgreSQL
+selected dialect holds that a timer armed to fire again and again fires at least nine
+times in the week, as many times as the days the passes run for. It can fail on libSQL alone: a batch of PostgreSQL
 or MySQL crosses a socket, so the loop turns at every one of them, with the fixture's turn
 or without it.
 
@@ -7617,8 +7620,8 @@ due range (section 3.2). The three legs of `purge-candidates` need it: each
 ranges over `tasks_terminal` under a LIMIT, and before, the reader refused each
 as a walk of `tasks`. What the gate protects still holds: the plan test names
 each of the three legs with the LIMIT that bounds it, as it names every
-statement that holds a due range, and each store's plan test pins the
-statements of `purge-unit` beside a history of ended units.
+statement that holds a due range, and the plan tests of PostgreSQL and MySQL
+pin the statements of `purge-unit` beside a history of ended units.
 
 **Two contract changes, which the maintainer approved on 2026-10-03.** Both
 follow from bounding rows by deleting task rows.
@@ -7663,10 +7666,12 @@ can race: spawn and its replay, every terminal batch with its completion event
 and wake, the three awaits, the woken claim and the timed wait, sagas,
 `retryTask`, an older build's ending, and database time. TLC checks these
 properties under weak fairness on every configuration. Each names its
-executable twin: the ones the invariant library has, the three conditions of
+executable twin: the ones the invariant library and the child-task row checks
+have, the three conditions of
 `retentionViolations`, which `engineHistoryViolations` runs behind every
 surface that judges a history, the cases of the purge in the `retention`
-surface (`conformance/src/retention-purge.ts`), which the table names by their
+surface (`conformance/src/retention-purge.ts`, and `conformance/src/retention.ts`
+for the case of a child and its parent), which the table names by their
 titles, and the simulated week (`conformance/src/retention-soak.ts`).
 
 | Property | What it says | Executable twin |
@@ -7681,8 +7686,8 @@ titles, and the simulated week (`conformance/src/retention-soak.ts`).
 | `AgedUnblockedIsPurged` | only what keeps a unit forever by design keeps it | the simulated week: the case `once the longest window has passed, the queue holds nothing`, with the floors of what the passes kept and took |
 | `TypeOK` | the variables keep their types | none needed |
 
-`WholeUnit` has two halves. The invariant library holds one: no run,
-checkpoint, wait, or completion event outlives its task. `retentionViolations`
+`WholeUnit` has two halves. The invariant library and the child-task row checks
+hold one: no run, checkpoint, wait, or completion event outlives its task. `retentionViolations`
 (`conformance/src/retention-rows.ts`) holds the other, that every task row has
 a run. The library flags a task with no run only while the task is live, and
 its accounting conditions skip a task with no run, so without this condition a
@@ -7708,7 +7713,7 @@ conditions, the ones that purge among them. Each is seen failing on rows
 written by hand, on every dialect.
 
 Each mutant in `specs/Retention.mutants.json` deletes or bends one guard of the
-barrier or the batch and is caught by the property it names, and each probe
+barrier, the batch or the await of a purged child and is caught by the property it names, and each probe
 lifts one condition or one assumption and finds its witness. The model does not
 cover several parents or a chain of ancestors (each unit names only its own
 parent, so a chain of failed ancestors is purged top-down one link at a time),
