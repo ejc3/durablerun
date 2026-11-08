@@ -370,11 +370,25 @@ describe('what selftest says of a database whose answer cannot be read', () => {
     const labels = [...new Set(DECLARED)]
     const exits = new Map<number, number>()
     const internal: string[] = []
+    const printedOk: string[] = []
     for (const label of labels) {
       for (const [how, bend] of Object.entries(BENT)) {
         await onDb(`selftest-bent-${label}-${how}`, async (db) => {
           const run = await runCli(line(db), db.env, openerWrapping(answering(label, bend)))
           exits.set(run.exit, (exits.get(run.exit) ?? 0) + 1)
+          // A run that the bent answer ended never prints the bent label as ok, and what it
+          // says was refused never names another label alone: a step that was answered under
+          // two labels read them together.
+          if (run.exit === exitCode('failed')) {
+            const answer = report(run.stdout)
+            const found = (answer.steps ?? []).find((step) => step.result === 'unexpected')?.found
+            const namesAnother =
+              found?.startsWith('the answer to ') === true &&
+              !found.startsWith(`the answer to ${label} `)
+            if (answer.labels?.[label] !== 'unexpected' || namesAnother) {
+              printedOk.push(`${label}, ${how}: ${answer.labels?.[label]}, ${found}`)
+            }
+          }
           // A bent read of the schema version is a schema the build does not read, exit 5,
           // and bent counts of the queue's rows can read as a queue that holds rows, exit 2.
           if (![0, exitCode('usage'), exitCode('schema'), exitCode('failed')].includes(run.exit)) {
@@ -386,6 +400,10 @@ describe('what selftest says of a database whose answer cannot be read', () => {
     expect(
       internal,
       'mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer',
+    ).toEqual([])
+    expect(
+      printedOk,
+      'mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under',
     ).toEqual([])
     // Most bent answers are seen: the run that passes all the same is the exception.
     expect(exits.get(exitCode('failed')) ?? 0).toBeGreaterThan(labels.length * 2)
