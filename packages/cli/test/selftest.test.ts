@@ -1,4 +1,9 @@
-import { PermanentStoreError, QUEUE_TABLES, type SqlExecutor } from '@durablerun/core'
+import {
+  PermanentStoreError,
+  QUEUE_TABLES,
+  type SqlExecutor,
+  type SqlResult,
+} from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { describe, expect, it } from 'vitest'
 import { COMMANDS, NOT_SENT_BY_SELFTEST } from '../src/commands.js'
@@ -276,6 +281,116 @@ describe('what selftest says of a store that refuses one batch', () => {
       'mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent',
     ).toEqual([])
   }, 300_000)
+})
+
+/** A text no row of the engine holds, planted in an answer. */
+const BOGUS = 'bogus-7f3a'
+
+/**
+ * The ways an answer is bent into one the store's decoders, or the checks of a batch's
+ * shape, may refuse: every text of every row replaced, every value null, no row at all,
+ * and one result too few.
+ */
+const BENT: Readonly<Record<string, (results: SqlResult[]) => SqlResult[]>> = {
+  'every text replaced': (results) =>
+    results.map((result) => ({
+      ...result,
+      rows: result.rows.map((row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([column, value]) => [
+            column,
+            typeof value === 'string' ? BOGUS : value,
+          ]),
+        ),
+      ),
+    })),
+  'every value null': (results) =>
+    results.map((result) => ({
+      ...result,
+      rows: result.rows.map((row) =>
+        Object.fromEntries(Object.keys(row).map((column) => [column, null])),
+      ),
+    })),
+  'no row': (results) => results.map(() => ({ rows: [], rowsAffected: 0 })),
+  'one result too few': (results) => results.slice(0, -1),
+}
+
+/** A store that takes every batch and bends the answer to one label. */
+const answering =
+  (label: string, bend: (results: SqlResult[]) => SqlResult[]) =>
+  (real: SqlExecutor): SqlExecutor => ({
+    batch: async (sent, statements, control) => {
+      const results = await real.batch(sent, statements, control)
+      return sent === label ? bend(results) : results
+    },
+  })
+
+describe('what selftest says of a database whose answer cannot be read', () => {
+  it('exits 11 and never 1 when the database answers a row the decoders refuse: the step is unexpected, the label is the one that was answered, and the row prints only with --reveal', () =>
+    onDb('selftest-refused-row', async (db) => {
+      // A task's outcome answered with a state that is not the engine's own.
+      const everyTextReplaced = BENT['every text replaced']
+      if (everyTextReplaced === undefined) throw new Error('no such bend')
+      const opener = openerWrapping(answering('task-result', everyTextReplaced))
+      const run = await runCli(line(db), db.env, opener)
+      const answer = report(run.stdout)
+      const at = (answer.steps ?? []).find((step) => step.result !== 'ok')
+      expect(
+        {
+          exit: run.exit,
+          result: at?.result,
+          label: answer.labels?.['task-result'],
+          failed: Object.values(answer.labels ?? {}).filter((result) => result === 'failed'),
+          saysTheLabel: at?.found?.includes('task-result'),
+          printsTheRow: `${run.stdout}${run.stderr}`.includes(BOGUS),
+        },
+        'mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer',
+      ).toEqual({
+        exit: exitCode('failed'),
+        result: 'unexpected',
+        label: 'unexpected',
+        failed: [],
+        saysTheLabel: true,
+        printsTheRow: false,
+      })
+      // With --reveal the decoder's own words print, and they quote the row.
+      const revealed = await runCli(
+        [...line(db, `${OWN_QUEUE}-revealed`), '--reveal'],
+        db.env,
+        opener,
+        testIdSource('selftest-revealed'),
+      )
+      expect({ exit: revealed.exit, printsTheRow: revealed.stdout.includes(BOGUS) }).toEqual({
+        exit: exitCode('failed'),
+        printsTheRow: true,
+      })
+    }))
+
+  it('exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise', async () => {
+    const labels = [...new Set(DECLARED)]
+    const exits = new Map<number, number>()
+    const internal: string[] = []
+    for (const label of labels) {
+      for (const [how, bend] of Object.entries(BENT)) {
+        await onDb(`selftest-bent-${label}-${how}`, async (db) => {
+          const run = await runCli(line(db), db.env, openerWrapping(answering(label, bend)))
+          exits.set(run.exit, (exits.get(run.exit) ?? 0) + 1)
+          // A bent read of the schema version is a schema the build does not read, exit 5,
+          // and bent counts of the queue's rows can read as a queue that holds rows, exit 2.
+          if (![0, exitCode('usage'), exitCode('schema'), exitCode('failed')].includes(run.exit)) {
+            internal.push(`${label}, ${how}: exit ${run.exit}`)
+          }
+        })
+      }
+    }
+    expect(
+      internal,
+      'mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer',
+    ).toEqual([])
+    // Most bent answers are seen: the run that passes all the same is the exception.
+    expect(exits.get(exitCode('failed')) ?? 0).toBeGreaterThan(labels.length * 2)
+    expect(exits.get(exitCode('internal'))).toBeUndefined()
+  }, 600_000)
 })
 
 describe('what selftest says of a store that answers otherwise', () => {
