@@ -6905,11 +6905,15 @@ operator started is the maintainer's attestation. The steps of the sealed inject
 the README's section "Operating a deployment". `.github/workflows/operable-week.yml`
 makes the hourly enqueue, the daily samples and the daily purge of such a week. Its one
 job runs only while a repository variable is set, it requires the secret store URL to
-equal the URL another variable pins before any command runs, it names each command's
-`--target` from the pinned URL, so the CLI refuses a credential of another database too,
-and it writes each report to a file of the run's artifact and none to the log. Cases read the file and run its steps
-against a stand-in for the CLI: the enqueue is under the hour's key, and the purge runs
-again until the verb says no more remain.
+equal the URL another variable pins before any command runs, and it writes each report to
+a file of the run's artifact and none to the log. The enqueue and the purge, which write,
+name their `--target` from the pinned URL, so the CLI refuses a credential of another
+database for them too. The samples, `stats` and `sizes`, are reads, which take no
+`--target`, so the first step alone holds them to the pinned database. Cases read the file and run its steps
+against a stand-in for the CLI, under the shell GitHub runs a step with, which stops at
+the first command that fails: the enqueue is under the hour's key, the purge runs again
+until the verb says no more remain, and a purge whose report cannot be read stops the job
+with nothing of the report in the log.
 
 **The schema window for a write.** A drive verb is held to the window a read is held to. It
 exits 5 outside it and prints the recorded version and the versions the build reads. On

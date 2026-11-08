@@ -10,10 +10,12 @@ name: operable-week
 # and the variables DURABLERUN_WEEK_STORE_URL (the same URL, which pins the database),
 # DURABLERUN_WEEK_COMPLETED_AFTER and DURABLERUN_WEEK_CANCELLED_AFTER (the purge's two
 # windows, as `purge` takes them). The job holds a database credential, which is full admin,
-# so it first requires the secret URL to be the one the variable pins, and each command
-# names its `--target` from the pinned URL, so the CLI refuses a credential of another
-# database too. No command's output goes to the log: each report is a file, and the files
-# are the job's artifact.
+# so it first requires the secret URL to be the one the variable pins. The two commands that
+# write, the enqueue and the purge, name their `--target` from the pinned URL, so the CLI
+# refuses a credential of another database for them too. The two samples, `stats` and
+# `sizes`, are reads, which take no `--target`: the first step alone holds them to the
+# pinned database. No command's output goes to the log: each report is a file, and the
+# files are the job's artifact.
 
 on:
   schedule:
@@ -131,7 +133,11 @@ jobs:
             pnpm --silent cli purge --queue "$DURABLERUN_WEEK_QUEUE" --target "$target" --completed-after "$DURABLERUN_WEEK_COMPLETED_AFTER" --cancelled-after "$DURABLERUN_WEEK_CANCELLED_AFTER" --execute --json > "$report" 2> "week-$day-purge-$run.err" || code=$?
             echo "purge run $run exited $code"
             [ "$code" -eq 0 ] || exit "$code"
-            more="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).more === true' "$report")"
+            # A report that cannot be read stops the job, and nothing of it goes to the log.
+            more="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).more === true' "$report" 2> /dev/null)" || {
+              echo "purge run $run printed no report that can be read" >&2
+              exit 1
+            }
             [ "$more" = 'true' ] || break
             if [ "$run" -ge "$DURABLERUN_WEEK_PURGE_RUNS" ]; then
               echo "purge still says more remain after $run runs" >&2

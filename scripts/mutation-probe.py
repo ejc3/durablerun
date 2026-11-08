@@ -22735,6 +22735,40 @@ VERDICTS["week-receipt-refuses-a-failed-window-too-long"] = ExpectedVerdict(
     "the week receipt checker refuses a dry run whose failed window is longer than the shortest the verb takes, for that cause and no other",
     "mutation-verdict:behavior:week-receipt-refuses-a-failed-window-too-long",
 )
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-stops-at-a-report-it-cannot-read",
+            ".github/workflows/operable-week.yml",
+            "              echo \"purge run $run printed no report that can be read\" >&2\n              exit 1\n",
+            "              echo \"purge run $run printed no report that can be read\" >&2\n              more=false\n",
+            "a purge whose report cannot be read ends the daily job as if nothing more stood, so a backlog is left and the job is green",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-stops-at-a-report-it-cannot-read"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week samples the queue and then purges with --execute until the verb says no more remain, as the verbs take them",
+    "mutation-verdict:behavior:operable-week-workflow-stops-at-a-report-it-cannot-read",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-names-the-pinned-target",
+            ".github/workflows/operable-week.yml",
+            "cli purge --queue \"$DURABLERUN_WEEK_QUEUE\" --target \"$target\" ",
+            "cli purge --queue \"$DURABLERUN_WEEK_QUEUE\" --target \"${DURABLERUN_STORE_URL#libsql://}\" ",
+            "the daily purge names as its target whatever database the secret opens, so the CLI no longer refuses a credential of another database",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-names-the-pinned-target"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week names the pinned database as the target of every command that writes, whatever the credential opens, and no target for a read, which takes none",
+    "mutation-verdict:behavior:operable-week-workflow-names-the-pinned-target",
+)
 
 MUTATIONS = [
     Mutation(
@@ -26680,7 +26714,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1513:
+        if len(MUTATIONS) != 1515:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

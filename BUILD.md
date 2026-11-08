@@ -965,7 +965,8 @@ accepts it.
     readers what the commands print. The workflow is
     .github/workflows/operable-week.yml, off until a repository variable is
     set, and packages/cli/test/operable-week-workflow.test.ts reads the file
-    and runs its steps against a stand-in for the CLI.
+    and runs its steps against a stand-in for the CLI, under the shell GitHub
+    runs a step with, which stops at the first command that fails.
 
 **Receipt M1 (the maintainer's, outside the exit test):** a week of at least 168
 hours on the deployed alpha. Before the week, a branch or snapshot of the

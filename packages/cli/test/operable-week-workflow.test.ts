@@ -14,14 +14,16 @@ import { ROOT } from './support.js'
  * database credential, writes each hour and deletes each day. These cases read the workflow
  * file: its one job is off until one repository variable is set, the job requires the
  * pinned database before any step holds the credential, and its two command steps, run here
- * against a stand-in for `pnpm`, send the commands as the verbs take them, each naming the
- * pinned database as its target, each report to a file and nothing of a report to the log.
+ * against a stand-in for `pnpm` under the shell GitHub runs a step with, send the commands
+ * as the verbs take them, each one that writes naming the pinned database as its target,
+ * each report to a file and nothing of a report to the log.
  */
 
 interface Step {
   readonly name?: string
   readonly uses?: string
   readonly run?: string
+  readonly shell?: string
   readonly if?: string
   readonly env?: Readonly<Record<string, string>>
   readonly with?: Readonly<Record<string, unknown>>
@@ -45,6 +47,7 @@ const workflow = parse(
   }
   readonly permissions: unknown
   readonly env?: unknown
+  readonly defaults?: { readonly run?: { readonly shell?: string } }
   readonly jobs: Readonly<Record<string, Job>>
 }
 
@@ -79,7 +82,8 @@ const sent = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filt
 fs.appendFileSync(log, JSON.stringify(argv) + '\\n')
 const verb = argv[2]
 const purges = sent.filter((line) => JSON.parse(line)[2] === 'purge').length
-process.stdout.write(JSON.stringify({ command: verb, more: verb === 'purge' && purges < Number(process.env.STUB_MORE ?? 0), secret: 'a-report-line' }) + '\\n')
+const report = JSON.stringify({ command: verb, more: verb === 'purge' && purges < Number(process.env.STUB_MORE ?? 0), secret: 'a-report-line' })
+process.stdout.write((verb === process.env.STUB_NOT_JSON ? 'a-report-line that is not JSON' : report) + '\\n')
 process.stderr.write('a-line-on-stderr\\n')
 process.exit(verb === process.env.STUB_FAIL ? 6 : 0)
 `
@@ -94,7 +98,29 @@ interface StepRun {
   readonly files: Record<string, string>
 }
 
-/** Run a step's script under bash, with the stand-in first on the PATH, in a directory of its own. */
+/**
+ * How GitHub runs a step of a workflow whose default shell is `bash`: the step's script is
+ * a file, run with no profile, and it stops at the first command that fails, a failed part
+ * of a pipeline included. A case run under a plain `bash -c` would pass a script that this
+ * shell stops.
+ */
+const SHELL = ['--noprofile', '--norc', '-eo', 'pipefail']
+
+function runScript(
+  script: string | undefined,
+  options: { cwd: string; env: Readonly<Record<string, string>> },
+): { status: number | null; stdout: string; stderr: string } {
+  const file = join(mkdtempSync(join(tmpdir(), 'durablerun-operable-week-step-')), 'step.sh')
+  try {
+    writeFileSync(file, script ?? '')
+    const run = spawnSync('bash', [...SHELL, file], { ...options, encoding: 'utf8' })
+    return { status: run.status, stdout: run.stdout, stderr: run.stderr }
+  } finally {
+    rmSync(join(file, '..'), { recursive: true, force: true })
+  }
+}
+
+/** Run a step's script as GitHub does, with the stand-in first on the PATH, in a directory of its own. */
 function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
   const dir = mkdtempSync(join(tmpdir(), 'durablerun-operable-week-'))
   try {
@@ -104,9 +130,8 @@ function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
     writeFileSync(join(bin, 'pnpm'), STUB)
     chmodSync(join(bin, 'pnpm'), 0o755)
     const log = join(dir, 'sent.log')
-    const run = spawnSync('bash', ['-c', step.run ?? ''], {
+    const run = runScript(step.run, {
       cwd: work,
-      encoding: 'utf8',
       env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, ...env },
     })
     const sent = (() => {
@@ -198,8 +223,8 @@ describe('the workflow of the operable week', () => {
       DURABLERUN_STORE_TOKEN: '${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}',
     })
     const gate = (env: Record<string, string>): number | null =>
-      spawnSync('bash', ['-c', step.run ?? ''], {
-        encoding: 'utf8',
+      runScript(step.run, {
+        cwd: tmpdir(),
         env: { PATH: process.env.PATH ?? '', ...env },
       }).status
     const url = 'libsql://week-database.example'
@@ -258,13 +283,6 @@ describe('the workflow of the operable week', () => {
       json: true,
       reveal: false,
     })
-    // The target is the pinned database's whatever the credential opens, so the CLI refuses
-    // a credential of another database even where the guard was taken out.
-    const another = runStep(stepNamed(ENQUEUE), {
-      ...STEP_ENV,
-      DURABLERUN_STORE_URL: 'libsql://another-database.example',
-    })
-    expect(parseInvocation(another.sent[0] ?? []).strings.target).toBe('week-database.example')
     // The report and what the command wrote on stderr are files, and neither is in the log.
     const names = Object.keys(run.files).sort()
     expect(names.length).toBe(2)
@@ -336,6 +354,24 @@ describe('the workflow of the operable week', () => {
     const { DURABLERUN_WEEK_CANCELLED_AFTER: _unset, ...noWindow } = STEP_ENV
     const refused = runStep(step, noWindow)
     expect({ status: refused.status, sent: refused.sent }).toEqual({ status: 1, sent: [] })
+    // A purge whose report cannot be read stops the job after that run, and nothing of what
+    // it printed goes to the log.
+    const unread = runStep(step, { ...STEP_ENV, STUB_MORE: '2', STUB_NOT_JSON: 'purge' })
+    expect(
+      {
+        status: unread.status,
+        verbs: unread.sent.map((argv) => argv[0]),
+        log: unread.stdout,
+        stderr: unread.stderr,
+      },
+      'mutation-verdict:behavior:operable-week-workflow-stops-at-a-report-it-cannot-read',
+    ).toEqual({
+      status: 1,
+      verbs: ['stats', 'sizes', 'purge'],
+      log: 'stats exited 0\nsizes exited 0\npurge run 1 exited 0\n',
+      stderr: 'purge run 1 printed no report that can be read\n',
+    })
+    expect(Object.values(unread.files).join('')).toContain('a-report-line that is not JSON')
     // A purge that never says no more remain ends at the job's cap of runs, and fails the
     // job. The cap is fifty, and the case runs the step under a cap of three.
     expect(job.env?.DURABLERUN_WEEK_PURGE_RUNS).toBe('50')
@@ -349,6 +385,57 @@ describe('the workflow of the operable week', () => {
       purges: endless.sent.filter((argv) => argv[0] === 'purge').length,
     }).toEqual({ status: 1, purges: 3 })
   }, 300_000)
+
+  it('names the pinned database as the target of every command that writes, whatever the credential opens, and no target for a read, which takes none', async () => {
+    // The credential of another database, as if the first step had been taken out.
+    const elsewhere = { ...STEP_ENV, DURABLERUN_STORE_URL: 'libsql://another-database.example' }
+    const sent = [ENQUEUE, DAILY]
+      .flatMap((name) => runStep(stepNamed(name), elsewhere).sent)
+      .map((argv) => parseInvocation(argv))
+    const pinned = await storeTarget(PINNED_URL)
+    expect(
+      sent.map(({ spec, strings }) => ({
+        verb: spec.verb,
+        writes: spec.writes,
+        target: strings.target,
+      })),
+      'mutation-verdict:behavior:operable-week-workflow-names-the-pinned-target',
+    ).toEqual([
+      { verb: 'enqueue', writes: true, target: pinned },
+      // The samples are reads. The CLI gives a read no flag to name its store again, so
+      // only the first step holds them to the pinned database.
+      { verb: 'stats', writes: false, target: undefined },
+      { verb: 'sizes', writes: false, target: undefined },
+      { verb: 'purge', writes: true, target: pinned },
+    ])
+    // Those are every command the workflow sends: no step's script names another verb.
+    const verbs = job.steps.flatMap((step) =>
+      [...(step.run ?? '').matchAll(/pnpm --silent cli (\S+)/g)].map((match) => match[1]),
+    )
+    expect(verbs).toEqual(['enqueue', 'stats', 'sizes', 'purge'])
+  }, 120_000)
+
+  it('runs every step under the shell the cases run it under, which stops at the first command that fails', () => {
+    // The workflow names bash as the shell of every step, and no step names another. GitHub
+    // then runs a step as `bash --noprofile --norc -eo pipefail <the script>`.
+    expect(workflow.defaults?.run?.shell).toBe('bash')
+    expect(job.steps.filter((step) => step.shell !== undefined)).toEqual([])
+    expect(SHELL).toEqual(['--noprofile', '--norc', '-eo', 'pipefail'])
+    const options = { cwd: tmpdir(), env: { PATH: process.env.PATH ?? '' } }
+    expect(
+      [
+        runScript('false\necho reached', options),
+        runScript('false | true\necho reached', options),
+        runScript('value="$(false)"\necho reached', options),
+        runScript('true\necho reached', options),
+      ].map(({ status, stdout }) => ({ status, stdout })),
+    ).toEqual([
+      { status: 1, stdout: '' },
+      { status: 1, stdout: '' },
+      { status: 1, stdout: '' },
+      { status: 0, stdout: 'reached\n' },
+    ])
+  }, 60_000)
 
   it("keeps the report files as the job's artifact, whatever the job does", () => {
     const last = job.steps.at(-1)

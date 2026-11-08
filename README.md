@@ -220,8 +220,9 @@ It is off: its one job runs only while the repository variable
 the pinned database each hour, and once a day it records `stats` and `sizes`
 and then runs `purge --execute` until the verb says no more remain. It holds a
 database credential, so it first requires the secret URL to equal the URL a
-repository variable pins, and it names each command's `--target` from the
-pinned URL. Its reports are files in the run's artifact, and no report goes to
+repository variable pins. The enqueue and the purge, which write, name their
+`--target` from the pinned URL. `stats` and `sizes` are reads and take no
+`--target`, so that first check alone holds them to the pinned database. Its reports are files in the run's artifact, and no report goes to
 the log. The file's first comment lists the secrets and
 variables it needs.
 
