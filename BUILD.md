@@ -62,14 +62,19 @@ own lines met, with the evidence in its own diff. Twelve pull requests make the
 milestone: those ten, PR5.0 (PR #111), which wrote this record, and PR5.5, the
 docs pull request that records the lines as met. Nine of them merged from
 2026-09-24 to 2026-10-06. The work was paused from 2026-10-06 to 2026-11-07,
-PR5.2d merged on 2026-11-07, and PR5.4 on 2026-11-08. Each of the eleven before
-PR5.5 has the postmortem of its reviews under `postmortems/`. PR5.5 also added
-to CI's MySQL job the four test files of the CLI that run on each selected
-dialect and that the job did not run, `drive-twin.test.ts`, `drill.test.ts`,
-`purge-twin.test.ts` and `selftest.test.ts`. Lines 38, 39, 43 and 44 cite
-them, lines 38 and 39 for each dialect. CI's verify job ran them on libSQL and
-PostgreSQL, and no job ran them on MySQL, where they passed on 2026-11-08
-before the change. No milestone is
+PR5.2d merged on 2026-11-07, and PR5.4 on 2026-11-08. Each of the twelve has
+the postmortem of its reviews under `postmortems/`. PR5.5 also added
+to CI's MySQL job the five test files that run once for each selected
+dialect and that the job did not run: four of the CLI, `drive-twin.test.ts`,
+`drill.test.ts`, `purge-twin.test.ts` and `selftest.test.ts`, and
+`retention-soak-turns.test.ts` of the conformance package. Lines 38, 39, 43
+and 44 cite the four, lines 38 and 39 for each dialect, and DESIGN.md section
+3.12 says the fifth holds on every selected dialect. CI's verify job ran them
+on libSQL and PostgreSQL, and no job ran them on MySQL, where they passed on
+2026-11-08 before the change. The job's list is written by hand, so a case of
+`enrollment.test.ts` now finds every test file that runs once for each
+selected dialect, by what it imports, and requires the list to hold it. No
+milestone is
 current: the maintainer has named none. The maintainer's live week on the
 deployed alpha is receipt M1, outside the numbered lines. It is NOT MET, as its
 paragraph below says, and M1 is recorded met only when its receipt exists and
@@ -264,7 +269,7 @@ line 44's checker accepts it.
     verbs, each from the current version over seeded tasks: `enqueue` under a key no task
     has and under a key a task holds, which makes it read the task it found, `emit` of an
     event a run awaits, `cancel` of a pending task, `retry` of a failed
-    task and of a live one, which makes it read the guard, and `sweep` of a queue with a
+    task and of a live one, which makes it read the guard again, and `sweep` of a queue with a
     deadline passed, a launch lost and a lease lapsed. A drive verb mints ids and its
     repeat is another process, so the repeat's ids go on from where the first run's stopped
     and the two states are compared with the ids each run minted read as one placeholder.
@@ -1102,9 +1107,10 @@ and the assurance machinery. Of the five pieces of that machinery one was
 built after all: exit test line 37 holds the gauges of `stats` to a count of
 the dump on every state its fuzz walks leave. The other four are not built.
 The rest are the options below, each with the event that brings it back. The
-last two options are not non-goals: a move PR5.4 did not make, and a check
+last three options are not non-goals: a move PR5.4 did not make, a check
 that PR5.5's read of DESIGN.md sections 3.11 and 3.12 found narrower than the
-sentences it stands behind.
+sentences it stands behind, and the words of two refusals that PR5.5 left as
+they are.
 
 - An audit trail of who cancelled, retried or emitted. The engine records no
   author of a write. Trigger: a cancel, a retry or an emit on a deployed queue
@@ -1164,8 +1170,22 @@ sentences it stands behind.
   counts that the code pins, with no marker: the nine conditions of the
   barrier, the ten methods of the operator's reads and the thirteen conjuncts
   of the retry guard among them. Each needs an entry in the test's table, and
-  the test reads no number word past twelve. Trigger: the first of those
-  counts found stale.
+  the test reads no number word past twelve. PR5.5's read found two unmarked
+  counts stale and corrected them: the modules of retention, three where the
+  code has four, and the instants `stats` prints, three where it prints one.
+  Neither has an exported value a marker could be held to: the four modules
+  are four imports of a case in core, and the gauges and the instant are
+  members of a type. Trigger: the next unmarked count of those sections found
+  stale.
+- The words of two refusals. `enqueue` refuses an empty task name and says no
+  handler is registered under an empty name. The SDK takes any name in a
+  registry, and what refuses an empty name is the hosted enqueue route.
+  `stuck` and `purge` refuse a duration they cannot read and say it takes a
+  whole number and a unit of at most 100 years. They refuse a number of ten
+  digits too, which that sentence allows: `1000000000s` is under 32 years.
+  DESIGN.md section 3.11 says both as the code has them, and a message is
+  code, which PR5.5 does not change. Trigger: the next change to the messages
+  of those commands.
 
 **Held for the maintainer:** each of these is a supply or a decision that only
 the maintainer has, and no PR of this milestone made it. Supply: a Turso
@@ -7231,8 +7251,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     before, and none in three runs of 20 rounds after. (6) On MySQL the last delete, of
     the task row, is a delete of one row by its primary key and its stamp, which the
     compiler admits for `tasks` alone. (7) The checkpoint cap is 200,000, measured, where
-    the plan proposed 5,000. (8) The oracle reads a dump of every table and every table is
-    compared afterwards, and two cases that stay in the suite show the grid failing for a
+    the plan proposed 5,000. (8) The oracle reads a dump of the six protocol tables and
+    each of them is compared afterwards, and two cases that stay in the suite show the grid failing for a
     purge whose delete lost its key and for one whose delete lost its stamp. (9) Once the
     batch has committed, core checks that each delete removed what the unit held when the
     compare-and-set read it, and throws otherwise. (10) `retentionViolations` gained no
@@ -7408,8 +7428,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     libSQL special case in the shared suite, so the time is recorded and the control is
     not shared.
   - What else the verb and the parser now do: a unit whose purge was sent and not answered
-    is printed whole under `outcomeNotKnown`; a failure before any unit was reached prints
-    as any failure does; a flag given twice is refused by the parser, for every command;
+    is printed whole under `outcomeNotKnown`; a failure that leaves no unit in any list
+    prints as any failure does; a flag given twice is refused by the parser, for every command;
     the list of the barrier's conditions is frozen; and `inspect --key` and `explain
     --key` say that a task the key found may have been retained out, and no more.
   - The rewordings of exit test line 43, each with its reason. (1) Waits are out of the
@@ -7483,8 +7503,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     engine does exits 11, `failed`, a new exit code: no older code means that a database
     took a batch and answered it wrong. (6) Five of its calls answer of its queue what
     they answer of an empty one, because what would tell the two apart is a claimed run or
-    a unit a window old. A case names the five, and for every other call it requires the
-    run to fail when that call is routed to another queue. (7) `purge` is no longer the
+    a unit a window old. A case names the five, and for every other call but the read of
+    the schema version it requires the run to fail when that call is routed to another
+    queue, or, for the clock, answers no instant. (7) `purge` is no longer the
     one command that calls the retention port: `selftest` sends each of its calls once,
     and deletes nothing. (8) The seal is the sha256 of the task id, the cause as `explain`
     names it and the nonce, each followed by a line feed. The second person injects,
