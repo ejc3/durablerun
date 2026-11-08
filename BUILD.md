@@ -52,8 +52,8 @@ this section is the plan.
 
 **Status: COMPLETE (named 2026-09-24 by the maintainer, at main `f25d9f7`;
 complete 2026-11-08).** PR5.4 merged as PR #124, the last pull request that
-owns a line of the exit test, and main at its merge commit meets every line
-below, 32 to 44. Each line says that it is met and names the pull request that
+owns a line of the exit test, and main at `e9af748`, its merge commit, meets
+every line below, 32 to 44. Each line says that it is met and names the pull request that
 owns it: lines 32, 33 and 34 PR5.3a (PR #112), line 35 PR5.3b1 (PR #114), line
 36 PR5.3b2 (PR #115), line 37 PR5.3c (PR #117), lines 38 and 39 PR5.3d (PR
 #119), line 40 PR5.2a (PR #113), line 41 PR5.2c1 (PR #116), line 42 PR5.2c2 (PR
