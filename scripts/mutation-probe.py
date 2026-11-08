@@ -22814,6 +22814,20 @@ MUTATION_SPECS.extend(
 VERDICTS["cli-selftest-names-every-label-of-a-refused-answer"] = VERDICTS[
     "cli-selftest-marks-every-label-a-step-was-answered-under"
 ]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-reads-a-label-from-its-last-batch",
+            "packages/cli/src/selftest.ts",
+            "    const last = sent.findLast((batch) => batch.label === label)\n",
+            "    const last = sent.find((batch) => batch.label === label)\n",
+            "a label the store answered once and then failed prints ok, so the report names no label that failed",
+        ),
+    )
+)
+VERDICTS["cli-selftest-reads-a-label-from-its-last-batch"] = VERDICTS[
+    "cli-selftest-prints-a-label-by-what-was-sent"
+]
 
 MUTATIONS = [
     Mutation(
@@ -26759,7 +26773,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1518:
+        if len(MUTATIONS) != 1519:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

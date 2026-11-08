@@ -6784,8 +6784,8 @@ calls of the report too, so a store that fails one of them prints the report as 
 that was running, because a step sends more batches than its own call's: it reads the state
 the call left. A label whose batch the store failed prints `failed`, a label the store
 answered prints `ok`, and a label that was not sent prints `not-run`. The step that was
-running names the label that failed under `failedAt`. A case refuses each label in turn and
-requires exactly that. A call the store failed exits as the failure does, and a
+running names the label that failed under `failedAt`. A case refuses every batch of a run
+in turn, a label's later sendings too, and requires exactly that. A call the store failed exits as the failure does, and a
 call that answered otherwise exits 11, with what it answered under `found`: a count, a
 flag, an id or a state of the engine's own, and never a stored text.
 

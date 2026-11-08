@@ -219,41 +219,46 @@ describe('what selftest refuses, having written nothing', () => {
   })
 })
 
-/** A store that refuses every batch under one label and takes every other. */
-const refusing =
-  (refused: string) =>
-  (real: SqlExecutor): SqlExecutor => ({
-    batch: (label, statements, control) =>
-      label === refused
-        ? Promise.reject(new PermanentStoreError(`the store refuses '${label}'`))
-        : real.batch(label, statements, control),
-  })
+/** A store that refuses the batch it is sent at one place of the run, counted from 0, and takes every other. */
+const refusingTheBatchAt =
+  (place: number) =>
+  (real: SqlExecutor): SqlExecutor => {
+    let sent = 0
+    return {
+      batch: (label, statements, control) =>
+        sent++ === place
+          ? Promise.reject(new PermanentStoreError(`the store refuses '${label}'`))
+          : real.batch(label, statements, control),
+    }
+  }
 
 describe('what selftest says of a store that refuses one batch', () => {
   it('prints each label by what was sent, for every label it sends: the label the store refused as failed, the labels answered before it as ok, and the rest as not-run', async () => {
-    // The order of a run nothing fails: where each label is first sent.
-    const firstSent = new Map<string, number>()
+    // The batches of a run nothing fails, in the order they are sent.
+    const order: string[] = []
     await onDb('selftest-label-order', async (db) => {
       const recording = recordingOpener()
       expect((await runCli(line(db), db.env, recording.opener)).exit).toBe(0)
-      for (const [index, batch] of recording.sent().entries()) {
-        if (!firstSent.has(batch.label)) firstSent.set(batch.label, index)
-      }
+      order.push(...recording.sent().map((batch) => batch.label))
     })
     const labels = [...new Set(DECLARED)]
-    expect(labels.filter((label) => !firstSent.has(label))).toEqual([])
-    // Every label is tried, and what each run printed otherwise is listed whole.
+    expect(labels.filter((label) => !order.includes(label))).toEqual([])
+    // A step sends more batches than its call's, and a label is sent more than once: the
+    // state a call left is read under the label of another call.
+    expect(order.length).toBeGreaterThan(labels.length + 10)
+    // Every batch of the run is refused in turn, a label's later sendings too, and what
+    // each run printed otherwise is listed whole.
     const differed: unknown[] = []
-    for (const refused of labels) {
-      await onDb(`selftest-refuses-${refused}`, async (db) => {
-        const run = await runCli(line(db), db.env, openerWrapping(refusing(refused)))
+    for (const [place, refused] of order.entries()) {
+      await onDb(`selftest-refuses-${place}`, async (db) => {
+        const run = await runCli(line(db), db.env, openerWrapping(refusingTheBatchAt(place)))
         const answer = report(run.stdout)
-        const at = firstSent.get(refused) ?? -1
+        const answered = new Set(order.slice(0, place))
         const expected = Object.fromEntries(
-          labels.map((label) => {
-            const first = firstSent.get(label) ?? -1
-            return [label, label === refused ? 'failed' : first < at ? 'ok' : 'not-run']
-          }),
+          labels.map((label) => [
+            label,
+            label === refused ? 'failed' : answered.has(label) ? 'ok' : 'not-run',
+          ]),
         )
         const printed = answer.labels ?? {}
         // The step that was running names the label that failed, which need not be its own.
@@ -268,6 +273,7 @@ describe('what selftest says of a store that refuses one batch', () => {
           failedAt[0] !== refused
         ) {
           differed.push({
+            place,
             refused,
             exit: run.exit,
             failedAt,
@@ -280,7 +286,7 @@ describe('what selftest says of a store that refuses one batch', () => {
       differed,
       'mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent',
     ).toEqual([])
-  }, 300_000)
+  }, 600_000)
 })
 
 /** A text no row of the engine holds, planted in an answer. */

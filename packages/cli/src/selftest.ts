@@ -327,7 +327,8 @@ export interface StepReport {
  * Each batch label selftest declares, with its result, read from the batches that were
  * sent and not from the step that was running: `failed` for a label whose last batch the
  * store did not answer, `ok` for one the store answered, and `not-run` for one that was
- * not sent. A label of the call whose answer was not the engine's reads `unexpected`.
+ * not sent. When a step's answers are off, the labels of its call and every label it was
+ * answered under read `unexpected`.
  */
 export function labelResults(
   sent: readonly SentBatch[],
