@@ -7164,9 +7164,11 @@ models it, TLC checks it, and the model was written and checked before the SQL.
 Each store sends the purge as one fenced batch, `purge-unit`, which the model's
 ledger maps onto its two purge actions, `PurgeChild` and `PurgeHolder`. The
 purge is reached through a port of its own, `Retention`. No engine actor calls
-it, and no hosted route and no driver reaches it. Its one caller outside the
-tests is the CLI's `purge` verb (section 3.11), which an operator runs. The
-maintainer approved the two contract changes at the end of this section on
+it, and no hosted route and no driver reaches it. Its callers outside the
+tests are the CLI's `purge` verb (section 3.11), which an operator runs, and
+its `selftest`, which sends each of the port's calls once to a queue of its own
+and deletes nothing. The
+maintainer approved the two contract changes this section states below on
 2026-10-03.
 
 - **The unit.** One terminal task and what only it owns: its task row, its
@@ -7176,7 +7178,8 @@ maintainer approved the two contract changes at the end of this section on
   memos, and every step would then run again with no error. The model's
   `RetentionProbeChunkedPurge` deletes the task row in a second batch and shows
   exactly that revival. No engine path leaves a wait on a run that has ended:
-  every batch that ends or parks a run deletes that run's waits, and the
+  every batch that ends a run, or parks one otherwise than on an await,
+  deletes that run's waits, and the
   invariant library flags one that is left (`wait/dead-run`). So the unit of a
   task the engine ended holds no wait, and the purge's delete of a unit's waits
   is a defence over rows no engine path writes. The simulated week holds that
@@ -7210,8 +7213,9 @@ maintainer approved the two contract changes at the end of this section on
     and it is a defence.
   - B3. No run of another unit in the child's queue, in any state, holds the
     child's outcome: a `wake_event` equal to the completion event's name with a
-    non-null `event_payload`. A woken run keeps both columns until `complete`
-    or `suspend` clears them, and a failed or cancelled run never clears them.
+    non-null `event_payload`. A woken run keeps both columns until `complete`,
+    `suspend` or `reschedule` clears them, or a later await parks the run on
+    another event, and a failed or cancelled run never clears them.
     A run that names the event with no payload does not block. A parked run
     holds `wake_event` with no payload, and keeps it when the claim of its
     timed await that came due consumes the wait and when its task is cancelled
@@ -7267,8 +7271,9 @@ maintainer approved the two contract changes at the end of this section on
   the run it names and a generated delete follows a stamp, so the runs are
   stamped first, then their waits go, then the runs; the checkpoints and the
   completion event are keyed by the task's id, through the two relations
-  `FENCE_RELATIONS` gained for them; and every delete is keyed on the task
-  row's stamp, so the row goes last. B3
+  `FENCE_RELATIONS` gained for them; and every delete but the waits', which
+  follows the runs' stamp, is keyed on the task row's stamp, so the row goes
+  last. B3
   reads the runs of a queue by `wake_event` in any state. MySQL's `runs_woken
   (queue, wake_event, state)` covers every state, but libSQL's and PostgreSQL's
   `runs_woken` is partial to pending runs, so schema version 12 adds
@@ -7314,7 +7319,8 @@ maintainer approved the two contract changes at the end of this section on
   `retentionWindowsMs` alone makes, after it has held each window to the floor,
   so a window under the floor takes a cast to write. The stamp proof is the
   dialect's fragment. A case in core holds that, of everything retention's
-  three modules export, the entry exports the factory alone. A case on libSQL
+  four modules export, the entry exports the factory, the walk and the size of
+  the walk's page, and nothing else. A case on libSQL
   holds the state that showed the gap: a child that completed a moment ago
   under a parent that is still running, which nothing the entry exports can
   delete.
@@ -7360,8 +7366,9 @@ maintainer approved the two contract changes at the end of this section on
   A member an argument only inherits is not read, and is as one left out. Every
   method then checks its strings as every store method does. Each refusal is
   thrown before anything is sent, and is one of three kinds. A string no store
-  keeps, and an argument that must be an object and is not, the options of a
-  listing left out included, is an `InvalidDurableStringError`. A policy whose
+  keeps, and a unit, a cursor or the options of a listing that must be an
+  object and is not, the options left out included, is an
+  `InvalidDurableStringError`. A policy that is no object, or whose
   window is under 3,600 seconds, is no whole number, or is missing, and a
   cursor whose instant is no epoch-ms in range, is a `PortRefusalError`. A
   limit that is no whole number from 1 to 1,000 is a `RangeError`, as it is for
