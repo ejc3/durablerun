@@ -1227,9 +1227,10 @@ export function operatorQueueReadsConformance(
         await at(LATER)
         const reads = f.operatorReadsOver(f.raw)
         const listed = found(unadmitted(behind, 'pending', START + 1_000, LATER))
-        // With a limit of two the window is the three oldest due runs, all of which a
-        // claim takes. The refused run is the fourth, past the window: it is not listed,
-        // and the leg says that it left rows unexamined.
+        // With a limit of two the leg reads the three oldest due runs, all of which a claim
+        // takes, and the window reads four. The refused run is the fourth: it sorts after
+        // the last row of a leg that came back full, so it is not settled. It is not
+        // listed, and the leg says that it left rows unexamined.
         const windowOfThree = await reads.stuckRuns(Q, { graceSeconds: 0, limit: 2 })
         expect({
           dueUnclaimed: [

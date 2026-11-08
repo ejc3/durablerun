@@ -23,9 +23,10 @@ import {
  * a task's code wrote beyond the outcome `getTaskResult` already answers with: no params,
  * headers, event payload, run result or checkpoint state.
  *
- * None orders its rows. A text column sorts by the database's collation, which differs
- * between the dialects and between two servers of one dialect, so the implementation
- * orders every list itself.
+ * The statements of `task-facts` order no rows. A text column sorts by the database's
+ * collation, which differs between the dialects and between two servers of one dialect, so
+ * the implementation orders those lists itself. Some later reads order theirs in the
+ * statement.
  */
 
 /**

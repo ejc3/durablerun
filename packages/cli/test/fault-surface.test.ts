@@ -218,8 +218,8 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       ...named(db),
     ]),
   ],
-  // A revival sends the read of the task and the write. What the guard says of the task is
-  // read only when the port answers null, which a task that is live makes it do.
+  // A revival sends the read of what the guard says of the task, and the write. The guard
+  // is read a second time when the port answers null, which a task that is live makes it do.
   retry: [
     writeAt('the current version, of a task that failed', (db, seeded) => [
       'retry',

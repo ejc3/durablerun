@@ -93,8 +93,8 @@ export function jsonArgument(
 
 /**
  * Whether a refusal of `spawn` is of its queue or of its task name: the two strings the
- * port checks before the key, in the order of its arguments, each asked of core's own
- * check of it. A queue and a task name print everywhere, so the words of such a refusal
+ * port checks before the parameters and the key, in the order of its arguments, each
+ * asked of core's own check of it. A queue and a task name print everywhere, so the words of such a refusal
  * print. Any other refusal may quote the idempotency key, the one value a user wrote that
  * the call carries as text: a refusal of the key does, and so may one this function does
  * not know of. So what it cannot name as printable is hidden, and the words of a refusal

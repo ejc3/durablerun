@@ -298,7 +298,7 @@ describe('the builder of a purge', () => {
 describe("what core's entry exports of retention", () => {
   it('exports the factory of the port, and no builder of a purge, no maker of windows and no mark', async () => {
     const entry: Readonly<Record<string, unknown>> = await import('../src/index.js')
-    // Everything the three modules of retention export, so that a name one of them gains
+    // Everything the four modules of retention export, so that a name one of them gains
     // is asked too.
     const inside = {
       ...(await import('../src/statements/purge.js')),
