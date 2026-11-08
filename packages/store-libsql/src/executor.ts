@@ -9,6 +9,7 @@ import {
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
+  StoreAccessRefusedError,
   StoreUnavailableError,
   sqlBatchMode,
 } from '@durablerun/core'
@@ -31,9 +32,39 @@ const MISSING_META_TABLE = /no such table:\s*meta$/i
  * SQLITE_ERROR is deliberately absent. SQLite files a syntax error under that generic code,
  * and files a transaction state error there too, which a new connection cures. Of the
  * message text this executor reads only the two wordings above, of a schema fault and of
- * a missing `meta` table. A code that is not listed here is otherwise an outage.
+ * a missing `meta` table. A code that is not listed here is otherwise an outage, but for a
+ * server's refusal of a credential, below.
  */
 const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])
+
+/** The code the client gives an HTTP answer whose status is no success, whatever the status. */
+const HTTP_STATUS_ERROR = 'SERVER_ERROR'
+
+/**
+ * HTTP statuses that say the server refused the credential, or what it may do. A hosted
+ * libSQL server answers 401 for a token whose signature it does not accept and for no token
+ * at all. A database file has no credential and never answers a status.
+ *
+ * 400 is deliberately absent. A hosted server answers it for a token that is not a token at
+ * all, and a server answers it for any request it cannot read, so the status does not say
+ * that a credential was refused. It keeps the type it had, an outage.
+ */
+const ACCESS_REFUSED_HTTP_STATUSES = new Set([
+  401, // unauthorized: the server does not accept the token
+  403, // forbidden: the server accepts the token and refuses what it asks
+])
+
+/**
+ * The HTTP status a driver error carries when it is one of the statuses above, read as the
+ * number the client keeps on the error's cause and never from the message. A WebSocket
+ * upgrade the server refused has another code and carries its status only in its message, so
+ * it is none of these and keeps the type it had.
+ */
+function accessRefusedStatus(error: LibsqlError): number | undefined {
+  if (error.code !== HTTP_STATUS_ERROR) return undefined
+  const status = (error.cause as { status?: unknown } | undefined)?.status
+  return typeof status === 'number' && ACCESS_REFUSED_HTTP_STATUSES.has(status) ? status : undefined
+}
 
 /**
  * The primary result code a driver error names. An extended code spells its primary code
@@ -405,6 +436,16 @@ export class LibsqlExecutor implements SqlExecutor {
         sent.length === 1 &&
         sent[0]?.sql === SCHEMA_VERSION_READ_SQL &&
         sent[0].args.length === 0
+      // The server refused the credential before it read a statement. Read first, and by
+      // the status alone, so that no text a server sends beside the status is read as a
+      // schema fault.
+      const refusedStatus = error instanceof LibsqlError ? accessRefusedStatus(error) : undefined
+      if (refusedStatus !== undefined) {
+        throw new StoreAccessRefusedError(
+          `batch(${_label}) was refused access (HTTP status ${refusedStatus}): ${String(error)}`,
+          { cause: error },
+        )
+      }
       if (
         schemaVersionRead &&
         error instanceof LibsqlError &&

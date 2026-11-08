@@ -10,6 +10,7 @@ import {
   type SqlRow,
   type SqlStatement,
   type SqlTransactionLock,
+  StoreAccessRefusedError,
   StoreUnavailableError,
   isTreeBuiltRead,
   refuseUnknownLockKind,
@@ -45,6 +46,42 @@ const SCHEMA_MISMATCH_ERRNOS = new Set([
   1305, // ER_SP_DOES_NOT_EXIST
 ])
 /**
+ * Numbers that say the server refused the account, or what the account may do. The
+ * statement is fine, and another account or a grant to this one changes the answer. MySQL
+ * files them under three states, and no state says what they share: 28000 for a refused
+ * login, 42000, beside a syntax error, for a missing privilege, and its general state HY000
+ * for an account that is locked, blocked or past its password. So each is kept by number and
+ * read before the classes below. The list is held to the server's own list of error
+ * numbers: every number whose name says the account was refused is here, or has a written
+ * reason in the case that reads that list.
+ */
+const ACCESS_REFUSED_ERRNOS = new Set([
+  1044, // ER_DBACCESS_DENIED_ERROR: the account may not use the database
+  1045, // ER_ACCESS_DENIED_ERROR: a wrong password, or an account that does not exist
+  1130, // ER_HOST_NOT_PRIVILEGED: no account may connect from this host
+  1142, // ER_TABLEACCESS_DENIED_ERROR: no privilege for the statement on the table
+  1143, // ER_COLUMNACCESS_DENIED_ERROR: no privilege for the statement on a column
+  1211, // ER_NO_PERMISSION_TO_CREATE_USER: the account may not create accounts
+  1227, // ER_SPECIFIC_ACCESS_DENIED_ERROR: the statement needs a privilege the account lacks
+  1370, // ER_PROCACCESS_DENIED_ERROR: no privilege to run a routine
+  1419, // ER_BINLOG_CREATE_ROUTINE_NEED_SUPER: a stored program needs a privilege the account lacks
+  1698, // ER_ACCESS_DENIED_NO_PASSWORD_ERROR: a login the account's plugin refuses
+  1820, // ER_MUST_CHANGE_PASSWORD: the password expired, and a statement is refused until it is reset
+  1862, // ER_MUST_CHANGE_PASSWORD_LOGIN: the password expired, and the login is refused
+  1873, // ER_ACCESS_DENIED_CHANGE_USER_ERROR: a change of account on a connection is refused
+  3118, // ER_ACCOUNT_HAS_BEEN_LOCKED: the account is locked
+  3202, // ER_KEYRING_ACCESS_DENIED_ERROR: a keyring function needs a privilege the account lacks
+  3630, // ER_PERSIST_ONLY_ACCESS_DENIED_ERROR: a persisted setting needs a privilege the account lacks
+  3631, // ER_CMD_NEED_SUPER: a command needs a privilege the account lacks
+  3879, // ER_DB_ACCESS_DENIED: the account may not use the database
+  3914, // ER_AUDIT_LOG_INSUFFICIENT_PRIVILEGE: an audit log function needs a privilege the account lacks
+  3955, // ER_USER_ACCESS_DENIED_FOR_USER_ACCOUNT_BLOCKED_BY_PASSWORD_LOCK: blocked after failed logins
+  6038, // ER_SPECIFIC_ACCESS_DENIED: the statement needs a privilege the account lacks
+  6126, // ER_ACCESS_DENIED_NO_PROXY_GRANT: the account may not act as the account it names
+  6127, // ER_ACCESS_DENIED_NO_PROXY: the account may not act as the account it names
+])
+
+/**
  * A string is longer than its column. Only an indexed identifier is bounded here, at 255
  * characters, because MySQL cannot index unbounded text. It is invalid input and
  * permanent: reported as an outage it would be retried until a run's infrastructure
@@ -61,8 +98,8 @@ const ER_DATA_TOO_LONG = 1406
  * lists together: each is its own server's rule.
  *
  * The answers above keep a branch by number and are read first, because each has a type of
- * its own: a missing `meta` on the version read, a value too long for its column, and the
- * schema mismatch numbers. Every other state is an outage: a deadlock victim (1213, state
+ * its own: a missing `meta` on the version read, a value too long for its column, the
+ * schema mismatch numbers, and the numbers that say the account was refused. Every other state is an outage: a deadlock victim (1213, state
  * 40001), which the executor runs again before it reports one, a lock wait timeout (1205,
  * HY000), and an error with no state at all, as a lost connection or a closed pool is.
  */
@@ -535,6 +572,12 @@ export function classifyError(error: unknown, label: string, schemaVersionRead: 
     if (SCHEMA_MISMATCH_ERRNOS.has(errno)) {
       return new SchemaMismatchError(
         `batch(${label}) hit a schema this build does not expect (MySQL error ${errno}): ${errorDescription(error)}`,
+        { cause: error },
+      )
+    }
+    if (ACCESS_REFUSED_ERRNOS.has(errno)) {
+      return new StoreAccessRefusedError(
+        `batch(${label}) was refused access (MySQL error ${errno}): ${errorDescription(error)}`,
         { cause: error },
       )
     }
