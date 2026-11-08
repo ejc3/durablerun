@@ -1111,10 +1111,11 @@ and the assurance machinery. Of the five pieces of that machinery one was
 built after all: exit test line 37 holds the gauges of `stats` to a count of
 the dump on every state its fuzz walks leave. The other four are not built.
 The rest are the options below, each with the event that brings it back. The
-last three options are not non-goals: a move PR5.4 did not make, a check
+last five options are not non-goals: a move PR5.4 did not make, a check
 that PR5.5's read of DESIGN.md sections 3.11 and 3.12 found narrower than the
-sentences it stands behind, and the words of two refusals that PR5.5 left as
-they are.
+sentences it stands behind, the words of two refusals that PR5.5 left as
+they are, a case PR5.5 added that reads less than the property it holds, and a
+difference between a model and the code that PR5.5 found and did not change.
 
 - An audit trail of who cancelled, retried or emitted. The engine records no
   author of a write. Trigger: a cancel, a retry or an emit on a deployed queue
@@ -1190,6 +1191,23 @@ they are.
   DESIGN.md section 3.11 says both as the code has them, and a message is
   code, which PR5.5 does not change. Trigger: the next change to the messages
   of those commands.
+- Holding the MySQL job's list to the files a job runs. The case PR5.5 added
+  to `enrollment.test.ts` reads the import statements of each test file and
+  the list in `dialect-conformance.sh`. The property is which test files run
+  their cases for a dialect, and which of them a job runs. The case finds no
+  file that reaches the selection through a namespace import or a helper, and
+  none that reads the variable through a bracket. Trigger: a test file that
+  runs once for each dialect found outside the MySQL job while the case
+  passes.
+- `specs/Scheduler.tla` and what a sleep's suspension leaves on a run. The
+  model's `SleepSuspend` leaves `wakeEvent` and `runPayload` unchanged, and
+  its comments say the implementation clears neither. The code clears them:
+  `reschedule` and `suspend` share one statement
+  (`packages/core/src/statements/suspend.ts`) that sets the wake columns to
+  NULL, and a regression case holds it, "a consumed event wake is cleared by
+  reschedule". The difference is older than this milestone, and PR5.5
+  changed nothing for it. Trigger: the next change to a suspension or to
+  `specs/Scheduler.tla`, or the maintainer's word.
 
 **Held for the maintainer:** each of these is a supply or a decision that only
 the maintainer has, and no PR of this milestone made it. Supply: a Turso
