@@ -22769,6 +22769,20 @@ VERDICTS["operable-week-workflow-names-the-pinned-target"] = ExpectedVerdict(
     "the workflow of the operable week names the pinned database as the target of every command that writes, whatever the credential opens, and no target for a read, which takes none",
     "mutation-verdict:behavior:operable-week-workflow-names-the-pinned-target",
 )
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-a-failed-guard-stops-the-job",
+            ".github/workflows/operable-week.yml",
+            "      - name: Require the pinned dedicated database\n",
+            "      - name: Require the pinned dedicated database\n        continue-on-error: true\n",
+            "the job carries on after the guard refuses, so the samples of whatever database the secret names are read and uploaded",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-a-failed-guard-stops-the-job"] = VERDICTS[
+    "operable-week-workflow-requires-the-pinned-database"
+]
 
 MUTATIONS = [
     Mutation(
@@ -26714,7 +26728,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1515:
+        if len(MUTATIONS) != 1516:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

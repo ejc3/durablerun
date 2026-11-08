@@ -361,10 +361,10 @@ jobs:
               return repaired.replace(table, table + entries)
           if digest == 'd92ef6f06c840199a9b596620f0d89a4cec25739e956601708b777e621f5f975':
               # The self-test command, the week receipt's checker and the workflow of the week
-              # register thirty-three mutations: eight caught by cases of `selftest`, nineteen by
-              # cases of the week receipt's checker, and six by cases that read the week's workflow.
-              # Their cases carry thirty verdict markers, three of them shared by two mutations
-              # each. Each is newer than the base registry, so each is exempted there. No base
+              # register thirty-four mutations: eight caught by cases of `selftest`, nineteen by
+              # cases of the week receipt's checker, and seven by cases that read the week's
+              # workflow. Their cases carry thirty verdict markers, four of them shared by two
+              # mutations each. Each is newer than the base registry, so each is exempted there. No base
               # entry is re-aimed.
               repaired = exempt(previous, candidate, (
                   "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",

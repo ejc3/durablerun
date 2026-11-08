@@ -27,6 +27,7 @@ interface Step {
   readonly if?: string
   readonly env?: Readonly<Record<string, string>>
   readonly with?: Readonly<Record<string, unknown>>
+  readonly 'continue-on-error'?: unknown
 }
 
 interface Job {
@@ -216,8 +217,13 @@ describe('the workflow of the operable week', () => {
       expect(holdsASecret(step)).toBe(false)
     }
     const step = stepNamed(GUARD)
-    // The guard runs whichever command step follows it.
+    // The guard runs whichever command step follows it, and a guard that fails stops the
+    // job: no step of the job carries on after a failure.
     expect(step.if).toBeUndefined()
+    expect(
+      job.steps.filter((one) => one['continue-on-error'] !== undefined).map((one) => one.name),
+      'mutation-verdict:behavior:operable-week-workflow-requires-the-pinned-database',
+    ).toEqual([])
     expect(step.env).toEqual({
       DURABLERUN_STORE_URL: '${{ secrets.DURABLERUN_WEEK_STORE_URL }}',
       DURABLERUN_STORE_TOKEN: '${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}',
