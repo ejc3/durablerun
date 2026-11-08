@@ -15,6 +15,9 @@
  * A control shows the harness can fail: a planted migration that adds a column with no
  * default that may not be NULL, in the form version 10 gives NOT NULL on libSQL (a trigger
  * that refuses the write), must make alpha.1's cycle fail at its spawn.
+ *
+ * After the cycles, the example's migrate script and a simulated week run against the same
+ * installed assets (alpha1-week.ts).
  */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -22,6 +25,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
+import { migrateGuard, week } from './alpha1-week.js'
 import { faulting, openerWrapping, runCli } from './support.js'
 
 interface Alpha1Result {
@@ -287,6 +291,10 @@ try {
   console.log(
     `alpha1-compat: alpha.1 ran its cycle at versions ${versions.join(', ')}, and result read all ${tasks} tasks it wrote as its getTaskResult does; the planted NOT NULL control failed at spawn`,
   )
+  console.log(`alpha1-compat: ${await migrateGuard(consumer, dir)}`)
+  const weekStartedAt = Date.now()
+  console.log(`alpha1-compat: ${await week(consumer, dir)}`)
+  console.log(`alpha1-compat: the week took ${Math.round((Date.now() - weekStartedAt) / 1000)} s`)
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }
