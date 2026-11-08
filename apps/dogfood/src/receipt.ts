@@ -234,4 +234,4 @@ export function requireDogfoodReceipt(
 }
 
 /** The receipt of a week of the recurring workflow has a checker of its own. */
-export { type WeekRefusal, weekReceiptErrors } from './week-receipt.js'
+export { weekReceiptErrors } from './week-receipt.js'
