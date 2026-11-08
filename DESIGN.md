@@ -6607,9 +6607,9 @@ cases from the command table, for every flag of every command.
 
 **The purge verb.** `purge --queue Q --target T --completed-after D --cancelled-after D
 [--failed-after D] [--limit N] [--execute]` is the one command by which an
-operator deletes durable state. It calls the retention port (section 3.12), as `selftest`
+operator deletes a task and the rows of its unit. It calls the retention port (section 3.12), as `selftest`
 alone does beside it, which sends each of the port's calls once to a queue of its own and
-deletes nothing. `purge` is that port's calls and nothing else: it runs core's one walk over the port
+deletes nothing. `purge` deletes through that port's calls and nothing else: it runs core's one walk over the port
 (`purgeWalk`, section 3.12), which the simulated week and the tests run too.
 `purgeCandidates` lists the ended tasks that are a window old, `purgeUnit` deletes one unit
 in one batch whose compare-and-set holds the whole barrier at the instant of deletion, and
@@ -6633,7 +6633,9 @@ word that turns it into a purge, and a `--yes` beside it would be a second spell
 meaning. A `--yes` is refused as any flag the command does not take.
 
 With `--execute` the command sends one `purge-unit` batch for each candidate it reaches,
-until its limit of units went. For each unit that went it prints the task's id and name, the
+until its limit of units went. One kind of candidate gets no batch: a task whose key is in
+the engine's spawn namespace and names no parent that can be read, which the port keeps
+before it builds one (section 3.12). For each unit that went it prints the task's id and name, the
 state it ended in, the instant it ended, the sha256 of the idempotency key it was spawned
 under, or null, and the rows that went from each of `tasks`, `runs`, `checkpoints`, `waits`
 and `events`. The key prints as its digest and never as itself, with `--reveal` or without:
@@ -6672,7 +6674,8 @@ state the policy names, with a stored stamp in range, at least that state's wind
 no dry run shows a failed task under a policy with no failed window, a task younger than
 its window, or a task whose stamp is NULL, which a build older than the stamp leaves. The
 command lists none of these as kept, because no read of the port lists them at all. An
-operator finds such a task by `inspect`, which prints its state and when its runs ended.
+operator finds such a task by `inspect`, which prints its state and, for a run that
+completed or failed, when it did.
 The two reasons `not-ended-a-window-ago` and `unstamped` are therefore reached only when a
 row moves between the listing and the read of the barrier, which the test plants.
 
@@ -6681,7 +6684,8 @@ what it frees: a unit kept only by a unit the same run then purges, as a child i
 failed parent that is listed after it, is tried again and goes in that run. `--limit` is the
 most units one run purges, or lists as ones it would purge, 100 by default and at most
 1,000. Nothing bounds the candidates a run examines but the queue. One run sends a listing
-for every 100 candidates (`PURGE_WALK_PAGE`), a purge for every candidate it reaches, and a
+for every 100 candidates (`PURGE_WALK_PAGE`), a purge for every candidate it reaches but
+the kind named above, and a
 read of the barrier for every one it keeps, so a queue whose kept units grow costs each run
 more: under a policy with no `--failed-after`, the children of failed parents are candidates
 for as long as they stand, and every run purges at and reads each of them again. The answer
@@ -6723,14 +6727,14 @@ under `outcomeNotKnown`, with its task's id and name, its state, the instant it 
 the sha256 of its key: its batch may have committed. An operator does nothing with it but
 run the command again. The repeat lists the unit again if it stands, and does not if it
 went, and a report that joins units by the digest of their keys reads the unit from this
-list when no later run names it. A failure before any unit was reached has no report to
+list when no later run names it. A failure that leaves no unit in any list has no report to
 print, and prints as any failure does: on stderr in text, and with `--json` as the failure
 alone.
 
 `test/purge-twin.test.ts` holds that the command is the port and nothing else, and it holds
 that against the model of the barrier and not against the walk, which the command runs. The
-command runs through `main` against a database, and a dump of every table is taken before
-each command and after it. The oracle of the retention surface (section 3.12), which states
+command runs through `main` against a database, and a dump of the six protocol tables is
+taken before each command and after it. The oracle of the retention surface (section 3.12), which states
 each condition a second time, from the model, is applied to the first dump in the order the
 command printed its units: it must let each go, with the rows the command printed for it,
 and what it leaves must be the second dump. No command may take more than its limit. When a
