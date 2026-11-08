@@ -6779,8 +6779,9 @@ answer of an empty one, because what would tell the two apart is a run a worker 
 unit a window old, and `selftest` makes neither: the read of checkpoints, the read of an
 event's waits, the revival, the listing of what a purge may take and the purge. Of those it
 shows that the database takes the batch and answers nothing, and no more. A test routes
-each call in turn to another queue, and requires the run to fail for every call but those
-five, by name.
+each call that names a queue in turn to another queue, has the clock answer no instant, and
+requires the run to fail for every one of them but those five, by name. It leaves out the
+read of the schema version.
 
 It declares every batch label the other commands declare but four, and the command table
 names those four with the reason (`NOT_SENT_BY_SELFTEST`): `migrate:bootstrap` and
@@ -6789,8 +6790,8 @@ names those four with the reason (`NOT_SENT_BY_SELFTEST`): `migrate:bootstrap` a
 claimed. No command can claim a run: the ports the CLI opens hold no claim. A test walks
 the table and fails when a command declares a label that `selftest` neither declares nor
 names, so a command that joins the table with a new batch joins `selftest` too. The report
-prints each step with its call, its labels and its result, then each label with its result,
-then the labels not sent with their reasons.
+prints each step with its call, its labels and its result, each label with its result,
+and the labels not sent with their reasons.
 
 It refuses, having written nothing, a database that is not at the build's schema version
 (exit 5), because the batches it sends are that version's, and a queue that holds any row
@@ -6831,7 +6832,8 @@ the labels the step was answered under. A step reads its answers together, its c
 those of the reads that check it, so when one is off it cannot say which: the labels of
 its call and every label it was answered under print `unexpected`, for an answer it could
 not read and for one it read and found wrong alike. A label prints `ok` only when every
-step that was answered under it ended well. The generated case requires, of every run a
+step that was answered under it ended well, or ended at a later batch that the store
+failed. The generated case requires, of every run a
 bent answer ended, that the bent label does not print `ok`. The error's words can quote the row, so
 they print only with `--reveal`. An error thrown before the store answered any batch of
 the step is no answer, and stays exit 1. The rule reads when the error was thrown and not
@@ -6841,7 +6843,8 @@ of these errors, so exit 1 would call a database's answer a defect of the CLI, a
 report prints the error's class under `found`, which is where a reader starts either way.
 Decoders that mark their own refusals would tell the two apart, and BUILD.md records that
 as an option with its trigger. An executor names every error of its driver as an
-outage, a permanent error or a schema error, so a driver's error is never among these. A
+outage, a permanent error, a schema error or, on MySQL for a string longer than its column,
+a refusal of a port, so a driver's error is never among these. A
 case bends the answer to every label four ways (every text replaced, every value null, no
 row, one result too few) and requires that no run exits 1. What it leaves is two
 cancelled tasks and the event it emitted, and on PostgreSQL the row that locks that event's
@@ -6861,7 +6864,8 @@ not JSON. The receipt holds documents this CLI printed with `--json`, as they we
 printed, and the checker reads a few members of each:
 
 - `kind`, which is `week`, and `queue`, the week's queue. Every document but the
-  self-test's must be of that queue.
+  self-test's must be of that queue, but for the failure of a purge that reached no unit,
+  which prints no queue.
 - `selftest`: the report of a `selftest` that passed, on a branch or a snapshot.
 - `start` and `end`: a `stats` report, read for the database's instant and for whether a
   test clock is set, and a `sizes` report, read for each table's count.
@@ -6958,7 +6962,7 @@ equal the URL another variable pins before any command runs, and it writes each 
 a file of the run's artifact and none to the log. The enqueue and the purge, which write,
 name their `--target` from the pinned URL, so the CLI refuses a credential of another
 database for them too. The samples, `stats` and `sizes`, are reads, which take no
-`--target`, so the first step alone holds them to the pinned database. Cases read the file and run its steps
+`--target`, so that check alone holds them to the pinned database. Cases read the file and run its steps
 against a stand-in for the CLI, under the shell GitHub runs a step with, which stops at
 the first command that fails: the enqueue is under the hour's key, the purge runs again
 until the verb says no more remain, and a purge whose report cannot be read stops the job
