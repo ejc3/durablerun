@@ -6067,18 +6067,18 @@ MUTATION_SPECS.extend(
         (
             "task-control-store-outage-auth",
             "packages/sdk/src/task-control.ts",
-            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
-            "    if (hasInstance(StoreUnavailableError, error)) {\n"
-            "      if (taskHasOwn(error as object, 'cause')) return undefined // MUTATION\n"
-            "      return STORE_UNAVAILABLE\n"
+            "    if (failure !== undefined) return STORE_FAILURE_CONTROLS[failure]",
+            "    if (failure !== undefined) {\n"
+            "      if (failure === 'unavailable' && taskHasOwn(error as object, 'cause')) return undefined // MUTATION\n"
+            "      return STORE_FAILURE_CONTROLS[failure]\n"
             "    }",
             "a typed store outage carrying an own cause is not authenticated at the immediate store boundary",
         ),
         (
             "task-control-store-typed-only",
             "packages/sdk/src/task-control.ts",
-            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
-            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE\n"
+            "    if (failure !== undefined) return STORE_FAILURE_CONTROLS[failure]",
+            "    if (failure !== undefined) return STORE_FAILURE_CONTROLS[failure]\n"
             "    if (\n"
             "      typeof error === 'object' &&\n"
             "      error !== null &&\n"
@@ -6112,9 +6112,9 @@ MUTATION_SPECS.extend(
         ),
         (
             "task-control-ordinary-store-has-instance",
-            "packages/sdk/src/task-control.ts",
-            "    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE",
-            "    if (error instanceof StoreUnavailableError) return STORE_UNAVAILABLE",
+            "packages/core/src/errors.ts",
+            "      if (failure !== undefined && hasInstance(failure[1], error)) return failure[0]",
+            "      if (failure !== undefined && error instanceof failure[1]) return failure[0]",
             "a handler-installed Symbol.hasInstance hook can mint store-outage authority",
         ),
         (
@@ -17072,15 +17072,15 @@ MUTATION_SPECS.extend(
         (
             "contest-books-a-permanent-store-error-as-an-outage",
             "packages/conformance/src/self-concurrency.ts",
-            "      error instanceof StoreUnavailableError || error instanceof PermanentStoreError\n",
-            "      error instanceof StoreUnavailableError // MUTATION: a permanent store error is a refusal\n",
+            "  permanent: true,\n",
+            "  permanent: false, // MUTATION: a permanent store error is a refusal\n",
             "a port call that breaks a constraint in both orders of a contest is compared as a refusal and passes, where it failed the contest while it was typed an outage",
         ),
         (
             "sdk-permanent-store-error-aborts-the-pass",
             "packages/sdk/src/task-control.ts",
-            "    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT\n",
-            "    // MUTATION: a permanent store error is no control of the pass\n",
+            "  permanent: STORE_PERMANENT,\n",
+            "  permanent: undefined, // MUTATION: a permanent store error is no control of the pass\n",
             "a permanent store error from a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
         ),
     )
@@ -17125,6 +17125,249 @@ VERDICTS.update(
         ),
     }
 )
+
+# A store's refusal of a credential, typed apart from an outage and from a permanent answer:
+# core's one definition of the kinds of store failure, what each executor types an access
+# refusal from its driver's code, and what each consumer does with the kind.
+MUTATION_SPECS.extend(
+    (
+        (
+            "store-failure-kind-reads-every-type-of-the-table",
+            "packages/core/src/errors.ts",
+            "      if (failure !== undefined && hasInstance(failure[1], error)) return failure[0]",
+            "      if (failure !== undefined && hasInstance(failure[1], error)) return 'unavailable' // MUTATION: every typed failure of a store is an outage",
+            "a refused credential, a permanent answer and a schema error are each named an outage, so every consumer waits out what waiting never cures",
+        ),
+        (
+            "store-failure-kind-total-fallback",
+            "packages/core/src/errors.ts",
+            "  } catch {\n"
+            "    // A value that cannot be asked for its type is not a typed failure of the store.\n"
+            "  }\n"
+            "  return undefined\n"
+            "}",
+            "  } catch (error) {\n"
+            "    throw error // MUTATION\n"
+            "  }\n"
+            "  return undefined\n"
+            "}",
+            "a value that cannot be asked for its type, as a revoked proxy cannot, throws out of the one classifier every consumer of a store's failure calls",
+        ),
+        (
+            "libsql-401-is-an-access-refusal",
+            "packages/store-libsql/src/executor.ts",
+            "  401, // unauthorized: the server does not accept the token\n",
+            "  // MUTATION: a 401 is an outage\n",
+            "a token a libSQL server does not accept is answered as an outage, so the CLI exits 6 and a caller repeats a command that fails the same way every time",
+        ),
+        (
+            "libsql-403-is-an-access-refusal",
+            "packages/store-libsql/src/executor.ts",
+            "  403, // forbidden: the server accepts the token and refuses what it asks\n",
+            "  // MUTATION: a 403 is an outage\n",
+            "a libSQL server's refusal of what a token asks is answered as an outage, so the CLI exits 6 and a caller repeats a command that fails the same way every time",
+        ),
+        (
+            "libsql-refused-status-is-read-before-message-text",
+            "packages/store-libsql/src/executor.ts",
+            "      if (refusedStatus !== undefined) {\n",
+            "      if (refusedStatus !== undefined && !MISSING_META_TABLE.test(String(error))) { // MUTATION: the wording of a missing version table is read before the status\n",
+            "a server that sends the wording of a missing version table beside a 401 is read as a database that was never initialized, and migrate sends its bootstrap under a credential the server refused",
+        ),
+        (
+            "postgres-refused-credential-class-is-an-access-refusal",
+            "packages/store-postgres/src/executor.ts",
+            "  return code.slice(0, 2) === ACCESS_REFUSED_SQLSTATE_CLASS || code === INSUFFICIENT_PRIVILEGE\n",
+            "  return code === INSUFFICIENT_PRIVILEGE // MUTATION: class 28 is an outage\n",
+            "a password PostgreSQL refuses is answered as an outage, so the CLI exits 6 and a caller repeats a command that fails the same way every time",
+        ),
+        (
+            "postgres-missing-privilege-is-an-access-refusal",
+            "packages/store-postgres/src/executor.ts",
+            "  return code.slice(0, 2) === ACCESS_REFUSED_SQLSTATE_CLASS || code === INSUFFICIENT_PRIVILEGE\n",
+            "  return code.slice(0, 2) === ACCESS_REFUSED_SQLSTATE_CLASS // MUTATION: 42501 is permanent, by its class\n",
+            "a statement a PostgreSQL role has no privilege for is answered as a permanent error of the statement, where a grant to the role changes the answer and libSQL answers the same refusal otherwise",
+        ),
+        (
+            "sdk-store-access-refusal-aborts-the-pass",
+            "packages/sdk/src/task-control.ts",
+            "  'access-refused': STORE_ACCESS_REFUSED,\n",
+            "  'access-refused': undefined, // MUTATION: a refused credential is no control of the pass\n",
+            "a store's refusal of its credential at a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
+        ),
+        (
+            "sdk-store-access-refusal-at-a-transition-write-aborts-the-pass",
+            "packages/sdk/src/run-worker.ts",
+            "    case 'store-access-refused':\n",
+            "    // MUTATION: a refused credential has no outcome of the pass\n",
+            "a pass whose completion write the store refused for its credential answers its caller with a control snapshot in place of an outcome, so the driver cannot tell that the pass was aborted",
+        ),
+        (
+            "sdk-store-access-refusal-ends-the-pass-for-every-flow",
+            "packages/sdk/src/context.ts",
+            "      if (control !== undefined && control.kind !== 'store-permanent') {\n",
+            "      if (control !== undefined && control.kind !== 'store-permanent' && control.kind !== 'store-access-refused') {\n",
+            "a task that catches a refusal of the store's credential and returns is completed on that pass with the refusal in its result, where the same task is aborted and retried when the failure is an outage",
+        ),
+        (
+            "hosted-answers-503-for-a-refused-credential",
+            "packages/driver/src/hosted.ts",
+            "  'access-refused': [503, 'service_unavailable'],\n",
+            "  'access-refused': [500, 'internal_error'], // MUTATION: a refused credential answers 500\n",
+            "a hosted route answers 500 when the store refuses the deployment's credential, where it answered 503 while that refusal was typed an outage, so a producer stops retrying a request the store takes once the credential is repaired",
+        ),
+        (
+            "contest-books-a-refused-credential-as-an-outage",
+            "packages/conformance/src/self-concurrency.ts",
+            "  'access-refused': true,\n",
+            "  'access-refused': false, // MUTATION: a refused credential is a refusal\n",
+            "a port call the store refuses for its credential in both orders of a contest is compared as a refusal and passes, where it failed the contest while it was typed an outage",
+        ),
+        (
+            "cli-refused-credential-exits-4",
+            "packages/cli/src/main.ts",
+            "    exit: 'unauthorized',\n",
+            "    exit: 'unavailable', // MUTATION: a refused credential exits 6\n",
+            "a command whose store refused its credential exits 6, which the table calls safe to repeat, so a caller repeats a command that fails the same way every time",
+        ),
+        (
+            "cli-store-commands-declare-exit-4",
+            "packages/cli/src/commands.ts",
+            "const STORE_EXITS = ['done', 'usage', 'unauthorized', 'schema', 'unavailable', 'permanent'] as const\n",
+            "const STORE_EXITS = ['done', 'usage', 'schema', 'unavailable', 'permanent'] as const // MUTATION: no store command declares exit 4\n",
+            "help lists exit 4 for tick alone, so an agent that reads a command's exits does not learn that a store command can end on a refused credential",
+        ),
+        (
+            "cli-reads-back-a-refused-credential-as-not-read",
+            "packages/cli/src/main.ts",
+            "    notReadAfterAWrite: true,\n",
+            "    notReadAfterAWrite: false, // MUTATION: a refused credential at a read that follows an answered write fails the command\n",
+            "enqueue under a key a task holds exits 4 when the read of the found task is refused for the credential, though the spawn answered",
+        ),
+        (
+            "week-receipt-reads-a-purge-a-refused-credential-stopped",
+            "apps/dogfood/src/week-receipt.ts",
+            "  'store-access-refused',\n",
+            "  // MUTATION: the reader does not know the kind of a refused credential\n",
+            "a week in which the store once refused the credential of a purge is refused as malformed, though a later run of that day finished",
+        ),
+    )
+)
+# MySQL keeps the numbers that say the account was refused in one list, and each number is a
+# condition of its own: dropped, a wrong password is an outage again, or a missing privilege
+# a permanent answer.
+MYSQL_ACCESS_REFUSED_ERRNOS = (
+    1044, 1045, 1130, 1142, 1143, 1211, 1227, 1370, 1419, 1698, 1820, 1862,
+    1873, 3118, 3202, 3630, 3631, 3879, 3914, 3955, 6038, 6126, 6127,
+)
+MUTATION_SPECS.extend(
+    (
+        f"mysql-error-{_errno}-is-an-access-refusal",
+        "packages/store-mysql/src/executor.ts",
+        f"  {_errno}, // ",
+        f"  // MUTATION: error {_errno} is no access refusal // ",
+        f"MySQL error {_errno}, whose name says the account was refused, is answered as the outage or the permanent error its state gives, so the CLI does not exit 4 for it",
+    )
+    for _errno in MYSQL_ACCESS_REFUSED_ERRNOS
+)
+VERDICTS.update(
+    {
+        "store-failure-kind-reads-every-type-of-the-table": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "storeFailureKind names the kind of every type of the table and of a subclass of one, and each error is of one kind",
+            "mutation-verdict:behavior:store-failure-kind-reads-every-type-of-the-table",
+        ),
+        "store-failure-kind-total-fallback": ExpectedVerdict(
+            "behavior",
+            "packages/core/test/errors.test.ts",
+            "storeFailureKind answers no kind for a value that cannot be asked for its type",
+            "mutation-verdict:behavior:store-failure-kind-total-fallback",
+        ),
+        "libsql-401-is-an-access-refusal": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status types a 401 and a 403 an access refusal, from the status the client carries as a number",
+            "mutation-verdict:behavior:libsql-401-is-an-access-refusal",
+        ),
+        "libsql-refused-status-is-read-before-message-text": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status types a 401 an access refusal whatever text the server sends beside it, the wording of a missing version table included",
+            "mutation-verdict:behavior:libsql-refused-status-is-read-before-message-text",
+        ),
+        "postgres-refused-credential-class-is-an-access-refusal": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor error classification types a refused credential, class 28, and a missing privilege, 42501, an access refusal wherever the server answers it",
+            "mutation-verdict:behavior:postgres-refused-credential-class-is-an-access-refusal",
+        ),
+        "postgres-missing-privilege-is-an-access-refusal": ExpectedVerdict(
+            "behavior",
+            "packages/store-postgres/test/executor.test.ts",
+            "PgExecutor error classification types a refused credential, class 28, and a missing privilege, 42501, an access refusal wherever the server answers it",
+            "mutation-verdict:behavior:postgres-missing-privilege-is-an-access-refusal",
+        ),
+        "sdk-store-access-refusal-aborts-the-pass": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a store's refusal of its credential at a context store call aborts the pass and is never billed to the task",
+            "mutation-verdict:behavior:sdk-store-access-refusal-aborts-the-pass",
+        ),
+        "sdk-store-access-refusal-at-a-transition-write-aborts-the-pass": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a store's refusal of its credential at a transition write aborts the pass exactly as an outage does",
+            "mutation-verdict:behavior:sdk-store-access-refusal-at-a-transition-write-aborts-the-pass",
+        ),
+        "sdk-store-access-refusal-ends-the-pass-for-every-flow": ExpectedVerdict(
+            "behavior",
+            "packages/sdk/test/run-worker.test.ts",
+            "runClaimedRun a task that catches a refusal of the credential and returns is not completed: the pass ends as it ends on an outage",
+            "mutation-verdict:behavior:sdk-store-access-refusal-ends-the-pass-for-every-flow",
+        ),
+        "hosted-answers-503-for-a-refused-credential": ExpectedVerdict(
+            "behavior",
+            "packages/driver/test/hosted.test.ts",
+            "hosted-alpha Web Request router a store failure, by kind answers every kind of store failure core names: 503 for an outage and for a refused credential, 500 for the rest",
+            "mutation-verdict:behavior:hosted-answers-503-for-a-refused-credential",
+        ),
+        "contest-books-a-refused-credential-as-an-outage": ExpectedVerdict(
+            "behavior",
+            "packages/conformance/test/self-concurrency-settle.test.ts",
+            "how a contest of the self-concurrency surface books what a copy threw books every kind of store failure core names: an outage, a refused credential and a permanent answer fail a contest, and a schema error is a refusal under its name",
+            "mutation-verdict:behavior:contest-books-a-refused-credential-as-an-outage",
+        ),
+        "cli-refused-credential-exits-4": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/cli-dialects.test.ts",
+            "the CLI on every selected dialect [libsql] every store command exits 4 for a store that refuses its credential, with the kind store-access-refused in text and with --json, and prints the credential in no stream",
+            "mutation-verdict:behavior:cli-refused-credential-exits-4",
+        ),
+        "week-receipt-reads-a-purge-a-refused-credential-stopped": ExpectedVerdict(
+            "behavior",
+            "packages/cli/test/week-receipt-documents.test.ts",
+            "the week receipt reads what the CLI prints reads what the CLI prints when a purge meets each kind of store failure: a run that took nothing for an outage, a refused credential and a permanent answer, and no run for a schema error",
+            "mutation-verdict:behavior:week-receipt-reads-a-purge-a-refused-credential-stopped",
+        ),
+    }
+)
+VERDICTS["libsql-403-is-an-access-refusal"] = VERDICTS["libsql-401-is-an-access-refusal"]
+VERDICTS["cli-store-commands-declare-exit-4"] = VERDICTS["cli-refused-credential-exits-4"]
+# Caught by the case that holds an outage at the same read, under that case's marker.
+VERDICTS["cli-reads-back-a-refused-credential-as-not-read"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/drive-verbs.test.ts",
+    "enqueue on libSQL answers a repeat the spawn answered when the task it found cannot be read back, and says the stored name is unknown and no mismatch",
+    "mutation-verdict:behavior:cli-enqueue-answers-a-repeat-it-cannot-read-back",
+)
+for _errno in MYSQL_ACCESS_REFUSED_ERRNOS:
+    VERDICTS[f"mysql-error-{_errno}-is-an-access-refusal"] = ExpectedVerdict(
+        "behavior",
+        "packages/store-mysql/test/executor.test.ts",
+        "MysqlExecutor error typing, by the state and the number the server sends types every number that says the account was refused an access refusal, whatever state MySQL files it under",
+        "mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal",
+    )
 
 # MySQL files a broken CHECK constraint under its general state, as it files a value of the
 # wrong type, so both are typed by number, and the case that holds the one holds the other.
@@ -17388,8 +17631,8 @@ MUTATION_SPECS.extend(
         (
             "cli-unavailable-store-exits-6",
             "packages/cli/src/main.ts",
-            "  if (error instanceof StoreUnavailableError) return hidden('store-unavailable', 'unavailable')\n",
-            "  if (error instanceof StoreUnavailableError) return hidden('store-unavailable', 'done') // MUTATION: an outage exits 0\n",
+            "  unavailable: { kind: 'store-unavailable', exit: 'unavailable', notReadAfterAWrite: true },\n",
+            "  unavailable: { kind: 'store-unavailable', exit: 'done', notReadAfterAWrite: true }, // MUTATION: an outage exits 0\n",
             "a command whose store was unavailable exits 0, so a caller takes a read that never happened for an answer and does not repeat it",
         ),
         (
@@ -21212,8 +21455,8 @@ MUTATION_SPECS.extend(
         (
             "cli-enqueue-answers-a-repeat-it-cannot-read-back",
             "packages/cli/src/main.ts",
-            "    if (error instanceof StoreUnavailableError) return { notRead: 'store-unavailable' }\n",
-            "    // MUTATION: an outage at a read that follows an answered write fails the command\n",
+            "      if (answer.notReadAfterAWrite) return { notRead: answer.kind }\n",
+            "      // MUTATION: an outage at a read that follows an answered write fails the command\n",
             "enqueue under a key a task holds exits 6 when the read of the found task meets an outage, though the spawn answered, and a repeat of a row no read can hand over fails for ever",
         ),
         (
@@ -24342,6 +24585,12 @@ DYNAMIC_BEHAVIOR_VERDICT_TITLE_REASONS = {
     "cli-explain-lists-every-waiter-of-the-event": (
         "the suite runs once for each selected dialect, and its describe title carries the dialect"
     ),
+    "cli-refused-credential-exits-4": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
+    "cli-store-commands-declare-exit-4": (
+        "the suite runs once for each selected dialect, and its describe title carries the dialect"
+    ),
     "cli-every-declared-label-is-sent": (
         "the suite runs once for each selected dialect, and its describe title carries the dialect"
     ),
@@ -26917,7 +27166,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1528:
+        if len(MUTATIONS) != 1567:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
