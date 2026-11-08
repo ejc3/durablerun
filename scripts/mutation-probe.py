@@ -22364,6 +22364,218 @@ VERDICTS["cli-selftest-exits-11-for-an-answer-that-is-not-the-engines"] = VERDIC
     "cli-selftest-checks-what-each-call-answered"
 ]
 
+# The week receipt's checker (BUILD.md exit test line 44): each refusal by its cause, what it
+# counts and allows, that it fails closed, and that it reads what the CLI prints.
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-refuses-a-span-under-seven-days",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (end.stats.atEpochMs - start.stats.atEpochMs < WEEK_SPAN_MS) {\n",
+            "  if (end.stats.atEpochMs - start.stats.atEpochMs < WEEK_SAMPLE_GAP_MS) {\n",
+            "a receipt whose first and last samples are a day and an hour apart is taken for a week",
+        ),
+        (
+            "week-receipt-refuses-a-missing-daily-snapshot",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (gap <= 0 || gap > WEEK_SAMPLE_GAP_MS) {\n",
+            "    if (gap <= 0) {\n",
+            "a week with a day that has no sample is accepted, so the bound is held on fewer days than the week has",
+        ),
+        (
+            "week-receipt-refuses-a-count-over-the-bound",
+            "apps/dogfood/src/week-receipt.ts",
+            "      if (one.sizes[table] > bound[table]) {\n",
+            "      if (one.sizes[table] > bound[table] + 1) {\n",
+            "a table one row over its bound is accepted",
+        ),
+        (
+            "week-receipt-refuses-fewer-than-160-periods",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (found < WEEK_PERIODS_REQUIRED) {\n",
+            "  if (found < WEEK_PERIODS_REQUIRED - 1) {\n",
+            "a week with 159 periods found is accepted",
+        ),
+        (
+            "week-receipt-refuses-a-seal-that-does-not-match",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (sealOf(week.injection) !== week.sealSha256) {\n",
+            "  if (week.sealSha256 === '') {\n",
+            "any hash is taken for the seal of the injected task, so the injection need not have been sealed",
+        ),
+        (
+            "week-receipt-refuses-an-explanation-of-another-cause",
+            "apps/dogfood/src/week-receipt.ts",
+            "    week.explanation.cause !== week.injection.cause\n",
+            "    week.explanation.cause === ''\n",
+            "an operator who named another cause than the sealed one is taken to have found it",
+        ),
+        (
+            "week-receipt-refuses-a-day-without-a-purge",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (!one.purges.some((purge) => purge.execute && purge.finished)) {\n",
+            "    if (one.purges.length < 0) {\n",
+            "a day on which no purge ran is accepted",
+        ),
+        (
+            "week-receipt-refuses-no-selftest-record",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (!week.selftest) {\n",
+            "  if (!week.selftest && week.lookups.length < 0) {\n",
+            "a week with no selftest before it is accepted",
+        ),
+        (
+            "week-receipt-counts-a-unit-whose-answer-was-lost",
+            "apps/dogfood/src/week-receipt.ts",
+            "    for (const unit of [...purge.taken, ...purge.outcomeNotKnown]) {\n",
+            "    for (const unit of purge.taken) {\n",
+            "a period whose purge was sent and not answered is not found, so one lost answer fails a week",
+        ),
+        (
+            "week-receipt-allows-a-unit-in-doubt-its-attempts",
+            "apps/dogfood/src/week-receipt.ts",
+            "    for (const unit of purge.outcomeNotKnown) shown(unit.keySha256, DEFAULT_MAX_ATTEMPTS)\n",
+            "    for (const unit of purge.outcomeNotKnown) shown(unit.keySha256, 1)\n",
+            "a unit whose purge was not answered is allowed one run, so a week whose retried unit went in doubt is refused for its runs",
+        ),
+        (
+            "week-receipt-refuses-a-test-clock",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (one.stats.fakeClock) {\n",
+            "    if (one.stats.fakeClock && one.name === '') {\n",
+            "a sample taken under a test clock is taken for an instant of the week",
+        ),
+        (
+            "week-receipt-refuses-an-unknown-kind",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (!isRecord(candidate) || candidate.kind !== 'week') {\n",
+            "  if (!isRecord(candidate)) {\n",
+            "a receipt of another kind is read as a week receipt",
+        ),
+        (
+            "week-receipt-fails-closed",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (!isRecord(unit) || !isText(unit.state)) return null\n",
+            "    if (!isRecord(unit)) return null\n",
+            "a unit of a purge report whose state is not text is read as a unit",
+        ),
+        (
+            "week-receipt-allows-the-runs-it-shows",
+            "apps/dogfood/src/week-receipt.ts",
+            "        (table === 'runs' ? beyondTheFirst : 0),\n",
+            "        (table === 'runs' ? 0 : 0),\n",
+            "the bound of runs allows no run a unit held beyond its first, so a week with one retried unit is refused",
+        ),
+        (
+            "week-receipt-unit-rows-are-the-measured-rows",
+            "apps/dogfood/src/week-receipt.ts",
+            "export const WEEK_DIGEST_UNIT_ROWS: WeekRows = Object.freeze({\n  tasks: 1,\n  runs: 1,\n  checkpoints: 2,\n",
+            "export const WEEK_DIGEST_UNIT_ROWS: WeekRows = Object.freeze({\n  tasks: 1,\n  runs: 1,\n  checkpoints: 3,\n",
+            "the bound allows a digest unit three checkpoints where the simulated week measures two",
+        ),
+        (
+            "week-receipt-reads-what-the-cli-prints",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (document === null || document.exit !== 'done' || !isRecord(document.task)) return null\n  const key = document.task.idempotencyKey\n",
+            "  if (document === null || document.exit !== 'done' || !isRecord(document.task)) return null\n  const key = document.task.key\n",
+            "the checker looks for a task's key where inspect does not print it, and reads no lookup the CLI printed",
+        ),
+    )
+)
+VERDICTS["week-receipt-refuses-a-span-under-seven-days"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses six days between the first snapshot and the last, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days",
+)
+VERDICTS["week-receipt-refuses-a-missing-daily-snapshot"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a missing daily snapshot, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot",
+)
+VERDICTS["week-receipt-refuses-a-count-over-the-bound"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a sizes count one row over the bound, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound",
+)
+VERDICTS["week-receipt-refuses-fewer-than-160-periods"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses fewer than 160 of 168 periods found, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-fewer-than-160-periods",
+)
+VERDICTS["week-receipt-refuses-a-seal-that-does-not-match"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a sealed hash that is not the sha256 of the injected task id, cause and nonce, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-seal-that-does-not-match",
+)
+VERDICTS["week-receipt-refuses-an-explanation-of-another-cause"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses an explanation that names another cause than the seal, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-an-explanation-of-another-cause",
+)
+VERDICTS["week-receipt-refuses-a-day-without-a-purge"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a day with no purge --execute, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge",
+)
+VERDICTS["week-receipt-refuses-no-selftest-record"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses no selftest record, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-no-selftest-record",
+)
+VERDICTS["week-receipt-counts-a-unit-whose-answer-was-lost"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker counts a period whose purge was sent and not answered: a lost answer loses no period",
+    "mutation-verdict:behavior:week-receipt-counts-a-unit-whose-answer-was-lost",
+)
+VERDICTS["week-receipt-allows-a-unit-in-doubt-its-attempts"] = VERDICTS[
+    "week-receipt-counts-a-unit-whose-answer-was-lost"
+]
+VERDICTS["week-receipt-refuses-a-test-clock"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a sample taken under a test clock, a hash attested as published after the start sample, an explanation of another task, and a selftest that did not pass",
+    "mutation-verdict:behavior:week-receipt-refuses-a-test-clock",
+)
+VERDICTS["week-receipt-refuses-an-unknown-kind"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker fails closed refuses a receipt of a kind it does not know, of no kind, and one that is no object",
+    "mutation-verdict:behavior:week-receipt-refuses-an-unknown-kind",
+)
+VERDICTS["week-receipt-fails-closed"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker fails closed refuses the receipt with any member it reads taken away, or of another type",
+    "mutation-verdict:behavior:week-receipt-fails-closed",
+)
+VERDICTS["week-receipt-allows-the-runs-it-shows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker allows a unit the runs its purge report or its lookup shows beyond the first, and no run the receipt does not show",
+    "mutation-verdict:behavior:week-receipt-allows-the-runs-it-shows",
+)
+VERDICTS["week-receipt-unit-rows-are-the-measured-rows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt-documents.test.ts",
+    "the week receipt reads what the CLI prints holds the receipt's rows of a digest unit equal to what the simulated week measures",
+    "mutation-verdict:behavior:week-receipt-unit-rows-are-the-measured-rows",
+)
+VERDICTS["week-receipt-reads-what-the-cli-prints"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt-documents.test.ts",
+    "the week receipt reads what the CLI prints reads the reports of stats, sizes, purge, inspect, explain and selftest as the commands print them",
+    "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -26308,7 +26520,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1487:
+        if len(MUTATIONS) != 1503:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

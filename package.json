@@ -14,6 +14,7 @@
     "dogfood:tick": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts tick",
     "dogfood:status": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts status",
     "dogfood:verify": "node --env-file-if-exists=.env --import tsx apps/dogfood/src/cli.ts verify",
+    "week-receipt": "node --import tsx apps/dogfood/src/week-receipt-cli.ts",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit && tsc -p tsconfig.vitest.json",
     "test": "vitest run",
     "lint": "biome lint .",

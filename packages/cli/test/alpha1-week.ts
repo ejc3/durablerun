@@ -30,6 +30,12 @@ import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { type RetentionPolicy, systemIdSource } from '@durablerun/core'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
+import {
+  WEEK_DIGEST_UNIT_ROWS,
+  WEEK_TABLES,
+  readPurge,
+  readSelftest,
+} from '../../../apps/dogfood/src/week-receipt.js'
 import { type ProtocolSnapshot, snapshot } from '../../conformance/src/poison-matrix.js'
 import { dumpDifferences } from '../../conformance/src/retention-oracle.js'
 import { type PurgeAnswer, againstTheModel, idsOf } from './purge-model.js'
@@ -506,6 +512,9 @@ export async function week(consumer: string, dir: string): Promise<string> {
     )
     const purgedStates = new Map<string, number>()
     const purgedKeys = new Set<string>()
+    const digestKeys = new Set(digests.map(({ key }) => sha256(key)))
+    let boundedUnits = 0
+    let mostRuns = 0
     let commands = 0
     /** One purge command, held to the model over a dump taken before it and after it. */
     const purge = async (
@@ -539,9 +548,36 @@ export async function week(consumer: string, dir: string): Promise<string> {
         differed.length === 0,
         `${name}: alpha.1's rows and the purge differ: ${differed.slice(0, 5).join('; ')}`,
       )
+      // The week receipt's checker reads the report as alpha.1's rows made the verb print it.
+      const read = readPurge(answer, QUEUE)
+      must(
+        read !== null &&
+          read.taken.length === (answer.purged ?? answer.wouldPurge ?? []).length &&
+          read.finished,
+        `${name}: the week receipt's reader does not read the report`,
+      )
       for (const unit of answer.purged ?? []) {
+        const key = String((unit as { idempotencyKeySha256?: unknown }).idempotencyKeySha256)
         purgedStates.set(unit.state, (purgedStates.get(unit.state) ?? 0) + 1)
-        purgedKeys.add(String((unit as { idempotencyKeySha256?: unknown }).idempotencyKeySha256))
+        purgedKeys.add(key)
+        // The receipt's bound allows each digest unit these rows, and of runs the ones its
+        // purge report shows: no unit alpha.1 wrote holds more of any other table, and the
+        // reader reads the runs the verb printed.
+        if (!digestKeys.has(key)) continue
+        const rows = (unit as { rows?: Record<string, number> }).rows ?? {}
+        for (const table of WEEK_TABLES) {
+          must(
+            table === 'runs' || Number(rows[table]) <= WEEK_DIGEST_UNIT_ROWS[table],
+            `${name}: a ${unit.state} digest unit held ${rows[table]} rows of ${table}, and the week receipt's bound allows ${WEEK_DIGEST_UNIT_ROWS[table]}`,
+          )
+        }
+        const runs = read.taken.find((taken) => taken.keySha256 === key)?.runs
+        must(
+          runs === rows.runs && Number(runs) >= 1,
+          `${name}: the week receipt's reader read ${runs} runs of a unit that held ${rows.runs}`,
+        )
+        mostRuns = Math.max(mostRuns, Number(runs))
+        boundedUnits++
       }
       return answer
     }
@@ -572,6 +608,13 @@ export async function week(consumer: string, dir: string): Promise<string> {
 
     const purged = [...purgedStates.values()].reduce((sum, count) => sum + count, 0)
     must(purged > 0, 'the purged set is empty')
+    must(
+      boundedUnits === 121,
+      `${boundedUnits} purged digest units were held to the receipt's rows`,
+    )
+    // A unit tried again holds a run for each attempt, which the receipt's bound allows
+    // only where a report shows it: the week has such a unit.
+    must(mostRuns > 1, 'no purged digest unit held more than one run')
     must(
       JSON.stringify([...endedStates].sort()) ===
         JSON.stringify(['cancelled', 'completed', 'failed']),
@@ -614,8 +657,13 @@ export async function week(consumer: string, dir: string): Promise<string> {
       'alpha.1 did not run a task enqueued after the purge',
     )
 
+    // The self-test passes on a queue of its own in the database alpha.1 wrote in, as an
+    // operator runs it on a snapshot before a first purge.
+    const selftest = await cli(file, ['selftest', '--queue', 'selftest', '--target', file])
+    must(readSelftest(selftest), 'selftest did not pass on the database of the week')
+
     const states = [...purgedStates].map(([state, count]) => `${count} ${state}`).join(', ')
-    return `over ${WEEK_PERIODS} hourly periods alpha.1 ran the example's periodic-digest and wait-for-ready on a database the CLI migrated to version ${CURRENT_SCHEMA_VERSION} (${reads} reads, ${[...outcomes].map(([kind, count]) => `${count} ${kind}`).join(', ')}), the CLI's sweeps made one lost-launch, one claim-timeout and one cancellation, explain named ${explained.join(' and ')} on rows alpha.1 wrote, and ${commands} purge commands took ${purged} units (${states}) that the model lets go and left ${standing.length} periods standing`
+    return `over ${WEEK_PERIODS} hourly periods alpha.1 ran the example's periodic-digest and wait-for-ready on a database the CLI migrated to version ${CURRENT_SCHEMA_VERSION} (${reads} reads, ${[...outcomes].map(([kind, count]) => `${count} ${kind}`).join(', ')}), the CLI's sweeps made one lost-launch, one claim-timeout and one cancellation, explain named ${explained.join(' and ')} on rows alpha.1 wrote, and ${commands} purge commands took ${purged} units (${states}) that the model lets go, none holding more rows than the week receipt allows a unit but the runs of its attempts (at most ${mostRuns}), and left ${standing.length} periods standing, and selftest passed there on a queue of its own`
   } finally {
     executor.close()
   }
