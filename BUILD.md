@@ -51,7 +51,7 @@ followed, and the difference between `specs/Scheduler.tla` and the code. The
 Decisions paragraph below records what was decided under that delegation, and
 the maintainer may reverse any of it. Lines 45 and 46 are not met. Line 47 is
 not met and has not started: it waits on what the Held paragraph below names,
-and on the four pull requests the Order paragraph puts before it.
+and on PR5.6.
 
 **Exit test:**
 
@@ -70,66 +70,93 @@ and on the four pull requests the Order paragraph puts before it.
     text. Core holds one definition of the kinds of failure an executor raises.
     The SDK's control of a pass, the hosted handler and the CLI each switch on
     it, so a kind with no arm fails typecheck. A worker pass spends none of a
-    task's attempts on the new kind, the hosted handler answers it 503, as it
-    answers an outage, and every command of the CLI that opens a store exits 4
-    for it. DESIGN.md's table and its paragraph on exit 6 say so, with what is
-    not typed: a `ws:` or `wss:` URL, whose driver carries the status only in
-    a message, and the answer of a hosted server to a write under a token that
-    may only read, which is not known. The cases: on PostgreSQL and MySQL a
-    conformance case opens the store with a wrong password, and with a role
-    that may connect and may not write, and sees the type. On libSQL, where a
-    file takes no credential, a case of the store package runs the driver
-    against a loopback server that answers 401 and 403. A case of the SDK hands
-    a pass the type and sees no attempt spent. A generated case over every
-    command that opens a store sees exit 4. Red: on main the cases of a wrong
-    password see an outage and exit 6, and the cases of a role that may not
-    write see a permanent answer and exit 7.
+    task's attempts on the new kind, and the hosted handler answers it 503, as
+    it answers an outage. Every command of the CLI that opens a store exits 4
+    for it, but for a read that follows an answered write: the command table
+    declares 0 there, and the command reports the refusal as not read, as it
+    reports an outage. The week receipt's checker reads every kind of store
+    failure the CLI prints for a purge, and a case over core's definition holds
+    that, where today the checker holds two kinds written by hand. DESIGN.md's
+    table, its paragraph on exit 6, its paragraph on the week receipt and the
+    README's section on operating a deployment say all of it, with what is not
+    typed: a `ws:` or `wss:` URL, whose driver carries the status only in a
+    message, and the answer of a hosted server to a write under a token that
+    may only read, which is not known. A hosted libSQL server, measured on
+    2026-11-08, answers 401 to a token whose signature it does not accept and
+    to no token, and 400 to a token that is no token at all, which stays an
+    outage. The cases: one conformance case opens the store with a refused
+    credential on each dialect, through a member of the fixture, and sees the
+    type. On PostgreSQL and MySQL that member is a wrong password, and a
+    second case there uses a role that may connect and may not write. On
+    libSQL, where a file takes no credential, the member is the driver against
+    a loopback server that answers 401 and 403. A case of the SDK hands a pass
+    the type and sees no attempt spent. A generated case over every command
+    that opens a store sees exit 4. Red: on main the cases of a wrong password
+    see an outage and exit 6, and the cases of a role that may not write see a
+    permanent answer and exit 7.
 46. PR5.9: a timeout handed to a pass is not lost. PR5.7's read of the code
     against the model found the defect on 2026-11-08. A pass that is handed a
     timeout wake can end by another flow's sleep before the await's answer is
-    saved, and the suspension clears the wake. On main, a task that starts
-    `ctx.sleepFor(100)` and then `ctx.awaitEvent('go', { timeoutSeconds: 30 })`
-    has the await answered by an event emitted 110 seconds after it timed out,
-    and with no such event it times out at 160 seconds. With the two lines in
-    the other order it times out at 30. After PR5.9 the answer a wake carries is
-    durable before the pass that was handed it suspends, completes, fails or
-    reschedules, and the await answers its timeout at its own instant in either
-    order. A check in the harness every test of the SDK runs through fails for a
-    pass that is handed a wake and ends without its answer saved. Red: the case
-    of the two orders, seen failing on main.
+    saved, and the suspension clears the wake. On main, a task that joins
+    `ctx.sleepFor(100)` and `ctx.awaitEvent('go', { timeoutSeconds: 30 })` under
+    one `Promise.all`, the sleep first, and whose first pass registers the
+    await, has the await answered by an event emitted 110 seconds after it
+    timed out, and with no such event it times out at 160 seconds. With the
+    await first it times out at 30. Which suspension the first pass takes is a
+    race between two calls of the store, so the case fixes it, and a pass
+    whose first suspension is the sleep registers the await only at the next
+    pass and loses nothing. After PR5.9 the answer a wake carries is durable
+    before the pass that was handed it suspends, completes, fails or
+    reschedules, and an await that was registered answers its timeout at its
+    deadline whatever another flow of its pass does. The SDK's generated
+    surface makes this shape of task, and holds every pass it runs to the rule:
+    a pass that is handed a wake and ends without its answer saved fails it.
+    Red: the case of the two orders with the first pass fixed, seen failing on
+    main.
 47. The week. Receipt M1 of the milestone below holds every step, and these
     things are settled for it. The daily purge runs under `--completed-after 1d
     --cancelled-after 1d` with no failed window, so the week keeps every failed
     task and the receipt's dry run lists them. The two windows are repository
     variables, and the checker reads the completed window only to size its
-    bound, so it accepts a week purged under other windows. Each purge report
-    in the receipt prints the windows it ran under, and PR5.8 adds a case that
-    reads them from the committed receipt: `completedSeconds` 86400,
-    `cancelledSeconds` 86400 and `failedSeconds` null in every one. The receipt
-    is committed under `receipts/`. The same case runs line 44's checker on it,
-    in CI from then on, and the pull request's description holds what the
-    checker printed. No document of the receipt names the database it was taken
-    from, since a report prints the scheme of the store URL alone: that the
-    week ran on the deployed alpha is the maintainer's attestation, as the
-    instant of the seal is. From the start sample to the end sample main takes
-    no change to a document the receipt holds, because the workflow runs the
-    CLI of main's newest commit and a renamed member would refuse the days
-    before it. The workflow is turned off at the end sample, before the
+    bound, so it accepts a week purged under other windows. A daily purge that
+    reached the store prints the windows it ran under, and PR5.8 adds a case
+    that reads them from the committed receipt: `completedSeconds` 86400,
+    `cancelledSeconds` 86400 and `failedSeconds` null in every such report. A
+    purge the store failed before any unit prints no window, and the dry run
+    after the end sample has its failed window of an hour, so the case leaves
+    both out. The receipt is committed under `receipts/`. The same case runs
+    line 44's checker on it, in CI from then on, and the pull request's
+    description holds what the checker printed. No document of the receipt
+    names the database it was taken from, since a report prints the scheme of
+    the store URL alone, and the receipt's `attestation` holds who attests and
+    the instant of the seal. That the week ran on the deployed alpha is the
+    maintainer's word in the pull request that adds the receipt. Today the
+    week's workflow runs the CLI of main's newest commit, so a change to a
+    member of a report, merged while the week runs, would refuse the days
+    before it. PR5.6 gives the workflow a repository variable that pins the
+    commit it runs, and the selftest before the week, the lookups and the dry
+    run after it are printed by that commit too, so main may change while the
+    week runs. The workflow is turned off at the end sample, before the
     lookups are taken, because a purge after that sample deletes units whose
-    lookups the receipt needs. Red: the doctored receipts of line 44, each
-    refused for its own cause, and in PR5.8 the case of the windows, seen
-    failing on a copy of the receipt whose purge ran under another window.
+    lookups the receipt needs, and PR5.6 puts that step in the README's
+    section on a week. Red: the doctored receipts of line 44, each refused for
+    its own cause, and in PR5.8 the case of the windows, seen failing on a
+    copy of the receipt whose purge ran under another window.
 
-**Outside the exit test:** two pull requests that the week does not need.
-AGENTS.md sends work with no milestone evidence to the options backlog. Both
-are here because the delegation named them, and neither is on the path to
-line 47. PR5.5b answers the reads of last folds. Seven pull requests of the
-milestone below merged with a last fold that no review followed: PR5.3b2,
-PR5.3c, PR5.2c1, PR5.2c2, PR5.2d, PR5.4 and PR5.5. One review read each of the
-last three on 2026-11-08. They found 40 things, two of them MEDIUM, both in
-PR5.2d's fold, and the other four folds are read the same way. PR5.5b fixes
-what the reads find, adds the postmortem that records them, and corrects the
-entries below that still say nobody read those folds. PR5.7 is an option of
+**Outside the exit test:** two pull requests that the week does not need and
+does not wait for. AGENTS.md sends work with no milestone evidence to the
+options backlog. Both are here because of the delegation, and neither is on
+the path to line 47. PR5.5b answers the reads of last folds. By their own
+postmortems each of the twelve pull requests of the milestone below merged
+with a last fold that no review followed. The delegation named the last
+three, PR5.2d, PR5.4 and PR5.5. One review read each of them on 2026-11-08 and
+found 40 things, two of them MEDIUM, both in PR5.2d's fold, so the folds of
+the eight before them that changed code or a model are read the same way.
+PR5.0's fold is not read: it changed only the record of a plan, which the
+pull requests that built each line rewrote. PR5.5b fixes what the reads
+find, adds the postmortem that records every read, and corrects the entries
+below and the postmortems that still say nobody read those folds. Until it
+merges they still say so. PR5.7 is an option of
 the backlog below whose trigger, the maintainer's word, came. It brings
 `specs/Scheduler.tla` to what the code does to a run's wake fields when the
 run suspends, chains or completes. Its read of the code is what found the
@@ -154,8 +181,9 @@ each):**
   `DURABLERUN_QUEUE` set to `digest`. The deployed alpha's own deployment and
   its queue stay as they are. The milestone below left open whether to move
   the alpha's queue instead.
-- Main takes no change to a document the receipt holds while the week runs,
-  and the week's workflow is turned off at the end sample. Line 47 says why.
+- The week's workflow runs the CLI of a commit that a repository variable
+  pins, so main may change while the week runs, and the workflow is turned off
+  at the end sample. Line 47 says why, and PR5.6 builds the pin.
 - The decisions the plan made, which the Held paragraph of the milestone below
   lists as ones the maintainer may reverse, stand as built, and `purge` takes
   `--execute` as its one confirmation.
@@ -174,31 +202,33 @@ each):**
 deployed database, and a branch or a snapshot of that database for the
 `selftest`: as the alpha is deployed, its host does not give the store URL or
 the token back, so both come from the maintainer's own login to the database's
-provider. The word to make each change to what is running: the migration of
-the deployed database, the second deployment of the example, and the six
-settings the first comment of .github/workflows/operable-week.yml lists, two
-secrets and four variables, which turn on the week's hourly write and daily
-delete and two of which are line 47's windows. No command of this milestone
-that changes the deployed database, its host or the repository's settings runs
-before that word. A second person for the sealed injection, who may be the
-maintainer when an agent is the operator. And a calendar week.
+provider. The second deployment's place: a project on the host, of the plan
+the example's README asks for, under the maintainer's account, with the five
+runtime variables that README lists. The word to make each change to what is
+running: the migration of the deployed database, the second deployment, and
+the settings the first comment of .github/workflows/operable-week.yml lists,
+two secrets and four variables today, which turn on the week's hourly write
+and daily delete and two of which are line 47's windows. No command of this
+milestone that changes the deployed database, its host or the repository's
+settings runs before that word. A second person for the sealed injection, who
+may be the maintainer when an agent is the operator. And a calendar week.
 
 **Order:** PR5.9 comes first, because it closes a hole that loses a timeout,
-and AGENTS.md ranks such a hole before everything else. PR5.6 is line 45.
-PR5.7 follows PR5.9, since the model's note says what the fix makes true, and
-PR5.5b depends on none of them. One pull request is in flight at a time. All
-four merge before the week starts, so that main changes no document under it.
-The week starts when they have merged and the maintainer has given the
-credential and the word, and PR5.8 adds its receipt at least 168 hours later.
+and AGENTS.md ranks such a hole before everything else. PR5.6 is next: it is
+line 45, and the week waits for it, because it carries the pinned commit and
+the exit a refused token gives the week's workflow. PR5.7 follows PR5.9,
+since the model's note says what the fix makes true, and PR5.5b merges when
+its reads are answered. One pull request is in flight at a time. The week
+starts when PR5.6 has merged and the maintainer has given the credential and
+the word, and PR5.8 adds its receipt at least 168 hours later.
 
 **Non-goals:** the next alpha release, which follows this milestone; a week on
 PostgreSQL or MySQL, since the deployed alpha is on libSQL; a second queue
 beside `digest`; and what the non-goals of the milestone below name, each with
-the trigger given there, but for the two this milestone takes up: the live
-week itself, and one deployment beyond the example app's one task
-registration, which is the second deployment above. Whether the week's
-workflow is turned on again after the receipt is decided when the receipt is
-in.
+the trigger given there, but for the live week itself, which this milestone
+takes up. The second deployment is the one redeploy those non-goals allow,
+the example app's task registration. Whether the week's workflow is turned on
+again after the receipt is decided when the receipt is in.
 
 ## Completed milestone — an operable alpha: run it, inspect it, drive it, keep it small
 
@@ -1344,7 +1374,9 @@ difference between a model and the code that PR5.5 found and did not change.
   beside its cases. PR5.4 did not move it: exit test line 44 names
   apps/dogfood/src/receipt.ts as the checker's home, so the move rewords the
   exit test, which is the maintainer's to decide. Trigger: a request from the
-  maintainer, or the next pull request that changes the checker.
+  maintainer, or the next pull request that changes the checker. PR5.6 is that
+  pull request, by one kind of store failure, and the Decisions paragraph of
+  the milestone above declines the move for it.
 - Markers for the counts that DESIGN.md sections 3.11 and 3.12 state. The
   design-counts test holds twelve counts to the code, and neither section
   states one of the twelve, so no marker was missing. The sections state other
@@ -7810,24 +7842,30 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and seven by cases of the week's workflow.
 
 - **PR5.5b the reads of last folds**: TODO. Outside the exit test of the live week
-  milestone. Seven pull requests of the operable alpha merged with a last fold that no
-  review followed. One review reads each of those folds, the first three on 2026-11-08.
-  This pull request fixes what the reads find, adds the postmortem that records them, and
-  corrects the sentences that say nobody read those folds.
+  milestone. Each of the twelve pull requests of the operable alpha merged with a last fold
+  that no review followed. One review reads each of those folds but PR5.0's, the last
+  three on 2026-11-08. This pull request fixes what the reads find, adds the postmortem
+  that records them, and corrects the sentences that say nobody read those folds.
 - **PR5.6 a store's refusal of a credential, typed**: TODO. Exit test line 45 of the live
   week milestone. Core gains one error type for a store that refuses the credential it was
-  given or what that credential may do. The three executors decide it from the driver's
-  code, a worker pass treats it as an outage, and the CLI exits 4 for it. DESIGN.md's exit
-  table and its paragraph on exit 6 change with it.
+  given or what that credential may do, and one definition of the kinds of failure an
+  executor raises. The three executors decide the type from a value the driver's error
+  carries, a worker pass treats it as an outage, the hosted handler answers it 503, the
+  CLI exits 4 for it, and the week receipt's checker reads the kind. It also gives the
+  week's workflow a repository variable that pins the commit it runs, and puts in the
+  README that the workflow is turned off at the end sample. DESIGN.md's exit table, its
+  paragraph on exit 6 and its paragraph on the week receipt change with it.
 - **PR5.7 the model's wake fields**: TODO. Outside the exit test of the live week
   milestone. `specs/Scheduler.tla` says a suspension, a chain and a completion leave a
   run's wake fields as they were, and the code clears them. The model is brought to the
   code under TLC, with its comments and its ledger.
 - **PR5.9 a timeout handed to a pass is not lost**: TODO. Exit test line 46 of the live
   week milestone. The answer a wake carries is saved before the pass that was handed it
-  can end, with a red case of the two statement orders and a check in the SDK's harness.
+  can end, with a red case of the two statement orders and the rule held over every pass
+  the SDK's generated surface runs.
 - **PR5.8 the week's receipt**: TODO. Exit test line 47 of the live week milestone. It adds
-  the receipt of the maintainer's week under `receipts/` and records receipt M1 met.
+  the receipt of the maintainer's week under `receipts/`, with a case that runs the checker
+  on it and reads the windows of its daily purges, and records receipt M1 met.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
