@@ -143,16 +143,24 @@ describe('a dialect with a CI job of its own runs every test file that runs once
     }
     return paths
   }
-  /** The names a source imports, without `type` and without what each is renamed to. */
+  /**
+   * The names a source imports inside braces, without `type` and without what each is
+   * renamed to. A comment inside the braces is taken out, so it hides no name, and a
+   * default import may stand before the braces.
+   */
   const importedNames = (source: string): string[] =>
-    [...source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from/g)].flatMap(([, names = '']) =>
-      names.split(',').map(
-        (name) =>
-          name
-            .trim()
-            .replace(/^type\s+/, '')
-            .split(/\s+as\s+/)[0] ?? '',
-      ),
+    [...source.matchAll(/import\s+(?:type\s+)?(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from/g)].flatMap(
+      ([, names = '']) =>
+        names
+          .replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
+          .split(',')
+          .map(
+            (name) =>
+              name
+                .trim()
+                .replace(/^type\s+/, '')
+                .split(/\s+as\s+/)[0] ?? '',
+          ),
     )
   /** Every test file under the `test` directory of a package or an app, as a repository path. */
   const testFiles = (): string[] =>
@@ -184,8 +192,14 @@ describe('a dialect with a CI job of its own runs every test file that runs once
         )
       })
       .sort()
+    // A file is run when the list covers it for each dialect: `packages/store-$dialect/test`
+    // covers a store's own tests for that store's dialect alone.
     const runs = (file: string) =>
-      forEachDialect.some((path) => file === path || file.startsWith(`${path}/`))
+      EXPECTED_DIALECTS.every((dialect) =>
+        listed
+          .map((path) => path.replaceAll('$dialect', dialect))
+          .some((path) => file === path || file.startsWith(`${path}/`)),
+      )
 
     expect(
       {
