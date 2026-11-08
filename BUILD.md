@@ -49,8 +49,8 @@ word to do the right thing: the naming of this milestone, the decisions the
 milestone below still held, a read of the three last folds that no review had
 followed, and the difference between `specs/Scheduler.tla` and the code. The
 Decisions paragraph below records what was decided under that delegation, and
-the maintainer may reverse any of it. Line 45 is not met. Line 46 is not met
-and has not started: it waits on what the Held paragraph below names.
+the maintainer may reverse any of it. Lines 45 and 46 are not met. Line 47 is
+not met and has not started: it waits on what the Held paragraph below names.
 
 **Exit test:**
 
@@ -69,7 +69,20 @@ and has not started: it waits on what the Held paragraph below names.
     and its paragraph on exit 6 say so. A conformance case on each dialect
     opens the store with a wrong credential and sees the type, and a case of
     the CLI sees exit 4. Red: the same cases on main see an outage and exit 6.
-46. The week. Receipt M1 of the milestone below holds every step, and these
+46. PR5.9: a timeout handed to a pass is not lost. PR5.7's read of the code
+    against the model found the defect on 2026-11-08. A pass that is handed a
+    timeout wake can end by another flow's sleep before the await's answer is
+    saved, and the suspension clears the wake. On main, a task that starts
+    `ctx.sleepFor(100)` and then `ctx.awaitEvent('go', { timeoutSeconds: 30 })`
+    has the await answered by an event emitted 110 seconds after it timed out,
+    and with no such event it times out at 160 seconds. With the two lines in
+    the other order it times out at 30. After PR5.9 the answer a wake carries is
+    durable before the pass that was handed it suspends, completes, fails or
+    reschedules, and the await answers its timeout at its own instant in either
+    order. A check in the harness every test of the SDK runs through fails for a
+    pass that is handed a wake and ends without its answer saved. Red: the case
+    of the two orders, seen failing on main.
+47. The week. Receipt M1 of the milestone below holds every step, and these
     numbers are settled for it: the daily purge runs under `--completed-after
     1d --cancelled-after 1d` with no failed window, so the week keeps every
     failed task and the receipt's dry run lists them. The receipt is committed
@@ -83,7 +96,8 @@ the week does not need. PR5.5b answers the read of the last folds of PR5.2d,
 PR5.4 and PR5.5, which merged with no review after them. PR5.7 brings
 `specs/Scheduler.tla` to what the code does to a run's wake fields when the run
 suspends. That difference is the last entry of the options backlog below, and
-one of its triggers is the maintainer's word.
+one of its triggers is the maintainer's word. Its read of the code is what
+found the defect of line 46.
 
 **Decisions (2026-11-08, under the delegation; the maintainer may reverse
 each):**
@@ -109,8 +123,10 @@ each):**
   this one. The week measures the release alpha.1 on a database the CLI
   migrated, and a release cut during it would put a second change beside that
   one.
-- The week receipt's checker stays in apps/dogfood/src until the next pull
-  request that changes it, which is the trigger its option names.
+- The week receipt's checker stays in apps/dogfood/src. Its option names the
+  next pull request that changes it as the trigger of a move, and PR5.6 adds
+  one kind of store failure to it and does not move it. The move waits on the
+  maintainer's request.
 
 **Held for the maintainer:** what only the maintainer has. A credential of the
 deployed database: the host holds its variables write-only, so nothing reads
@@ -124,10 +140,11 @@ repository's settings runs before that word. A second person for the sealed
 injection, who may be the maintainer when an agent is the operator. And a
 calendar week.
 
-**Order:** PR5.5b, PR5.6 and PR5.7 do not depend on each other, and one of them
-is in flight at a time. The week starts when PR5.6 has merged and the
-maintainer has given the credential and the word, and PR5.8 adds its receipt at
-least 168 hours later.
+**Order:** PR5.9 comes first, because it closes a hole that loses a timeout.
+PR5.7 follows it, since the model's note says what the fix makes true. PR5.5b
+and PR5.6 depend on neither, and one pull request is in flight at a time. The
+week starts when PR5.6 has merged and the maintainer has given the credential
+and the word, and PR5.8 adds its receipt at least 168 hours later.
 
 **Non-goals:** the next alpha release, which follows this milestone; a week on
 PostgreSQL or MySQL, since the deployed alpha is on libSQL; a second queue
@@ -185,7 +202,7 @@ selected dialect, by what it imports, and requires the list to hold it. No
 milestone was current when this one completed. The live week, the milestone
 above, was named on 2026-11-08. The maintainer's live week on the
 deployed alpha is receipt M1, outside the numbered lines of this milestone and
-line 46 of the one above. It is NOT MET, as its
+line 47 of the one above. It is NOT MET, as its
 paragraph below says, and M1 is recorded met only when its receipt exists and
 line 44's checker accepts it.
 
@@ -7753,7 +7770,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   milestone. `specs/Scheduler.tla` says a suspension leaves a run's wake fields as they
   were, and the code clears them. The model is brought to the code under TLC, with its
   comments and its ledger.
-- **PR5.8 the week's receipt**: TODO. Exit test line 46 of the live week milestone. It adds
+- **PR5.9 a timeout handed to a pass is not lost**: TODO. Exit test line 46 of the live
+  week milestone. The answer a wake carries is saved before the pass that was handed it
+  can end, with a red case of the two statement orders and a check in the SDK's harness.
+- **PR5.8 the week's receipt**: TODO. Exit test line 47 of the live week milestone. It adds
   the receipt of the maintainer's week under `receipts/` and records receipt M1 met.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
