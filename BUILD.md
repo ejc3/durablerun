@@ -523,7 +523,7 @@ line 44's checker accepts it.
     deferral, in the current worker's form and in alpha.1's, is in no leg under
     the default grace at any instant between ticks, and its age finds it", at
     eight instants between each of four ticks, where a grace of zero shows the
-    task at the same instants; "lists the live tasks enqueued at least that long
+    task at the last three of those instants and not at the first; "lists the live tasks enqueued at least that long
     ago, oldest first, each with its age, beside the legs"; "reports a live task
     enqueued past its bound only when its leg reads it, so the exit depends on
     the limit"; "prints quiet, never
@@ -793,8 +793,8 @@ line 44's checker accepts it.
     (`conformance/src/retention-purge.ts`) runs in the shared `retention`
     surface on the three dialects. `the barrier grid` holds the 780 cells, of
     which the oracle lets 136 units go: each purge is compared with
-    `purgeOracle` over a dump of every table, and every table is compared with
-    the oracle's afterwards. `what a kept unit's parent and holder find` is the
+    `purgeOracle` over a dump of the six protocol tables, and each of them is
+    compared with the oracle's afterwards. `what a kept unit's parent and holder find` is the
     consequence oracle, `a purge beside an await of the same child` is the
     race, 12 at once, and `the purge beside the rest of the engine` is the
     contest, 8 rounds, with `deadlocks() == 0`. The cases of `a unit that is
