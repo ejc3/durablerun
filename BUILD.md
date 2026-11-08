@@ -7405,6 +7405,24 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The week adds 16 seconds to the compatibility harness: on one loaded host the harness
     took 22 seconds at the base and 32 at the head. Under heavier load the same run took
     60 seconds, the week 37 of them. CI's verify job has a 120 minute limit.
+  - The fold of the one review (`postmortems/pr5.4-week-receipt-review.md`). It found 14
+    things, none HIGH, four MEDIUM and ten LOW, and all count. The bound allows the injected
+    task the rows it comes to hold after the start sample, one wait and one event, which the
+    week on alpha.1 measures for both kinds through the operator's cancel. `selftest` reads
+    each label it prints from a record of the batches sent, which the opener keeps, and the
+    step that was running names the label that failed. An answer it cannot read exits 11 and
+    not 1, and the labels of the step's call and every label the step was answered under
+    print `unexpected`. The checker reads the failure of a purge that reached no unit as a
+    run that took nothing, and refuses a failed window over the shortest by a name of its
+    own, its thirteenth cause, with a ninth doctored receipt. The example refuses a ref that
+    holds a dot segment, sends the requests of both of its GitHub readers through one
+    function, reads the SHA alone, and says the schema is ready at the release's own version.
+    The cases of the week's workflow run under the job's shell, its daily step stops by
+    itself at a report it cannot read, and its header says which commands name a target. The
+    README's steps of the sealed injection say when to seal and how to clear. One thing
+    differs from what the review asked: `stats` and `sizes` gained no `--target`, because a
+    read takes none, so the three sentences that said otherwise were corrected. A bound of
+    runs for each sample is recorded among the options and is not built.
   - The registry holds 1519 mutations where main held 1482: eleven caught by cases
     of `selftest`, nineteen by cases of the week receipt's checker, and seven by cases of
     the week's workflow.
