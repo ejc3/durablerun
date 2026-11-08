@@ -6323,8 +6323,8 @@ after it was claimed under a lease of a minute: the sweep takes nothing, `stats`
 answers `lapsed-lease-no-sweep-reclaims` and `inconsistent`, and `stuck --grace 0s --fail-if-any` lists the
 run in `lapsedNotReclaimed` and exits 9.
 
-**A queue's gauges.** `stats --queue Q` prints `queueStatus(queue)`: nine gauges, three
-instants and an age. A gauge is a count of rows that stops at 1,000 (`OPERATOR_GAUGE_CAP`),
+**A queue's gauges.** `stats --queue Q` prints `queueStatus(queue)`: nine gauges, a lag,
+a headroom, an instant and an age. A gauge is a count of rows that stops at 1,000 (`OPERATOR_GAUGE_CAP`),
 with `atLeast` true when the queue holds more.
 
 - `pendingRuns`: pending runs that hold an available instant, which every pending run the
@@ -6388,7 +6388,8 @@ plan test excuses its five statements by name, each for its walk of the table it
 PostgreSQL a count goes through an index of every row that leads with the queue where the
 table has one, and scans `tasks` and `checkpoints`, which have none. On MySQL a case holds
 that the batch walks the rows it counts. It runs on request only: no engine
-actor and no other command sends it. `drivers` is not counted. Core's table of the columns a
+actor sends it, and no other command but `selftest`, which counts the rows of its own
+queue. `drivers` is not counted. Core's table of the columns a
 statement tree may name holds those five tables, and a driver's row is a heartbeat, which
 does not grow with a queue's work.
 
@@ -6405,7 +6406,9 @@ planned 25 statements of 14 batches through `tasks_live` by queue and state, the
 among them, and PostgreSQL planned the same kinds of statement through it once sequential
 scans were disabled. Each then read every live task of a state where it had read one task
 by its key. Both databases use a partial index only for a statement that holds the index's
-predicate, and no statement the engine sends tests or compares the enqueue instant. What a
+predicate, and no statement the engine sends holds it: the one that tests and compares the
+enqueue instant, the insert of a spawned task's first run, reaches its task by its id and
+names no state. What a
 read must write to use the index differs, and was measured. On SQLite 3.45, which this
 store runs on, a read must write both terms as the index writes them, and a comparison of
 the instant is not taken for the second. On PostgreSQL 17 a comparison of the instant is
@@ -6428,7 +6431,7 @@ and four with it, interleaved. The medians, in milliseconds, without the index a
 The numbers are from a loaded shared machine, with a load average of 27 to 54 while they
 were taken. On every dialect the difference is inside the spread between rounds of one
 kind. On PostgreSQL the build takes a lock that blocks writes to `tasks` while it reads the
-whole table, as the builds of versions 6 and 9 do. The stores export no note for the
+whole table, as the builds of versions 6 and 9 do to `runs`. The stores export no note for the
 version in `SCHEMA_VERSION_NOTES`.
 
 It is an index and nothing else. A build that predates it runs against the schema
@@ -6451,7 +6454,7 @@ built. The first two are built as planned, and the third the plan did not have.
    by a task id alone.
 2. **The metric definitions.** Claim latency is two numbers: `claimLagMs`, which is the wait
    of the head of the queue, and a task's start latency, its first start less its enqueue
-   instant, which `inspect` prints of one task. There is no `claimed_at_ms` column, which
+   instant, both of which `inspect` prints of one task. There is no `claimed_at_ms` column, which
    would be a write on the claim and a schema version, no histogram, and no rate.
 3. **`stuck` lists seven legs where the plan had four.** The plan's rule was that a leg
    holds what the engine's next claim or sweep takes, which left a row a move is owed to
