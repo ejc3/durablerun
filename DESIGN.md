@@ -604,12 +604,12 @@ One invocation executes one claimed run to its next suspension point:
   (§3.4). libSQL: its client reports every HTTP answer that is no success
   under one code, `SERVER_ERROR`, and keeps the status as a number on the
   error's cause. 401 and 403 are an access refusal, read from that number and
-  never from the message. A hosted libSQL server was measured to answer 401
-  for a token whose signature it does not accept and for no token at all. Three
-  answers of libSQL keep the type they had, an outage. A 400: a hosted server
-  answers it for a token that is not a token at all, a plain word, and a
-  server answers it for any request it cannot read, so the status does not say
-  that a credential was refused. A WebSocket upgrade the server refused, which
+  never from the message. A hosted libSQL server, measured on 2026-11-08,
+  answers 401 to a token whose signature it does not accept and to no token at
+  all, and 400 to a token that is no token at all, a plain word. Three answers
+  of libSQL keep the type they had, an outage. A 400: beside the measured
+  answer to a plain word, a server answers it for any request it cannot read,
+  so the status does not say that a credential was refused. A WebSocket upgrade the server refused, which
   a `ws:` or `wss:` URL meets: the client reports it under another code,
   `HRANA_WEBSOCKET_ERROR`, whatever the status, and carries the status only
   inside its message, which the executor does not read. And a write sent under
@@ -4017,24 +4017,26 @@ not depend on careful reading:
   classes alone, which the standard defines. A batch sent after the executor
   closed is a `StoreUnavailableError`.
   One case holds a store's refusal of a credential to
-  `StoreAccessRefusedError`, with the batch's label in the message and the
-  driver's error as the cause. The fixture of a dialect whose store takes a
-  credential offers a surface for it: the dialect's real executor on the
-  fixture's own database, opened under a password that is not the account's,
-  and opened as a role of the fixture's own that may connect, may read the
-  tables and may write none. Under the wrong password a read and a write are
-  refused alike. The role is answered its read and refused its write, through
-  the executor and through `spawn`, and the tables hold what they held. A
-  dialect whose store takes no credential offers no surface, and the case
-  checks nothing for it. libSQL is one, because its fixture is a database file.
-  Each server's own file pins the codes on a real server: a wrong password, a
-  role that may not log in and a locked account, and the role that may only
-  read, refused with 42501 on PostgreSQL and 1142 on MySQL. What the libSQL
-  executor makes of a server's refusal is held by the libSQL store's own file,
-  which runs the real client against a loopback HTTP server that answers one
-  status: 401 and 403 are the access refusal, 400, 404, 429, 500 and 503 an
-  outage, a refused WebSocket upgrade an outage, and a 401 is the access
-  refusal whatever text the server sends beside it (§3.2).
+  `StoreAccessRefusedError` on each dialect, with the batch's label in the
+  message and the driver's error as the cause, for a read, for a write and for
+  a call of the port, and holds that the tables keep what they held. Every
+  fixture offers the surface for it: the dialect's real executor, opened once
+  for each way the fixture can have its store refuse a credential. A server
+  opens the fixture's own database under a password that is not the account's.
+  A libSQL fixture is a database file, which takes no credential, and no libSQL
+  server runs in a test, so it points the real client at a loopback HTTP server
+  that it starts and stops, once for 401 and once for 403. A second case holds
+  a credential the store accepts, which may read and may not write: the role
+  is answered its read and refused its write, through the executor and through
+  `spawn`. It needs a role, so it runs on PostgreSQL and MySQL, whose fixtures
+  make a role of their own, and checks nothing on libSQL, because a file has no
+  role. Each store's own file pins the codes. On a real PostgreSQL and MySQL
+  server: a wrong password, a role that may not log in and a locked account,
+  and the role that may only read, refused with 42501 on PostgreSQL and 1142
+  on MySQL. For libSQL, what the real client throws for each status a loopback
+  server answers: 401 and 403 are the access refusal, 400, 404, 429, 500 and
+  503 an outage, a refused WebSocket upgrade an outage, and a 401 is the
+  access refusal whatever text the server sends beside it (§3.2).
   One case holds that a failed batch is reported once and its executor serves
   the next call (§3.2). Twelve write batches in a row fail INSIDE, the first
   statement a write and the second a broken primary key, which is more than
@@ -7061,12 +7063,18 @@ the README's section "Operating a deployment". `.github/workflows/operable-week.
 makes the hourly enqueue, the daily samples and the daily purge of such a week. Its one
 job runs only while a repository variable is set, it requires the secret store URL to
 equal the URL another variable pins before any command runs, and it writes each report to
-a file of the run's artifact and none to the log. The enqueue and the purge, which write,
+a file of the run's artifact and none to the log. It runs the CLI of one commit, which a
+third variable names by its full id. GitHub reads the workflow file from the default
+branch, so the steps are main's, and the job fetches and checks out the pinned commit and
+no other, so the CLI is that commit's and a pull request merged during the week changes no
+member of a report. A value that is not 40 lowercase hexadecimal digits stops the job
+before any command opens the store, and so does a checkout that leaves another commit. The enqueue and the purge, which write,
 name their `--target` from the pinned URL, so the CLI refuses a credential of another
 database for them too. The samples, `stats` and `sizes`, are reads, which take no
 `--target`, so that check alone holds them to the pinned database. Cases read the file and run its steps
 against a stand-in for the CLI, under the shell GitHub runs a step with, which stops at
-the first command that fails: the enqueue is under the hour's key, the purge runs again
+the first command that fails: the checkout fetches the pinned commit alone and refuses a
+value that is no full id, the enqueue is under the hour's key, the purge runs again
 until the verb says no more remain, and a purge whose report cannot be read stops the job
 with nothing of the report in the log.
 
@@ -7254,9 +7262,13 @@ The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at t
 executor, as the CLI sees it: crash-before (the executor rejects with
 StoreUnavailableError before the batch is sent), crash-after (it rejects after the batch
 commits) and duplicate (it delivers the batch twice). It is a CLI-level injection, not
-SimWorld's SimCrash. It injects no refusal of a credential: a refusal is an answer, and no
-crash, and a case of its own runs every store command against a store that refuses its
-credential, on each dialect, and holds exit 4.
+SimWorld's SimCrash. A refusal of a credential is an answer of the store and no crash, so
+the command table declares no fault kind for it. Two generated cases hold it over every
+store command. One runs each command against a store that refuses its credential, on each
+dialect, and holds exit 4. The other injects the refusal on libSQL at every batch each
+command sends, one sending at a time, from the same starting states: the command exits 4,
+but at a read that follows a write the store answered, where the table declares exit 0 for
+an outage, it exits 0 and says the read did not happen.
 It meets every batch every store command sends, one sending at a
 time, on each dialect, from each starting state the command runs from: `migrate` from a
 database that was never initialized, from version 5 and from one version below the
