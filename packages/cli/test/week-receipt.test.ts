@@ -21,6 +21,7 @@ import {
 import { ROOT } from './support.js'
 import {
   FAILED_PERIOD,
+  INJECTED_BEYOND_THE_START,
   INJECTION,
   RETRIED_PERIOD,
   RUNS_BEYOND_THE_FIRST,
@@ -61,12 +62,14 @@ function purgesMovedToTheNextDay(receipt: WeekReceipt, day: number): void {
 /**
  * The bound of the well-formed receipt, said here a second time from what the fixture
  * models: the start sample's rows, a unit's rows for each hour of the window and 25 more
- * and for the one failed unit, and of runs the ones its units held beyond their first.
+ * and for the one failed unit, of runs the ones its units held beyond their first, and the
+ * rows the injected task came to hold after the start sample.
  */
 const boundOf = (table: QueueTable): number =>
   START_ROWS[table] +
   (WINDOW_HOURS + 25 + 1) * WEEK_DIGEST_UNIT_ROWS[table] +
-  (table === 'runs' ? RUNS_BEYOND_THE_FIRST : 0)
+  (table === 'runs' ? RUNS_BEYOND_THE_FIRST : 0) +
+  INJECTED_BEYOND_THE_START[table]
 
 const setCount = (sample: { sizes: Json }, table: string, count: number): void => {
   ;((sample.sizes.tables as Json)[table] as Json).count = count
@@ -332,6 +335,42 @@ describe('the week receipt checker', () => {
     const fourth = both.days[3]
     if (fourth !== undefined) setCount(fourth, 'runs', boundOf('runs') + 1)
     expect(causes(both)).toEqual(['sizes-over-bound'])
+  })
+
+  it('allows the injected task the rows it comes to hold after the start sample: its wait once the deployment parked it, and the event of its ending once the operator cancelled it', () => {
+    // The start sample counted the injected task as it was enqueued. The README's own
+    // steps then have the deployment take it and the operator cancel it.
+    const receipt = genuineWeek()
+    expect(
+      weekReceiptErrors(receipt),
+      'mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows',
+    ).toEqual([])
+    // The well-formed week stands at that allowance: at its bound of waits while the task
+    // is parked, and of events once it was cancelled.
+    const countOf = (day: number, table: string): unknown =>
+      ((receipt.days[day]?.sizes.tables as Json)[table] as Json).count
+    expect(INJECTED_BEYOND_THE_START).toEqual({
+      tasks: 0,
+      runs: 0,
+      checkpoints: 0,
+      waits: 1,
+      events: 1,
+    })
+    expect({ waits: countOf(0, 'waits'), events: countOf(3, 'events') }).toEqual({
+      waits: boundOf('waits'),
+      events: boundOf('events'),
+    })
+    // One row more of either is refused: the allowance is the injected task's and no more.
+    for (const [day, table] of [
+      [0, 'waits'],
+      [3, 'events'],
+    ] as const) {
+      const over = genuineWeek()
+      const sample = over.days[day]
+      if (sample === undefined) throw new Error(`the week has no day ${day + 1}`)
+      setCount(sample, table, boundOf(table) + 1)
+      expect(causes(over)).toEqual(['sizes-over-bound'])
+    }
   })
 
   it('counts a period by the sha256 of its key, named for the UTC hour of each hour from the start sample', () => {

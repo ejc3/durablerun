@@ -19,8 +19,9 @@ import {
  * The week it models: a digest is enqueued each hour from the start sample on. A sample of
  * `stats` and `sizes` is taken each day, and after it a purge under a window of a day. One
  * period failed after five attempts, and a purge with no failed window keeps it. One
- * period was tried twice. One task was injected before the start sample, so the start
- * sample counts its rows.
+ * period was tried twice. One task that awaits an event nobody emits was injected before
+ * the start sample, the deployment parked it, and the operator cancelled it on the second
+ * day, as the README's steps of the sealed injection say.
  */
 
 const QUEUE = 'digest'
@@ -40,8 +41,25 @@ const runsOf = (index: number): number =>
 const rowsOf = (index: number): WeekRows => ({ ...WEEK_DIGEST_UNIT_ROWS, runs: runsOf(index) })
 /** The runs the week's units held beyond the first of each. */
 export const RUNS_BEYOND_THE_FIRST = runsOf(FAILED_PERIOD) - 1 + runsOf(RETRIED_PERIOD) - 1
-/** What the queue held at the start sample: the injected task, parked on its event. */
-export const START_ROWS: WeekRows = { tasks: 1, runs: 1, checkpoints: 1, waits: 1, events: 0 }
+/** What the queue held at the start sample: the injected task as it was enqueued, its task and one run. */
+export const START_ROWS: WeekRows = { tasks: 1, runs: 1, checkpoints: 0, waits: 0, events: 0 }
+/**
+ * The injected task after the start sample, as the week on the release alpha.1 measures
+ * one: a wait once the deployment parked it, and once the operator cancelled it no wait
+ * and the event of its ending.
+ */
+const PARKED: WeekRows = { ...START_ROWS, waits: 1 }
+const CANCELLED: WeekRows = { ...START_ROWS, events: 1 }
+/** The operator cancels the injected task after the sample of this day. */
+const CANCELLED_AFTER_DAY = 2
+const injectedOn = (day: number): WeekRows => (day <= CANCELLED_AFTER_DAY ? PARKED : CANCELLED)
+/** The most the injected task came to hold of each table beyond what the start sample counted. */
+export const INJECTED_BEYOND_THE_START = Object.fromEntries(
+  QUEUE_TABLES.map((table) => [
+    table,
+    Math.max(PARKED[table], CANCELLED[table]) - START_ROWS[table],
+  ]),
+) as WeekRows
 
 /** The sha256 of the key the task of the week's `index`th period is enqueued under. */
 export const keyOfPeriod = (index: number): string =>
@@ -127,7 +145,8 @@ const purgedOn = (day: number): number[] =>
 
 /**
  * The rows the queue holds at the sample of day `day`, which is taken before that day's
- * purge: the start sample's, and a unit's for every period enqueued and not purged yet.
+ * purge: the injected task's as it stands that day, and a unit's for every period enqueued
+ * and not purged yet.
  */
 function rowsOn(day: number): WeekRows {
   const enqueued = range(0, day * 24 + 1)
@@ -136,7 +155,7 @@ function rowsOn(day: number): WeekRows {
   return Object.fromEntries(
     QUEUE_TABLES.map((table) => [
       table,
-      START_ROWS[table] + standing.reduce((sum, index) => sum + rowsOf(index)[table], 0),
+      injectedOn(day)[table] + standing.reduce((sum, index) => sum + rowsOf(index)[table], 0),
     ]),
   ) as WeekRows
 }
