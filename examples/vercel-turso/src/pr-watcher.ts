@@ -1,5 +1,6 @@
 import { FatalTaskError } from '@durablerun/core'
 import type { TaskContext } from '@durablerun/sdk'
+import { isGitHubRepository } from './github-repository.js'
 
 export const PR_WATCHER_TASK = 'watch-pr-checks'
 export const PR_WATCHER_OBSERVATION_STEP = 'github-checks'
@@ -65,11 +66,7 @@ function integer(name: string, value: unknown, min: number, max: number): number
 
 export function parsePrWatchInput(params: unknown): PrWatchInput {
   const value = object(params)
-  if (
-    typeof value.repository !== 'string' ||
-    !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(value.repository) ||
-    ['.', '..'].includes(value.repository.split('/')[1] ?? '')
-  ) {
+  if (!isGitHubRepository(value.repository)) {
     throw new FatalTaskError('repository must be owner/name')
   }
   if (typeof value.headSha !== 'string' || !/^[a-fA-F0-9]{40}$/.test(value.headSha)) {

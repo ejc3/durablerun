@@ -1,6 +1,8 @@
 import { parseTaskValueJson } from '@durablerun/core'
 import type { TaskHandler, TaskRegistry } from '@durablerun/sdk'
 import { observeGitHubChecks } from './github-checks.js'
+import { observeGitHubRef } from './github-ref.js'
+import { PERIODIC_DIGEST_TASK, createPeriodicDigest } from './periodic-digest.js'
 import { PR_WATCHER_TASK, createPrWatcher } from './pr-watcher.js'
 
 export const WAIT_FOR_READY_TASK = 'wait-for-ready'
@@ -21,6 +23,7 @@ function eventNameFrom(params: unknown): string {
 
 export const taskRegistry: TaskRegistry = new Map<string, TaskHandler>([
   [PR_WATCHER_TASK, createPrWatcher(observeGitHubChecks)],
+  [PERIODIC_DIGEST_TASK, createPeriodicDigest(observeGitHubRef)],
   [
     WAIT_FOR_READY_TASK,
     async (ctx, params) => {
