@@ -103,3 +103,102 @@ describe('every checkpoint write in a store is a door the saga surface knows', (
     },
   )
 })
+
+describe('a dialect with a CI job of its own runs every test file that runs once for each selected dialect', () => {
+  // `pnpm verify` runs the dialects its job has servers for. A dialect with a job of its own
+  // runs packages/conformance/bin/dialect-conformance.sh, which hands vitest a list of
+  // paths. A test file that runs its cases once for each selected dialect and is not on
+  // that list runs on that dialect in no job, while its record says "on each dialect". The
+  // list is written by hand. So this case finds those files by what they import, and
+  // requires each to be a path the script runs or to be named below with the reason it is
+  // left out. It holds no file that reaches a dialect another way.
+  const SCRIPT = `${ROOT}/packages/conformance/bin/dialect-conformance.sh`
+  /** What a test file imports to run once for each selected dialect. */
+  const SELECTS = [
+    'SELECTED_DIALECT_FIXTURES',
+    'selectedDialects',
+    'SELECTED',
+    'parseDialectSelection',
+  ]
+  /** The variable those read. A test file that reads it takes the selection itself. */
+  const READS_THE_SELECTION = /process\.env\.DURABLERUN_CONFORMANCE_DIALECTS/
+  /** The test files that select and that the script leaves out, each with its reason. */
+  const LEFT_OUT: Readonly<Record<string, string>> = {
+    'packages/conformance/test/dialect-selection.test.ts':
+      'it calls the parser of the selection with lists of its own, and opens no store',
+  }
+
+  /** The paths the script hands vitest, with `$dialect` as the script writes it. */
+  const listedPaths = (script: string): string[] => {
+    const lines = script.split('\n')
+    const run = lines.findIndex((line) => line.includes('pnpm exec vitest run'))
+    const paths: string[] = []
+    for (const line of run < 0 ? [] : lines.slice(run + 1)) {
+      const path = line
+        .trim()
+        .replace(/\s*\\$/, '')
+        .replace(/^"|"$/g, '')
+      if (path.startsWith('--')) break
+      paths.push(path)
+    }
+    return paths
+  }
+  /** The names a source imports, without `type` and without what each is renamed to. */
+  const importedNames = (source: string): string[] =>
+    [...source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from/g)].flatMap(([, names = '']) =>
+      names.split(',').map(
+        (name) =>
+          name
+            .trim()
+            .replace(/^type\s+/, '')
+            .split(/\s+as\s+/)[0] ?? '',
+      ),
+    )
+  /** Every test file under the `test` directory of a package or an app, as a repository path. */
+  const testFiles = (): string[] =>
+    ['packages', 'apps'].flatMap((top) =>
+      readdirSync(`${ROOT}/${top}`, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && existsSync(`${ROOT}/${top}/${entry.name}/test`))
+        .flatMap((entry) =>
+          readdirSync(`${ROOT}/${top}/${entry.name}/test`, { recursive: true, encoding: 'utf8' })
+            .filter((file) => file.endsWith('.test.ts'))
+            .map((file) => `${top}/${entry.name}/test/${file}`),
+        ),
+    )
+
+  it('finds them by what they import, and requires each to be a path the script runs or to be named with its reason', () => {
+    const listed = listedPaths(readFileSync(SCRIPT, 'utf8'))
+    const forEachDialect = EXPECTED_DIALECTS.flatMap((dialect) =>
+      listed.map((path) => path.replaceAll('$dialect', dialect)),
+    )
+    const selecting = testFiles()
+      .filter((file) => {
+        const source = readFileSync(`${ROOT}/${file}`, 'utf8')
+        return (
+          importedNames(source).some((name) => SELECTS.includes(name)) ||
+          READS_THE_SELECTION.test(source)
+        )
+      })
+      .sort()
+    const runs = (file: string) =>
+      forEachDialect.some((path) => file === path || file.startsWith(`${path}/`))
+
+    expect(
+      {
+        // The search and the script's list meet: when they share no file, nothing below can fail.
+        found: selecting.some(runs),
+        selectedAndNotRun: selecting.filter((file) => !runs(file) && !(file in LEFT_OUT)),
+        listedAndNotThere: forEachDialect.filter((path) => !existsSync(`${ROOT}/${path}`)),
+        leftOutAndNotSelecting: Object.keys(LEFT_OUT).filter((file) => !selecting.includes(file)),
+        leftOutAndRun: Object.keys(LEFT_OUT).filter(runs),
+      },
+      'regression:one-dialect-script-runs-every-per-dialect-test-file',
+    ).toEqual({
+      found: true,
+      selectedAndNotRun: [],
+      listedAndNotThere: [],
+      leftOutAndNotSelecting: [],
+      leftOutAndRun: [],
+    })
+  })
+})
