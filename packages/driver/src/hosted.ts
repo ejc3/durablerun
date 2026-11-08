@@ -2,13 +2,14 @@ import {
   type Clock,
   type IdSource,
   type SchedulerStore,
-  StoreUnavailableError,
+  type StoreFailureKind,
   UserName,
   durationToMs,
   isPortRefusal,
   parseTaskValueJson,
   requirePositiveInt,
   serializeTaskValue,
+  storeFailureKind,
 } from '@durablerun/core'
 import type { TaskRegistry } from '@durablerun/sdk'
 import {
@@ -123,6 +124,24 @@ function jsonResponse(
 
 function errorResponse(status: number, code: ErrorCode, extraHeaders?: Record<string, string>) {
   return jsonResponse({ error: code }, status, extraHeaders)
+}
+
+/**
+ * What a route answers each kind of store failure, keyed by core's one definition of the
+ * kinds, so a kind added there fails the typecheck here until it has an answer. 503 is for
+ * what a later request can meet differently with nothing changed by its caller: an outage,
+ * and a credential the store refuses, which the deployment's owner repairs and which
+ * answered 503 while it was typed an outage. 500 is for what the same request meets the
+ * same way until the database or the build changes.
+ */
+const STORE_FAILURE_ANSWERS: Readonly<
+  Record<StoreFailureKind, readonly [status: number, code: ErrorCode]>
+> = {
+  unavailable: [503, 'service_unavailable'],
+  'access-refused': [503, 'service_unavailable'],
+  permanent: [500, 'internal_error'],
+  'schema-mismatch': [500, 'internal_error'],
+  'schema-not-initialized': [500, 'internal_error'],
 }
 
 async function readBoundedBody(request: Request): Promise<string> {
@@ -378,9 +397,9 @@ export function createHostedRouter(deps: HostedRouterDependencies): HostedRouter
       // that family once, so a route has no rule of its own for a reserved key or a
       // wide one, and a refusal that joins the family is answered here too.
       if (isPortRefusal(error)) return errorResponse(400, 'invalid_request')
-      if (error instanceof StoreUnavailableError || error instanceof WakeSchedulingError) {
-        return errorResponse(503, 'service_unavailable')
-      }
+      const failure = storeFailureKind(error)
+      if (failure !== undefined) return errorResponse(...STORE_FAILURE_ANSWERS[failure])
+      if (error instanceof WakeSchedulingError) return errorResponse(503, 'service_unavailable')
       return errorResponse(500, 'internal_error')
     }
   }

@@ -1,9 +1,9 @@
 import {
   type ClaimedRun,
-  PermanentStoreError,
   type SchedulerStore,
   type StoreAdmin,
-  StoreUnavailableError,
+  type StoreFailureKind,
+  storeFailureKind,
 } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import { engineHistoryViolations } from './engine-history.js'
@@ -394,14 +394,27 @@ type Settled =
  * either: a legal call of a scheduler port, alone or beside itself, never breaks a
  * constraint. Counted as a refusal it could pass, by failing the same way in both orders,
  * because refusals are compared between the orders and an outage fails a contest outright.
+ * A refused credential is kept with them for the same reason: a fixture's own credential is
+ * never refused. A schema error is booked as it was, a refusal under its name. The table is
+ * keyed by core's one definition of the kinds, so a kind added there has to be booked here.
  */
+const BOOKED_AS_AN_OUTAGE: Readonly<Record<StoreFailureKind, boolean>> = {
+  unavailable: true,
+  'access-refused': true,
+  permanent: true,
+  'schema-mismatch': false,
+  'schema-not-initialized': false,
+}
+
 export function settle(call: Promise<unknown>): Promise<Settled> {
   return call.then(
     (value): Settled => ({ kind: 'answered', value }),
-    (error: unknown): Settled =>
-      error instanceof StoreUnavailableError || error instanceof PermanentStoreError
+    (error: unknown): Settled => {
+      const failure = storeFailureKind(error)
+      return failure !== undefined && BOOKED_AS_AN_OUTAGE[failure]
         ? { kind: 'outage', why: describeFailure(error) }
-        : { kind: 'refused', name: error instanceof Error ? error.name : String(error) },
+        : { kind: 'refused', name: error instanceof Error ? error.name : String(error) }
+    },
   )
 }
 
