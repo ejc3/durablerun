@@ -3,12 +3,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import {
+  LibsqlExecutor,
   LibsqlSchedulerStore,
   LibsqlStoreAdmin,
   operatorReads,
   retention,
 } from '@durablerun/store-libsql'
-import { holdLibsqlWriteLock, openTestDb } from '@durablerun/store-libsql/testing'
+import {
+  holdLibsqlWriteLock,
+  openServerAnswering,
+  openTestDb,
+} from '@durablerun/store-libsql/testing'
 import {
   type PersistedNumericTable,
   type StorageCorruption,
@@ -21,6 +26,12 @@ import {
 } from '../src/index.js'
 import { firstInCauseChain, isString } from './fixture-error-chain.js'
 import { conformanceIdNamespace } from './fixture-id-namespace.js'
+
+/**
+ * The HTTP statuses a libSQL server refuses a token with: 401 for a token it does not
+ * accept, and 403 for one it accepts and refuses what it asks (DESIGN.md §3.2).
+ */
+const REFUSING_STATUSES = [401, 403] as const
 
 function sqlStringLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`
@@ -198,8 +209,30 @@ export async function makeLibsqlFixture(
         },
       }
     },
-    // A database file takes no credential, so it has none to refuse.
-    refusedAccess: async () => null,
+    refusedCredential: async () => {
+      // A database file takes no credential, so the real client is pointed at a loopback
+      // server for each status a libSQL server refuses a token with.
+      const servers = await Promise.all(
+        REFUSING_STATUSES.map(async (status) => {
+          const server = await openServerAnswering(status)
+          return { status, server, raw: LibsqlExecutor.open(server.url, 'a-token-it-refuses') }
+        }),
+      )
+      return {
+        refusals: servers.map(({ status, raw }) => ({
+          what: `a token the server answers ${status}`,
+          raw,
+        })),
+        close: async () => {
+          for (const { raw, server } of servers) {
+            raw.close()
+            await server.close()
+          }
+        },
+      }
+    },
+    // A database file has no role.
+    credentialThatMayOnlyRead: async () => null,
     close: async () => raw.close(),
   }
 }
