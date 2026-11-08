@@ -168,9 +168,13 @@ describe('a dialect with a CI job of its own runs every test file that runs once
 
   it('finds them by what they import, and requires each to be a path the script runs or to be named with its reason', () => {
     const listed = listedPaths(readFileSync(SCRIPT, 'utf8'))
-    const forEachDialect = EXPECTED_DIALECTS.flatMap((dialect) =>
-      listed.map((path) => path.replaceAll('$dialect', dialect)),
-    )
+    const forEachDialect = [
+      ...new Set(
+        EXPECTED_DIALECTS.flatMap((dialect) =>
+          listed.map((path) => path.replaceAll('$dialect', dialect)),
+        ),
+      ),
+    ]
     const selecting = testFiles()
       .filter((file) => {
         const source = readFileSync(`${ROOT}/${file}`, 'utf8')
