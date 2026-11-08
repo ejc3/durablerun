@@ -6834,7 +6834,14 @@ receipt shows a unit held beyond its first: the rows a purge report prints of a 
 purged, and the runs a lookup lists. A unit named by both counts once. A unit whose purge
 was not answered prints no rows, and it is allowed the five attempts of the default retry
 policy. The start sample counts whatever the queue held then, and the injected task is
-enqueued before it, so the bound needs no term for that task.
+enqueued before it, so the start sample counts that task's rows as they stand then. The
+steps of the sealed injection add rows to it after that: the deployment parks a task that
+awaits an event, which is a wait, and the operator's `cancel` writes the event of the
+task's ending. So the bound allows the injected task one wait and one event more. Those
+are measured: the week on the release alpha.1 injects a task of a name no handler is
+registered for and a task that awaits an event nobody emits, reads each one's rows when it
+is enqueued and at the end of every period until the operator has cancelled it, and holds
+the allowance equal to the most either came to hold of each table.
 
 The checker reads every member once, into the fields above, and then judges only what it
 read. It refuses a receipt for each thing that is wrong with it:

@@ -7350,7 +7350,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and deletes nothing. (8) The seal is the sha256 of the task id, the cause as `explain`
     names it and the nonce, each followed by a line feed. The second person injects and
     publishes before the start sample, so the start sample counts the injected task's
-    rows, which the bound has no other term for. The receipt carries the instant the
+    rows as they stand then. The receipt carries the instant the
     maintainer attests the hash was published, and the checker refuses one after the
     start sample. (9) The checker refuses four things line 44 did not list: a sample taken
     under a test clock, a receipt of a kind it does not know, a member that is missing or

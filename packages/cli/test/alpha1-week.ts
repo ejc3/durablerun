@@ -27,12 +27,15 @@ import { spawnSync } from 'node:child_process'
 import { cpSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { QUEUE_TABLES, type RetentionPolicy, systemIdSource } from '@durablerun/core'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
 import {
   HOUR_MS,
   WEEK_DIGEST_UNIT_ROWS,
+  WEEK_INJECTED_UNIT_ROWS,
   WEEK_PERIODS,
+  type WeekRows,
   digestKey,
   digestPeriod,
   readPurge,
@@ -40,7 +43,7 @@ import {
   sha256,
 } from '../../../apps/dogfood/src/week-receipt.js'
 import { type ProtocolSnapshot, snapshot } from '../../conformance/src/poison-matrix.js'
-import { dumpDifferences } from '../../conformance/src/retention-oracle.js'
+import { dumpDifferences, purgeOracle } from '../../conformance/src/retention-oracle.js'
 import { type Alpha1Store, installedIn, loadAlpha1 } from './alpha1-release.js'
 import { type PurgeAnswer, againstTheModel, idsOf, modelDifferences } from './purge-model.js'
 import { runCli } from './support.js'
@@ -57,6 +60,10 @@ const WEEK_STARTS_AGO_MS = 10 * DAY_MS
 const WINDOW_MINUTES = 7170
 const WINDOW = `${WINDOW_MINUTES}m`
 const WINDOW_SECONDS = WINDOW_MINUTES * 60
+const WINDOWS: RetentionPolicy = {
+  completedSeconds: WINDOW_SECONDS,
+  cancelledSeconds: WINDOW_SECONDS,
+}
 /** The periods those windows let go: the week's first five days and the hour after them. */
 const PERIODS_PURGED = 121
 /** The longest the harness may have run when it purges, for the windows to cut where they are meant to. */
@@ -317,16 +324,39 @@ export async function week(consumer: string, dir: string): Promise<string> {
     const swept = new Map<string, number>()
     const explained: string[] = []
 
+    /**
+     * The rows of each injected task's unit, table by table, as the model of retention
+     * counts a unit: when the task was enqueued, and the most it held at the end of any
+     * period after, up to and past the operator's cancel.
+     */
+    const injected = new Map<string, { enqueued: WeekRows; most: WeekRows }>()
+    const unitRows = async (taskId: string): Promise<WeekRows> =>
+      purgeOracle(await dumpOf(file), now, QUEUE, { taskId }, WINDOWS).rows
+    const inject = async (taskId: string): Promise<void> => {
+      const enqueued = await unitRows(taskId)
+      injected.set(taskId, { enqueued, most: enqueued })
+    }
+    const measureTheInjected = async (): Promise<void> => {
+      for (const [taskId, rows] of injected) {
+        const held = await unitRows(taskId)
+        rows.most = Object.fromEntries(
+          QUEUE_TABLES.map((table) => [table, Math.max(rows.most[table], held[table])]),
+        ) as WeekRows
+      }
+    }
+
     for (let period = 0; period < WEEK_PERIODS; period++) {
       const startMs = weekStartMs + period * HOUR_MS
       await setNow(startMs)
       if (period === PLAN.unregistered) {
         planted.unregistered = await enqueue('not-deployed-yet', 'planted-unregistered', null)
+        await inject(planted.unregistered)
       }
       if (period === PLAN.awaitNobodyEmits) {
         planted.awaitNobodyEmits = await enqueue(tasks.WAIT_FOR_READY_TASK, 'planted-await', {
           eventName: 'approval-nobody-gives',
         })
+        await inject(planted.awaitNobodyEmits)
       }
       if (period === PLAN.awaitEmitted) {
         planted.awaitEmitted = await enqueue(tasks.WAIT_FOR_READY_TASK, 'awaits-ready', {
@@ -407,7 +437,21 @@ export async function week(consumer: string, dir: string): Promise<string> {
           must(cancelled.outcome === 'cancelled', `cancel answered ${JSON.stringify(cancelled)}`)
         }
       }
+      if (period <= PLAN.operatorLooks) await measureTheInjected()
     }
+    // The week receipt's bound allows an injected task the rows it comes to hold after the
+    // start sample. That allowance is what this measures, of both kinds of injected task:
+    // table by table, the most either held beyond what it held when it was enqueued.
+    const beyondTheEnqueue = Object.fromEntries(
+      QUEUE_TABLES.map((table) => [
+        table,
+        Math.max(...[...injected.values()].map((rows) => rows.most[table] - rows.enqueued[table])),
+      ]),
+    )
+    must(
+      injected.size === 2 && isDeepStrictEqual(beyondTheEnqueue, { ...WEEK_INJECTED_UNIT_ROWS }),
+      `the injected tasks came to hold ${JSON.stringify(beyondTheEnqueue)} beyond their rows when enqueued, and the week receipt allows ${JSON.stringify(WEEK_INJECTED_UNIT_ROWS)}`,
+    )
 
     // What alpha.1 made of the week, read through alpha.1's own getTaskResult and through
     // the CLI's result: every digest the CLI enqueued ended as the plan says.
@@ -457,10 +501,7 @@ export async function week(consumer: string, dir: string): Promise<string> {
       'the harness ran for longer than its purge windows allow for',
     )
 
-    const keeping: RetentionPolicy = {
-      completedSeconds: WINDOW_SECONDS,
-      cancelledSeconds: WINDOW_SECONDS,
-    }
+    const keeping = WINDOWS
     const naming: RetentionPolicy = { ...keeping, failedSeconds: WINDOW_SECONDS }
     const endedStates = new Set(
       underTheClock.tasks

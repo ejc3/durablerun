@@ -54,6 +54,24 @@ export const WEEK_DIGEST_UNIT_ROWS: WeekRows = Object.freeze({
   events: 1,
 })
 
+/**
+ * The rows the injected task comes to hold after it is enqueued, up to and past the
+ * operator's cancel, beyond the task and the run it holds when enqueued. The start sample
+ * counts the task as it stands then, and the README's steps of the sealed injection go on
+ * to add rows: the deployment parks a task that awaits an event, which is a wait, and the
+ * operator's `cancel` writes the event of the task's ending. The week on the release
+ * alpha.1 measures both kinds of injected task, one of a name no handler is registered
+ * for and one that awaits an event nobody emits, and holds this to the most either held
+ * of each table.
+ */
+export const WEEK_INJECTED_UNIT_ROWS: WeekRows = Object.freeze({
+  tasks: 0,
+  runs: 0,
+  checkpoints: 0,
+  waits: 1,
+  events: 1,
+})
+
 /** The name of the period an instant falls in: its hour, in UTC, as `YYYY-MM-DDTHH`. */
 export const digestPeriod = (epochMs: number): string =>
   new Date(epochMs).toISOString().slice(0, 13)
@@ -398,7 +416,8 @@ function runsBeyondTheFirst(week: WeekRead): number {
  * daily purge leaves standing the units of its window and of the day and the hour until
  * the next, plus a unit's rows for each failed unit the dry run lists, which a purge with
  * no failed window keeps. A unit's rows count one run, so the bound of runs also allows
- * every run the receipt shows a unit held beyond its first.
+ * every run the receipt shows a unit held beyond its first. And the injected task is
+ * allowed the rows it comes to hold after the start sample.
  */
 function boundOf(week: WeekRead): WeekRows {
   const windowHours = Math.ceil(
@@ -411,7 +430,8 @@ function boundOf(week: WeekRead): WeekRows {
       table,
       week.start.sizes[table] +
         (windowHours + WEEK_SAMPLE_GAP_HOURS + failedUnits) * WEEK_DIGEST_UNIT_ROWS[table] +
-        (table === 'runs' ? beyondTheFirst : 0),
+        (table === 'runs' ? beyondTheFirst : 0) +
+        WEEK_INJECTED_UNIT_ROWS[table],
     ]),
   ) as WeekRows
 }

@@ -22462,8 +22462,8 @@ MUTATION_SPECS.extend(
         (
             "week-receipt-allows-the-runs-it-shows",
             "apps/dogfood/src/week-receipt.ts",
-            "        (table === 'runs' ? beyondTheFirst : 0),\n",
-            "        (table === 'runs' ? 0 : 0),\n",
+            "        (table === 'runs' ? beyondTheFirst : 0) +\n",
+            "        (table === 'runs' ? 0 : 0) +\n",
             "the bound of runs allows no run a unit held beyond its first, so a week with one retried unit is refused",
         ),
         (
@@ -22633,6 +22633,25 @@ VERDICTS["operable-week-workflow-enqueues-under-the-periods-key"] = ExpectedVerd
     "packages/cli/test/operable-week-workflow.test.ts",
     "the workflow of the operable week enqueues the digest of the hour under its key, as the verb takes it, with its report in a file",
     "mutation-verdict:behavior:operable-week-workflow-enqueues-under-the-periods-key",
+)
+
+# More guards of the week receipt, of what selftest reports, of the workflow and of the example.
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-allows-the-injected-task-its-rows",
+            "apps/dogfood/src/week-receipt.ts",
+            "        WEEK_INJECTED_UNIT_ROWS[table],\n",
+            "        0,\n",
+            "the bound has no term for the rows the injected task comes to hold after the start sample, so a week that parked it and cancelled it is refused",
+        ),
+    )
+)
+VERDICTS["week-receipt-allows-the-injected-task-its-rows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker allows the injected task the rows it comes to hold after the start sample: its wait once the deployment parked it, and the event of its ending once the operator cancelled it",
+    "mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows",
 )
 
 MUTATIONS = [
@@ -26579,7 +26598,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1507:
+        if len(MUTATIONS) != 1508:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
