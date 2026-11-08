@@ -757,7 +757,10 @@ describe('PgExecutor error classification', () => {
       notNullViolation: '23502',
       numericValueOutOfRange: '22003',
       syntaxError: '42601',
+      // Class 42 too, and read before it: the statement is fine and the role may not send it.
       insufficientPrivilege: '42501',
+      invalidPassword: '28P01',
+      invalidAuthorizationSpecification: '28000',
       // Read first, and a type of its own: a migration repairs it.
       undefinedTable: '42P01',
       serializationFailure: '40001',
@@ -779,7 +782,9 @@ describe('PgExecutor error classification', () => {
       notNullViolation: 'PermanentStoreError',
       numericValueOutOfRange: 'PermanentStoreError',
       syntaxError: 'PermanentStoreError',
-      insufficientPrivilege: 'PermanentStoreError',
+      insufficientPrivilege: 'StoreAccessRefusedError',
+      invalidPassword: 'StoreAccessRefusedError',
+      invalidAuthorizationSpecification: 'StoreAccessRefusedError',
       undefinedTable: 'SchemaMismatchError',
       serializationFailure: 'StoreUnavailableError',
       deadlockDetected: 'StoreUnavailableError',
@@ -793,6 +798,43 @@ describe('PgExecutor error classification', () => {
     expect(await thrownFor('23505', 'duplicate key')).toMatchObject({
       message: 'batch(typed) failed permanently (SQLSTATE 23505): duplicate key',
       cause: { code: '23505' },
+    })
+  })
+
+  it('types a refused credential, class 28, and a missing privilege, 42501, an access refusal wherever the server answers it', async () => {
+    // A password the server refuses is answered when the pool connects, before any statement.
+    const refusedAtConnect = databaseError('28P01', 'password authentication failed')
+    const atConnect: unknown = await executor(
+      new FakePool(new FakeClient(() => EMPTY_RESULT), refusedAtConnect),
+    )
+      .batch('connect', [{ sql: 'SELECT 1', args: [] }], 'read')
+      .then(
+        () => 'answered',
+        (error: unknown) => error,
+      )
+    expect(atConnect).toMatchObject({
+      name: 'StoreAccessRefusedError',
+      message: 'batch(connect) was refused access (SQLSTATE 28P01): password authentication failed',
+      cause: refusedAtConnect,
+    })
+
+    // A privilege the role lacks is answered at the statement.
+    const denied = databaseError('42501', 'permission denied for table tasks')
+    const client = new FakeClient((text) => {
+      if (text === 'UPDATE tasks SET attempts = 1') throw denied
+      return EMPTY_RESULT
+    })
+    const atAStatement: unknown = await executor(new FakePool(client))
+      .batch('write', [{ sql: 'UPDATE tasks SET attempts = 1', args: [] }])
+      .then(
+        () => 'answered',
+        (error: unknown) => error,
+      )
+    expect(atAStatement).toMatchObject({
+      name: 'StoreAccessRefusedError',
+      message:
+        'batch(write) was refused access (SQLSTATE 42501): permission denied for table tasks',
+      cause: denied,
     })
   })
 

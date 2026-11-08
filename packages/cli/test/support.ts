@@ -31,6 +31,7 @@ import {
   MysqlSchedulerStore,
   retention as mysqlRetention,
 } from '@durablerun/store-mysql'
+import { openServerAnswering } from '@durablerun/store-libsql/testing'
 import { openMysqlTestDb } from '@durablerun/store-mysql/testing'
 import {
   PostgresSchedulerStore,
@@ -44,7 +45,7 @@ import {
 } from '../../conformance/test/dialect-selection.js'
 import { COMMANDS, type CliFault, type CommandSpec, VERBS } from '../src/commands.js'
 import { type Io, main } from '../src/main.js'
-import { type StoreOpener, keepingWhatIsSent, openStore } from '../src/open-store.js'
+import { type StoreOpener, keepingWhatIsSent, openStore, storeTarget } from '../src/open-store.js'
 
 /** The dialects this run exercises, read from the one selection parser. */
 export const SELECTED: readonly EnrolledDialect[] = parseDialectSelection(
@@ -259,6 +260,44 @@ export async function openCliDb(
   } catch (error) {
     await db.close()
     throw error
+  }
+}
+
+/** A store that refuses the credential the CLI is handed for it. */
+export interface RefusingStore {
+  readonly env: Readonly<Record<string, string>>
+  /** What `--target` must name for it. */
+  readonly target: string
+  /** The credential the store refuses, which no stream may print. */
+  readonly credential: string
+  close(): Promise<void>
+}
+
+/**
+ * A store of a dialect, named with a credential it refuses. A server is asked for a test
+ * database of its own under a password that is not the account's. libSQL has no server in a
+ * test, so its real client is pointed at a loopback HTTP server that answers 401, which is
+ * what a hosted libSQL server answers a token it does not accept.
+ */
+export async function openRefusingStore(dialect: EnrolledDialect): Promise<RefusingStore> {
+  const credential = 'wrong-credential-9c1e'
+  if (dialect === 'libsql') {
+    const server = await openServerAnswering(401)
+    return {
+      env: { DURABLERUN_STORE_URL: server.url, DURABLERUN_STORE_TOKEN: credential },
+      target: await storeTarget(server.url),
+      credential,
+      close: server.close,
+    }
+  }
+  const db = await openCliDb(dialect, 'refused-credential')
+  const url = new URL(db.url)
+  url.password = credential
+  return {
+    env: { DURABLERUN_STORE_URL: url.href },
+    target: db.target,
+    credential,
+    close: db.close,
   }
 }
 

@@ -595,6 +595,74 @@ describe('MysqlExecutor error typing, by the state and the number the server sen
     })
   })
 
+  it('types every number that says the account was refused an access refusal, whatever state MySQL files it under', async () => {
+    // MySQL files a refused account under three states: 28000 for a refused login, 42000,
+    // beside a syntax error, for a missing privilege, and its general state HY000 for an
+    // account that is locked, blocked or past its password. Each number is its own
+    // condition, so each is asked.
+    const refusals = {
+      1044: '42000', // ER_DBACCESS_DENIED_ERROR
+      1045: '28000', // ER_ACCESS_DENIED_ERROR
+      1130: 'HY000', // ER_HOST_NOT_PRIVILEGED
+      1142: '42000', // ER_TABLEACCESS_DENIED_ERROR
+      1143: '42000', // ER_COLUMNACCESS_DENIED_ERROR
+      1211: '42000', // ER_NO_PERMISSION_TO_CREATE_USER
+      1227: '42000', // ER_SPECIFIC_ACCESS_DENIED_ERROR
+      1370: '42000', // ER_PROCACCESS_DENIED_ERROR
+      1419: 'HY000', // ER_BINLOG_CREATE_ROUTINE_NEED_SUPER
+      1698: '28000', // ER_ACCESS_DENIED_NO_PASSWORD_ERROR
+      1820: 'HY000', // ER_MUST_CHANGE_PASSWORD
+      1862: 'HY000', // ER_MUST_CHANGE_PASSWORD_LOGIN
+      1873: '28000', // ER_ACCESS_DENIED_CHANGE_USER_ERROR
+      3118: 'HY000', // ER_ACCOUNT_HAS_BEEN_LOCKED
+      3202: '42000', // ER_KEYRING_ACCESS_DENIED_ERROR
+      3630: '42000', // ER_PERSIST_ONLY_ACCESS_DENIED_ERROR
+      3631: 'HY000', // ER_CMD_NEED_SUPER
+      3879: 'HY000', // ER_DB_ACCESS_DENIED
+      3914: 'HY000', // ER_AUDIT_LOG_INSUFFICIENT_PRIVILEGE
+      3955: 'HY000', // ER_USER_ACCESS_DENIED_FOR_USER_ACCOUNT_BLOCKED_BY_PASSWORD_LOCK
+      6038: 'HY000', // ER_SPECIFIC_ACCESS_DENIED
+      6126: 'HY000', // ER_ACCESS_DENIED_NO_PROXY_GRANT
+      6127: 'HY000', // ER_ACCESS_DENIED_NO_PROXY
+    }
+    const observed: Record<string, string> = {}
+    for (const [errno, sqlState] of Object.entries(refusals)) {
+      observed[errno] = await typed({ errno: Number(errno), sqlState })
+    }
+    expect(observed).toEqual(
+      Object.fromEntries(Object.keys(refusals).map((errno) => [errno, 'StoreAccessRefusedError'])),
+    )
+    // The numbers beside them keep the type their state gives: a KILL of another account's
+    // thread, which the store never sends, and a command this server does not allow.
+    expect({
+      killDenied: await typed({ errno: 1095, sqlState: 'HY000' }),
+      commandNotAllowed: await typed({ errno: 1148, sqlState: '42000' }),
+    }).toEqual({ killDenied: 'StoreUnavailableError', commandNotAllowed: 'PermanentStoreError' })
+  })
+
+  it('types a login the server refuses an access refusal, at the connection and before any statement', async () => {
+    const refused = Object.assign(new Error("Access denied for user 'store'@'host'"), {
+      errno: 1045,
+      sqlState: '28000',
+    })
+    const pool = {
+      getConnection: () => Promise.reject(refused),
+      end: async () => undefined,
+      pool: OWNED_POOL_CONFIG,
+    }
+    const thrown: unknown = await MysqlExecutor.fromPool(pool as unknown as Pool)
+      .batch('fixture:read', [{ sql: 'SELECT 1', args: [] }], 'read')
+      .then(
+        () => 'answered',
+        (error: unknown) => error,
+      )
+    expect(thrown).toMatchObject({
+      name: 'StoreAccessRefusedError',
+      message: expect.stringContaining('batch(fixture:read) was refused access (MySQL error 1045)'),
+      cause: refused,
+    })
+  })
+
   it('types the permanent answers MySQL files outside the three classes by their numbers', async () => {
     expect(
       {

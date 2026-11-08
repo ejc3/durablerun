@@ -49,6 +49,8 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   databaseName: string
   /** Holds the write lock on one task's row, from a connection of its own, until `during` settles. */
   holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
+  /** An executor on this database under a password that is not the account's. Its caller closes it. */
+  openUnderAWrongPassword(): MysqlExecutor
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_MYSQL_URL
@@ -107,6 +109,12 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     }
   }
 
+  const openUnderAWrongPassword = (): MysqlExecutor => {
+    const wrong = new URL(connectionString)
+    wrong.password = 'not-the-password-of-the-account'
+    return MysqlExecutor.open({ uri: wrong.href, database: databaseName })
+  }
+
   try {
     await control.query(
       `CREATE DATABASE ${databaseName} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`,
@@ -116,7 +124,15 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
-    return { raw, admin, ids, databaseName, holdTaskRowLock, close: cleanup }
+    return {
+      raw,
+      admin,
+      ids,
+      databaseName,
+      holdTaskRowLock,
+      openUnderAWrongPassword,
+      close: cleanup,
+    }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error

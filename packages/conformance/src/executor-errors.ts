@@ -218,6 +218,42 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
     })
 
     /**
+     * A store that refuses the credential it was opened with says so, apart from an outage
+     * and apart from a permanent answer to a statement (DESIGN.md §3.2). A caller that
+     * waits out an outage would wait for good here, and the statement is one the store
+     * takes under another credential. A read and a write are refused alike, because the
+     * store refuses the credential before it reads either.
+     */
+    it('types the refusal of the credential a store was opened with apart from an outage and from a permanent answer, for a read and for a write', () =>
+      withFixture(
+        makeFixture,
+        'executor-errors-credential',
+        async (f) => {
+          const refused = await f.refusedCredential()
+          try {
+            for (const mode of ['read', 'write'] as const) {
+              const label = `executor-errors:under-a-refused-credential-${mode}`
+              const refusal: unknown = await refused.raw
+                .batch(label, [{ sql: 'SELECT 1 AS answered', args: [] }], mode)
+                .then(
+                  () => 'accepted',
+                  (error: unknown) => error,
+                )
+              expect(refusal instanceof Error ? refusal.name : refusal, `a ${mode} batch`).toBe(
+                'StoreAccessRefusedError',
+              )
+              // The message says which batch, and the cause is the driver's own error.
+              expect(refusal).toMatchObject({ message: expect.stringContaining(label) })
+              expect((refusal as Error).cause).toBeInstanceOf(Error)
+            }
+          } finally {
+            await refused.close()
+          }
+        },
+        { migrate: false },
+      ))
+
+    /**
      * Two write batches that update the same two rows in opposite orders, started together
      * on connections that are already open, with reads between the two updates so that each
      * holds its first row before it asks for its second. PostgreSQL and MySQL end that by

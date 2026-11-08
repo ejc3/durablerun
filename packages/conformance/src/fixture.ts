@@ -290,6 +290,19 @@ export interface LockWaitSurface {
 }
 
 /**
+ * What the executor error surface's refused-credential case needs from a dialect (§3.2):
+ * the dialect's real executor, opened with a credential its store refuses. A server opens
+ * the fixture's own database under a password that is not the account's. libSQL has no
+ * server in a test and a database file has no credential, so its fixture opens the real
+ * client against a loopback HTTP server that answers the status a hosted libSQL server
+ * refuses a token with.
+ */
+export interface RefusedCredentialSurface {
+  readonly raw: SqlExecutor
+  close(): Promise<void>
+}
+
+/**
  * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
  * factory passes the identical suite — scheduler plane today, run-bookkeeping
  * (RunStateStore) when it lands. store-libsql implements this now;
@@ -377,6 +390,8 @@ export interface StoreFixture {
   turn(): Promise<void>
   /** The surface of the lock-wait case, which the case closes. */
   lockWait(): Promise<LockWaitSurface>
+  /** The surface of the refused-credential case, which the case closes. */
+  refusedCredential(): Promise<RefusedCredentialSurface>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

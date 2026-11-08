@@ -24,6 +24,7 @@ import {
   commandLine,
   comparedLines,
   openCliDb,
+  openRefusingStore,
   plantNullPayload,
   recordingOpener,
   runCli,
@@ -481,26 +482,62 @@ describe('the CLI on every selected dialect', () => {
         }
       })
 
-      if (dialect !== 'libsql') {
-        it('a wrong password exits 6 today, and prints in no stream', async () => {
-          const db = await openCliDb(dialect, 'wrong-password')
-          try {
-            const url = new URL(db.url)
-            url.password = 'wrong-pw-9c1e'
+      // Exit test line 45: a store that refuses its credential is no outage. Every command
+      // that opens a store says so with the exit `tick` gives a refused token, and a kind of
+      // its own.
+      it('every store command exits 4 for a store that refuses its credential, with the kind store-access-refused in text and with --json, and prints the credential in no stream', async () => {
+        const refusing = await openRefusingStore(dialect)
+        try {
+          for (const spec of STORE_COMMANDS) {
+            const line = commandLine(spec, refusing, 'a-task-of-no-store')
             for (const extra of [[], ['--reveal']]) {
-              const run = await runCli(['doctor', '--queue', QUEUE, '--json', ...extra], {
-                DURABLERUN_STORE_URL: url.href,
-              })
+              const run = await runCli([...line, ...extra], refusing.env)
+              const answer = JSON.parse(run.stdout) as {
+                exit?: string
+                error?: { kind?: string; name?: string; message?: string }
+              }
               expect({
+                verb: spec.verb,
                 exit: run.exit,
-                printed: `${run.stdout}${run.stderr}`.includes('wrong-pw-9c1e'),
-              }).toEqual({ exit: 6, printed: false })
+                named: answer.exit,
+                kind: answer.error?.kind,
+                error: answer.error?.name,
+                // The store's own message prints only with --reveal.
+                message: answer.error?.message !== undefined,
+                printed: `${run.stdout}${run.stderr}`.includes(refusing.credential),
+              }).toEqual({
+                verb: spec.verb,
+                exit: exitCode('unauthorized'),
+                named: 'unauthorized',
+                kind: 'store-access-refused',
+                error: 'StoreAccessRefusedError',
+                message: extra.length > 0,
+                printed: false,
+              })
             }
-          } finally {
-            await db.close()
+            // In text the refusal prints on stderr, with its kind.
+            const text = await runCli(
+              line.filter((argument) => argument !== '--json'),
+              refusing.env,
+            )
+            expect({
+              verb: spec.verb,
+              exit: text.exit,
+              stdout: text.stdout,
+              kind: text.stderr.split('\n').includes('  kind: store-access-refused'),
+              printed: text.stderr.includes(refusing.credential),
+            }).toEqual({
+              verb: spec.verb,
+              exit: exitCode('unauthorized'),
+              stdout: '',
+              kind: true,
+              printed: false,
+            })
           }
-        })
-      }
+        } finally {
+          await refusing.close()
+        }
+      }, 120_000)
 
       it("migrate prints the store's own note before the version it names", async () => {
         const db = await openCliDb(dialect, 'notes', CURRENT_SCHEMA_VERSION - 1)

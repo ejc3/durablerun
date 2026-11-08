@@ -3,12 +3,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import {
+  LibsqlExecutor,
   LibsqlSchedulerStore,
   LibsqlStoreAdmin,
   operatorReads,
   retention,
 } from '@durablerun/store-libsql'
-import { holdLibsqlWriteLock, openTestDb } from '@durablerun/store-libsql/testing'
+import {
+  holdLibsqlWriteLock,
+  openServerAnswering,
+  openTestDb,
+} from '@durablerun/store-libsql/testing'
 import {
   type PersistedNumericTable,
   type StorageCorruption,
@@ -195,6 +200,18 @@ export async function makeLibsqlFixture(
         close: async () => {
           opened.close()
           rmSync(dir, { recursive: true, force: true })
+        },
+      }
+    },
+    refusedCredential: async () => {
+      // A hosted libSQL server answers a token it refuses with HTTP 401.
+      const server = await openServerAnswering(401)
+      const refused = LibsqlExecutor.open(server.url, 'a-token-the-server-refuses')
+      return {
+        raw: refused,
+        close: async () => {
+          refused.close()
+          await server.close()
         },
       }
     },

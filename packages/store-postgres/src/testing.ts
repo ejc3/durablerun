@@ -54,6 +54,8 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   schemaName: string
   /** Holds the write lock on one task's row, from a connection of its own, until `during` settles. */
   holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
+  /** An executor on this database under a password that is not the account's. Its caller closes it. */
+  openUnderAWrongPassword(): PgExecutor
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_POSTGRES_URL
@@ -111,6 +113,15 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     }
   }
 
+  const openUnderAWrongPassword = (): PgExecutor => {
+    const wrong = new URL(connectionString)
+    wrong.password = 'not-the-password-of-the-account'
+    return PgExecutor.open({
+      connectionString: wrong.href,
+      options: `-c search_path=${schemaName}`,
+    })
+  }
+
   try {
     await control.query(`CREATE SCHEMA ${schemaName}`)
     raw = PgExecutor.open({
@@ -121,7 +132,15 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
-    return { raw, admin, ids, schemaName, holdTaskRowLock, close: cleanup }
+    return {
+      raw,
+      admin,
+      ids,
+      schemaName,
+      holdTaskRowLock,
+      openUnderAWrongPassword,
+      close: cleanup,
+    }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error
