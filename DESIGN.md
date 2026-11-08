@@ -545,8 +545,10 @@ One invocation executes one claimed run to its next suspension point:
   lease story and the user's retry budget is never touched; only errors from
   user code spend user attempts.
 - **What a store executor throws, and what a pass does with it.** An executor
-  types a driver's failure from its error CODE and never from its message
-  text, into one of four kinds. `SchemaNotInitializedError` and
+  types a driver's failure from its error CODE, into one of four kinds, and
+  from its message text in one case: libSQL tells the two schema errors by the
+  client's message. MySQL types one error apart from the four, 1406, a string
+  longer than its column, as an invalid durable string. `SchemaNotInitializedError` and
   `SchemaMismatchError` say the database is not the one this build expects, and
   a migration repairs them. `PermanentStoreError` says the store answered and no
   retry changes the answer: the statement broke a constraint, carried a value
@@ -5574,8 +5576,8 @@ never user-triggered (no Temporal-style explicit `compensate()` call):
   token, `fail-rollback` among them, and a saga case hands `fail-rollback` a
   token the claim never had, and the same call replayed after it won, and
   sees each refused with the count left as it was. A live task has one live
-  run: the engine's invariants hold that over every conformance case and
-  every fuzz walk. The read is current: it sees every attempt record that has
+  run: the engine's invariants hold that over conformance cases, simulations
+  and every fuzz walk. The read is current: it sees every attempt record that has
   committed. It is a batch of reads, outside the write's transaction, and
   the executor contract lets a replica serve a batch of reads. An executor
   that took that at its word could count from a replica that lags, and the
@@ -6096,7 +6098,8 @@ the loopback address, and each suggestion it is printed runs as it is printed.
 
 `explain` exits 0 for every task it could read, whatever the verdict: a verdict is not an
 exit code. It exits 10 when a row it read is one `inspect` exits 10 for, the task's or that
-of a child it followed, or when the decoders refuse a checkpoint row it asked for. It exits
+of a child it followed, when a wait of another task on the event it awaits is not readable,
+or when the decoders refuse a checkpoint row it asked for. It exits
 8 when the queue does not hold the task it was asked about, or no task was spawned under
 the key. A diagnosis is the report the command exists to print, so it prints on stdout
 when the command exits 10 as when it exits 0. A task that is not there prints on stderr
@@ -6298,14 +6301,14 @@ deadline is named for the deadline before any of the three, and a row that is no
 is named as that. `explain` asks the engine's own predicate about a run that is due
 (`taskAdmission`). A run no claim admits is `due-run-no-claim-admits`, with the verdict
 `inconsistent` and `inspect` as its next command, and `stuck` lists it in `dueNotAdmitted`.
-A run a claim takes is one of the three late causes, or one of the two never-started
-causes, which stay `waiting`, and `stuck` lists it in a leg of due
-runs. So the two commands agree about which of the two a run is. The same holds of a lapsed
+A run a claim takes is, in rows an engine path writes, one of the three late causes, or
+one of the two never-started causes, which stay `waiting`, and `stuck` lists it in a leg of
+due runs. So the two commands agree about which of the two such a run is. The same holds of a lapsed
 lease the sweep's scan does not answer (`lapsed-lease-no-sweep-reclaims`) and of a deadline
 it does not answer (`deadline-no-sweep-cancels`). `explain` reads the facts and the
 predicates in two snapshots. When the row moved between them, so that a state, a claim
 generation or an instant the flags were read beside is not the one the facts hold, the
-predicates decide nothing, the late cause answers for the row as it stood, and asking again
+predicates decide nothing, the cause below answers for the row as it stood, and asking again
 answers it. The predicates read the clock as well as the row, each at the instant of its
 own statement, so `taskAdmission` answers database time as its last statement read it.
 When a deadline, a wake or the end of a lease lies after
@@ -6490,7 +6493,7 @@ under how many of each outcome the walks reach.
   why: `store-unavailable`, `permanent-store-error`, `unreadable` for a row a read refuses,
   or `not-found` for a task that is gone. The command table declares it: a fault at that
   read ends in exit 0, and the fault surface holds that on every dialect.
-  An empty task name is a usage error: no handler is registered under one. The parameters
+  An empty task name is a usage error: the hosted enqueue route refuses one. The parameters
   are one JSON value, parsed and written again by the two functions the hosted routes hand
   a store its JSON through, so a task enqueued here holds the bytes it holds when it is
   enqueued over HTTP, and `null` when none is given. A document that would not be stored as
@@ -6731,7 +6734,7 @@ list when no later run names it. A failure that leaves no unit in any list has n
 print, and prints as any failure does: on stderr in text, and with `--json` as the failure
 alone.
 
-`test/purge-twin.test.ts` holds that the command is the port and nothing else, and it holds
+`test/purge-twin.test.ts` holds that the command deletes through the port and nothing else, and it holds
 that against the model of the barrier and not against the walk, which the command runs. The
 command runs through `main` against a database, and a dump of the six protocol tables is
 taken before each command and after it. The oracle of the retention surface (section 3.12), which states
@@ -7052,8 +7055,9 @@ any other may quote the key. The payload an event already
 holds prints as its length and sha256 and never as text. `tick` prints neither URL as it
 was given and never the token. `purge` prints a unit's task id, its task name, its state,
 the instant it ended and the rows that went, and of the idempotency key the task was
-spawned under only the sha256, with `--reveal` or without. `selftest` prints the names it
-made, ids, counts and states of the engine's own, and the counts of a queue it refuses.
+spawned under only the sha256, with `--reveal` or without. `selftest` prints the names and
+the id it made, counts, flags, a state as every command prints a stored one, and the counts
+of a queue it refuses.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
@@ -7309,8 +7313,9 @@ maintainer approved the two contract changes this section states below on
   one is refused as before. The rule says which statement may gate a delete.
   What that statement requires is its builder's, so the builder is not handed
   out. Of retention, core's entry exports the factory of the port
-  (`createRetention`), the dialect it is made from (`RetentionDialect`) and the
-  type it hands out (`HeldRetention`): what a store's factory and a caller of
+  (`createRetention`), the dialect it is made from (`RetentionDialect`), the
+  type it hands out (`HeldRetention`), and the walk over that port with the
+  size of its page: what a store's factory and a caller of
   the port need. The statements of a purge, the function that adds them to a
   batch, the maker of a policy's windows and the mark stay inside core, because
   they take the barrier's inputs, and whoever can hand them inputs has no

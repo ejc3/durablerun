@@ -131,7 +131,8 @@ DESIGN.md section 3.11 says what each one does.
 **The environment.** `DURABLERUN_STORE_URL` names the database, and
 `DURABLERUN_STORE_TOKEN` holds the token of a libSQL server. No other variable
 is read for the store. A database credential is full admin, so the CLI never
-prints the URL or the token. Every command that writes names its store a second
+prints the token or a credential of the URL: of the URL it prints only what
+`--target` names. Every command that writes names its store a second
 time with `--target`: the host of the URL, or the path of a `file:` URL. A
 `--target` that names another store changes nothing and exits 2. In the lines
 below, `<host>` stands for that host and `example-queue` for the queue.
