@@ -14,6 +14,9 @@ database. Do not point the migrator or receipt at another application's database
    `DURABLERUN_API_TOKEN` and `CRON_SECRET` distinct. The latter is the Bearer
    credential Vercel adds to cron requests.
 2. Run `pnpm install --frozen-lockfile`, then `pnpm typecheck`, `pnpm test`, and `pnpm migrate`.
+   `pnpm migrate` leaves a database at or above schema version 5 as it is (see
+   "A digest for each period"): at 5 it prints that the schema is ready, and
+   above 5 that the durablerun CLI manages it.
 3. Create a Vercel project from this directory, add the five runtime variables
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DURABLERUN_QUEUE`,
    `DURABLERUN_API_TOKEN`, and `CRON_SECRET`), and deploy it. `api/*.ts` pins
@@ -203,3 +206,36 @@ attempt one. It records the original pending observation, both run IDs, lease
 expiry, completion time, and the final inspectable result, with zero manual
 ticks. This proves unattended recovery; unlike the separate sleep receipt, it
 does not attribute a particular resume to queue delivery versus cron.
+
+## A digest for each period
+
+The `periodic-digest` task is one period of a recurring workflow. It reads the
+SHA of the commit a ref of a GitHub repository names, once, in a checkpointed
+step. It asks GitHub for the SHA alone, so the answer is 40 characters. It
+sleeps 60 seconds and completes with what it read. It emits no event and awaits
+none. Its params are required:
+
+```json
+{ "repository": "owner/repository", "ref": "main" }
+```
+
+Nothing in this example enqueues it on a schedule. A scheduler outside the
+engine enqueues one task for each period under the idempotency key
+`digest-<period>`, so a period enqueued twice is one task, and a period that
+fails is that task's failure alone. `/api/tasks` takes no idempotency key. The
+operator CLI of the durablerun repository does, and the root README's
+"Operating a deployment" gives the line and the workflow that sends it each
+hour.
+
+A status GitHub will not answer differently on a retry (401, 404 and 422) and
+a body that is not a SHA fail the task at once. A ref that is or holds a dot
+segment (`.` or `..`) is refused before any request, as the repository's name
+is. Every other failure of the
+read is retried under the task's retry strategy. The read follows no redirect
+and sends the optional `GITHUB_TOKEN` to `api.github.com` alone.
+
+The operator CLI migrates this database past version 5, and the released
+packages here keep serving it at the newer version. After that, schema changes
+belong to the CLI: the release's `migrate()` refuses such a database, so
+`pnpm migrate` and `pnpm receipt` read the recorded version first and migrate
+nothing at or above 5.

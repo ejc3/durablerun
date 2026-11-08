@@ -1,4 +1,5 @@
 import { LibsqlExecutor, LibsqlStoreAdmin } from '@durablerun/store-libsql'
+import { prepareSchema } from '../src/schema.js'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]
@@ -8,9 +9,7 @@ function requiredEnv(name: string): string {
 
 const raw = LibsqlExecutor.open(requiredEnv('TURSO_DATABASE_URL'), requiredEnv('TURSO_AUTH_TOKEN'))
 try {
-  const admin = new LibsqlStoreAdmin(raw)
-  await admin.migrate()
-  process.stdout.write(`durablerun schema ${await admin.schemaVersion()} is ready\n`)
+  process.stdout.write(`${await prepareSchema(new LibsqlStoreAdmin(raw))}\n`)
 } finally {
   raw.close()
 }

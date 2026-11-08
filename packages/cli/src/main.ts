@@ -9,6 +9,7 @@ import {
   SchemaNotInitializedError,
   type SpawnResult,
   StoreUnavailableError,
+  type TableRows,
   type TaskFacts,
   isLiveState,
   isPortRefusal,
@@ -19,6 +20,7 @@ import {
   COMMANDS,
   type CommandSpec,
   type Invocation,
+  NOT_SENT_BY_SELFTEST,
   STUCK_DEFAULT_LIMIT,
   SWEEP_DEFAULT_LIMIT,
   TICK_DEFAULT_TIMEOUT_SECONDS,
@@ -80,6 +82,14 @@ import { keptView, limitOf, policyOf, policyView, unitView } from './purge.js'
 import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 import { userValue } from './render.js'
+import {
+  SELFTEST_TASK,
+  type SelftestStep,
+  type StepReport,
+  labelResults,
+  selftestPort,
+  selftestSteps,
+} from './selftest.js'
 
 /** Where the CLI writes. The bin hands it the process's streams, and a test its own. */
 export interface Io {
@@ -135,6 +145,8 @@ interface Context {
   readonly target: string
   /** The origin of the hosted deployment DURABLERUN_BASE_URL names, when it names one a token may be sent to. */
   readonly deployment: string | undefined
+  /** The ids the store was handed, for a command that names something of its own. */
+  readonly ids: IdSource
 }
 
 type Handler = (context: Context) => Promise<Answer>
@@ -204,6 +216,8 @@ export async function main(
     // would otherwise leave an empty database behind its refusal.
     store = await opener(url, token, ids, {
       mayCreate: spec.verb === 'migrate' && invocation.booleans.yes === true,
+      // `selftest` alone reads the record of what was sent, so it alone has one kept.
+      keepsWhatIsSent: spec.verb === 'selftest',
     })
   } catch (error) {
     if (error instanceof StoreUrlError) return usageAnswer('usage', error.message)
@@ -218,7 +232,15 @@ export async function main(
   try {
     const note = (line: string): void => io.err(`${line}\n`)
     const deployment = deploymentOrigin(env.DURABLERUN_BASE_URL)
-    answer = await HANDLERS[spec.verb]({ invocation, store, reveal, note, target, deployment })
+    answer = await HANDLERS[spec.verb]({
+      invocation,
+      store,
+      reveal,
+      note,
+      target,
+      deployment,
+      ids,
+    })
   } catch (error) {
     answer = failure(error, reveal)
   } finally {
@@ -306,6 +328,7 @@ function help(json: boolean): Answer {
       'tick opens no store: it posts to the origin of DURABLERUN_BASE_URL, with DURABLERUN_TICK_TOKEN.',
       'A write names its store again with --target, and emit, cancel and retry change nothing without --yes.',
       'purge deletes nothing without --execute.',
+      'selftest spawns two tasks and emits one event in a queue of its own, which must hold nothing.',
       'Values users wrote print as their length and sha256 unless --reveal.',
       '',
       'exit codes:',
@@ -1182,6 +1205,29 @@ const purgeLabel = (call: keyof CliRetention): string =>
   COMMANDS.purge.ports.find((port) => port.call === `retention.${call}`)?.labels[0] ?? call
 
 /**
+ * The refusal of a command that reads only the build's own schema version, or null at that
+ * version. `needs` says why an older version the reads accept is not enough, after the
+ * version recorded.
+ */
+async function notAtTheBuildsVersion(
+  store: OpenedStore,
+  named: Record<string, unknown>,
+  needs: (build: number) => string,
+): Promise<Answer | null> {
+  const recorded = await store.admin.schemaVersion()
+  if (recorded !== store.window.newest) {
+    const message =
+      windowProblem(recorded, store.window) ??
+      `the schema is recorded at version ${recorded}, and ${needs(store.window.newest)}`
+    return {
+      exit: 'schema',
+      view: { ...named, recordedSchemaVersion: recorded, error: { kind: 'schema', message } },
+    }
+  }
+  return null
+}
+
+/**
  * Purge the units of a queue's ended tasks that are older than the windows named. It is
  * the store's retention port and nothing else: it runs core's one walk over that port
  * (`purgeWalk`), which lists the candidates by `purgeCandidates` and sends each unit's
@@ -1222,16 +1268,13 @@ const purge: Handler = async (context) => {
   const queue = strings.queue ?? ''
   const execute = booleans.execute === true
   const named = { queue, execute, policy: policyView(policy), limit }
-  const recorded = await store.admin.schemaVersion()
-  if (recorded !== store.window.newest) {
-    const message =
-      windowProblem(recorded, store.window) ??
-      `the schema is recorded at version ${recorded}, and a purge needs version ${store.window.newest}, the build's, whose indexes its statements read: migrate it first`
-    return {
-      exit: 'schema',
-      view: { ...named, recordedSchemaVersion: recorded, error: { kind: 'schema', message } },
-    }
-  }
+  const refused = await notAtTheBuildsVersion(
+    store,
+    named,
+    (build) =>
+      `a purge needs version ${build}, the build's, whose indexes its statements read: migrate it first`,
+  )
+  if (refused !== null) return refused
   const status = await store.operator.queueStatus(queue)
   if (status.fakeClock) {
     return {
@@ -1294,6 +1337,165 @@ const purge: Handler = async (context) => {
             dryRun:
               'nothing was deleted. Each verdict is as of this read: a purge reads every condition again, inside the statement that deletes, and takes with a unit the units that only it kept',
           }),
+    },
+  }
+}
+
+/**
+ * Send the batches the commands send, to a queue of its own, and say what each call
+ * answered. It is for a branch or a snapshot of a database, before a migration of the
+ * database itself or a first purge. The calls and what the engine answers to each are in
+ * `selftest.ts`. The report lists each call with the batch labels the command table
+ * declares for it, then each label with its result, and the labels it does not send with
+ * the reason.
+ *
+ * It refuses, having written nothing, a schema version that is not the build's, as `purge`
+ * does, and a queue that holds any row: its checks count the queue's rows, so the queue is
+ * its own. It reads the queue's rows first for that, and a task another caller enqueues
+ * after that read shows as a count that is not the expected one.
+ *
+ * It stops at the first call that fails or answers otherwise. The report prints on stdout
+ * all the same, with the calls it reached. A call the store failed exits as the failure
+ * does, and a call that answered otherwise exits `failed`. Running it again on the same
+ * queue is refused once a task was written: the next run takes another queue.
+ */
+const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
+  const queue = invocation.strings.queue ?? ''
+  const reports: StepReport[] = []
+  /**
+   * What ended the run, once something did: the failure of a call the store failed, or the
+   * labels of the call that answered otherwise than the engine does.
+   */
+  const ended: { stopped: Answer | null; answeredOtherwise: readonly string[] | null } = {
+    stopped: null,
+    answeredOtherwise: null,
+  }
+  /** Run one step, unless an earlier one ended the run, and add its line to the report. */
+  const run = async ({ port, sends, run: check }: SelftestStep): Promise<void> => {
+    const named = { call: port.call, labels: port.labels, sends }
+    if (ended.stopped !== null || ended.answeredOtherwise !== null) {
+      reports.push({ ...named, result: 'not-run' })
+      return
+    }
+    const sentBefore = store.sent().length
+    /**
+     * The labels this step was answered under. A step reads its answers together, its
+     * call's and those of the reads that check it, so when one is off it is one of these,
+     * and the step cannot say which.
+     */
+    const answeredUnder = (): readonly string[] => [
+      ...new Set(
+        store
+          .sent()
+          .slice(sentBefore)
+          .filter((batch) => batch.answered)
+          .map((batch) => batch.label),
+      ),
+    ]
+    try {
+      const found = await check()
+      if (found === null) reports.push({ ...named, result: 'ok' })
+      else {
+        ended.answeredOtherwise = [...port.labels, ...answeredUnder()]
+        reports.push({ ...named, result: 'unexpected', found })
+      }
+    } catch (error) {
+      const failed = failure(error, reveal)
+      // The last batch this step sent, which need not be its own call's.
+      const last = store.sent().slice(sentBefore).at(-1)
+      if (failed.exit === 'internal' && last?.answered === true) {
+        // An error the CLI has no name for, thrown once the store answered a batch of
+        // this step, is the answer being refused: by a decoder, for a row that is not the
+        // engine's, or by a check of the answer's shape. That is a database that answered
+        // otherwise, and not a defect of the CLI. The error's words can quote the row, so
+        // they print only with --reveal.
+        const labels = answeredUnder()
+        ended.answeredOtherwise = [...port.labels, ...labels]
+        const name = error instanceof Error ? error.name : typeof error
+        const words = reveal && error instanceof Error ? `: ${error.message}` : ''
+        const which =
+          labels.length === 1 ? `the answer to ${labels[0]}` : `an answer to ${labels.join(' or ')}`
+        reports.push({
+          ...named,
+          result: 'unexpected',
+          found: `${which} was refused as one the engine does not give (${name})${words}`,
+        })
+        return
+      }
+      ended.stopped = failed
+      // An error with a name of its own and no batch that failed was raised from an answer
+      // the store gave, such as a schema version it does not read. The labels the step was
+      // answered under are then not ok, and they are what the step names.
+      const answered = last?.answered === false ? [] : answeredUnder()
+      if (answered.length > 0) ended.answeredOtherwise = answered
+      reports.push({
+        ...named,
+        result: 'failed',
+        ...(last?.answered === false ? { failedAt: last.label } : {}),
+        ...(answered.length > 0 ? { failedAt: answered.join(' or ') } : {}),
+      })
+    }
+  }
+  // The two reads the refusals rest on are calls the table declares too, so each has its
+  // line, and a store that fails one is reported as one that fails any other call is.
+  const read: { refused?: Answer | null; rows?: TableRows } = {}
+  await run({
+    port: selftestPort('admin.schemaVersion'),
+    sends: 'a read of the recorded schema version',
+    run: async () => {
+      read.refused = await notAtTheBuildsVersion(
+        store,
+        { queue },
+        (build) =>
+          `selftest sends the batches of version ${build}, the build's: migrate the branch or the snapshot first`,
+      )
+      return null
+    },
+  })
+  const { refused } = read
+  if (refused !== null && refused !== undefined) return refused
+  await run({
+    port: selftestPort('operator.tableRows'),
+    sends: "a count of the queue's rows, which must be none",
+    run: async () => {
+      read.rows = await store.operator.tableRows(queue)
+      return null
+    },
+  })
+  const { rows } = read
+  const holdsARow = rows !== undefined && Object.values(rows.tables).some(({ count }) => count > 0)
+  if (holdsARow) {
+    return {
+      exit: 'usage',
+      view: {
+        queue,
+        ...sizesView(rows),
+        error: {
+          kind: 'queue-not-empty',
+          message: `the queue ${queue} holds rows, and selftest runs on a queue of its own that holds none: its checks count the queue's rows. Name another queue. Nothing was changed`,
+        },
+      },
+    }
+  }
+  const runId = ids.uuidv7()
+  for (const step of selftestSteps(store, { queue, runId, reveal })) await run(step)
+  const { stopped, answeredOtherwise } = ended
+  const unexpected = answeredOtherwise !== null
+  const passed = stopped === null && !unexpected
+  return {
+    exit: stopped !== null ? stopped.exit : unexpected ? 'failed' : 'done',
+    holdsFacts: true,
+    view: {
+      queue,
+      runId,
+      taskName: SELFTEST_TASK,
+      passed,
+      steps: reports,
+      labels: labelResults(store.sent(), answeredOtherwise ?? []),
+      notSent: NOT_SENT_BY_SELFTEST,
+      ...(stopped === null ? {} : stopped.view),
+      leaves:
+        'two cancelled tasks and the event it emitted, when every call was reached. A purge takes the tasks once they are a window old, and no purge takes an event a caller emitted. A run that stopped earlier leaves the tasks it had spawned pending, and cancel ends each',
     },
   }
 }
@@ -1410,4 +1612,5 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help' | 'tick'>, Handler>> = Obje
   retry,
   sweep,
   purge,
+  selftest,
 })

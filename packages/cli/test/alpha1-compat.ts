@@ -15,52 +15,24 @@
  * A control shows the harness can fail: a planted migration that adds a column with no
  * default that may not be NULL, in the form version 10 gives NOT NULL on libSQL (a trigger
  * that refuses the write), must make alpha.1's cycle fail at its spawn.
+ *
+ * After the cycles, the example's migrate script and a simulated week run against the same
+ * installed assets (alpha1-week.ts).
  */
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor } from '@durablerun/store-libsql'
+import {
+  type Alpha1Executor,
+  type Alpha1Result,
+  type Alpha1Store,
+  loadAlpha1,
+} from './alpha1-release.js'
+import { migrateGuard, week } from './alpha1-week.js'
 import { faulting, openerWrapping, runCli } from './support.js'
 
-interface Alpha1Result {
-  state: string
-  completedPayloadJson?: string
-  failureReasonJson?: string
-}
-interface Alpha1Claimed {
-  runId: string
-  taskId: string
-  claimToken: string
-  claimGen: number
-  wake?: { event: string; step: string; payloadJson?: string }
-}
-interface Alpha1Executor {
-  close(): void
-}
-interface Alpha1Store {
-  spawn(queue: string, name: string, params: string, opts?: object): Promise<{ taskId: string }>
-  claim(
-    queue: string,
-    token: string,
-    opts: { leaseSeconds: number; limit: number },
-  ): Promise<Alpha1Claimed[]>
-  activate(queue: string, runId: string, token: string, gen: number): Promise<unknown>
-  complete(queue: string, runId: string, token: string, result: string): Promise<void>
-  fail(queue: string, runId: string, token: string, failure: string, retry: null): Promise<void>
-  awaitEvent(
-    queue: string,
-    taskId: string,
-    runId: string,
-    token: string,
-    step: string,
-    event: string,
-    timeout: number | null,
-  ): Promise<{ emitted: boolean }>
-  emitEvent(queue: string, event: string, payload: string): Promise<void>
-  getTaskResult(queue: string, taskId: string): Promise<Alpha1Result | null>
-}
 interface Alpha1 {
   open(file: string): { executor: Alpha1Executor; store: Alpha1Store; migrate(): Promise<void> }
 }
@@ -68,16 +40,9 @@ interface Alpha1 {
 const QUEUE = 'alpha1'
 const ROOT = new URL('../../..', import.meta.url)
 
-async function loadAlpha1(consumer: string): Promise<Alpha1> {
-  const from = (path: string) => pathToFileURL(join(consumer, 'node_modules', path)).href
-  const core = (await import(from('@durablerun/core/dist/index.js'))) as {
-    systemIdSource(): object
-  }
-  const store = (await import(from('@durablerun/store-libsql/dist/index.js'))) as {
-    LibsqlExecutor: { open(url: string): Alpha1Executor }
-    LibsqlSchedulerStore: new (db: Alpha1Executor, ids: object) => Alpha1Store
-    LibsqlStoreAdmin: new (db: Alpha1Executor) => { migrate(): Promise<void> }
-  }
+/** alpha.1 as a cycle uses it: a file opened as its executor, its store and its migrate(). */
+async function openerOf(consumer: string): Promise<Alpha1> {
+  const { core, store } = await loadAlpha1(consumer)
   return {
     open(file) {
       const executor = store.LibsqlExecutor.open(`file:${file}`)
@@ -267,7 +232,7 @@ async function atVersion(alpha1: Alpha1, dir: string, version: number, plant: bo
 
 const consumer = process.argv[2]
 if (consumer === undefined) throw new Error('usage: alpha1-compat.ts <consumer directory>')
-const alpha1 = await loadAlpha1(consumer)
+const alpha1 = await openerOf(consumer)
 const dir = mkdtempSync(join(tmpdir(), 'durablerun-alpha1-'))
 try {
   const versions: number[] = []
@@ -287,6 +252,10 @@ try {
   console.log(
     `alpha1-compat: alpha.1 ran its cycle at versions ${versions.join(', ')}, and result read all ${tasks} tasks it wrote as its getTaskResult does; the planted NOT NULL control failed at spawn`,
   )
+  console.log(`alpha1-compat: ${await migrateGuard(consumer, dir)}`)
+  const weekStartedAt = Date.now()
+  console.log(`alpha1-compat: ${await week(consumer, dir)}`)
+  console.log(`alpha1-compat: the week took ${Math.round((Date.now() - weekStartedAt) / 1000)} s`)
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

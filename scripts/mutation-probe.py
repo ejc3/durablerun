@@ -22294,6 +22294,685 @@ VERDICTS["purge-walk-keeps-a-unit-whose-second-look-is-lost"] = ExpectedVerdict(
     "mutation-verdict:behavior:purge-walk-keeps-a-unit-whose-second-look-is-lost",
 )
 
+# The self-test of the operator CLI (DESIGN.md §3.11, BUILD.md exit test line 44): what it
+# declares against the command table, what it refuses having written nothing, and that each
+# check of an answer fails for a store that answers otherwise.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-declares-or-names-every-label",
+            "packages/cli/src/commands.ts",
+            "      EVENT_PAYLOAD,\n      RETRY_TASK,\n      CANCEL_TASK,\n      PURGE_CANDIDATES,\n",
+            "      EVENT_PAYLOAD,\n      CANCEL_TASK,\n      PURGE_CANDIDATES,\n",
+            "selftest neither sends the batch of a revival nor names it as one it does not send, and its report reads as if every batch were covered",
+        ),
+        (
+            "cli-selftest-refuses-a-queue-that-holds-rows",
+            "packages/cli/src/main.ts",
+            "  if (holdsARow) {\n",
+            "  if (holdsARow && queue === '') {\n",
+            "selftest writes its tasks and sweeps in a queue that holds a deployment's rows",
+        ),
+        (
+            "cli-selftest-refuses-a-schema-that-is-not-the-builds",
+            "packages/cli/src/main.ts",
+            "  if (refused !== null && refused !== undefined) return refused\n",
+            "  if (refused !== null && refused !== undefined && queue === '') return refused\n",
+            "selftest sends the build's batches to a database at an older schema version, and writes there",
+        ),
+        (
+            "cli-selftest-checks-what-each-call-answered",
+            "packages/cli/src/selftest.ts",
+            "      return stateDiffers('the state', await stateOf(a), 'cancelled')\n",
+            "      return null\n",
+            "selftest takes a cancellation that cancelled nothing for one that did",
+        ),
+        (
+            "cli-selftest-exits-11-for-an-answer-that-is-not-the-engines",
+            "packages/cli/src/main.ts",
+            "    exit: stopped !== null ? stopped.exit : unexpected ? 'failed' : 'done',\n",
+            "    exit: stopped !== null ? stopped.exit : unexpected ? 'done' : 'done',\n",
+            "selftest exits 0 when a call answered what the engine does not, so a script that reads the exit takes the database for sound",
+        ),
+    )
+)
+VERDICTS["cli-selftest-declares-or-names-every-label"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest sends declares every batch label a store command declares, or names it with the reason it is not sent",
+    "mutation-verdict:behavior:cli-selftest-declares-or-names-every-label",
+)
+VERDICTS["cli-selftest-refuses-a-queue-that-holds-rows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest refuses, having written nothing refuses a queue that holds a row with exit 2, prints the counts, and sends only reads",
+    "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
+)
+VERDICTS["cli-selftest-refuses-a-schema-that-is-not-the-builds"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest refuses, having written nothing refuses a database below the build's schema version with exit 5, at a version its reads accept, and changes nothing",
+    "mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds",
+)
+VERDICTS["cli-selftest-checks-what-each-call-answered"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a store that answers otherwise exits 11 at the step that checks a call when that call answers of another queue, says what it answered, and runs no step after it, for every call it checks",
+    "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",
+)
+VERDICTS["cli-selftest-exits-11-for-an-answer-that-is-not-the-engines"] = VERDICTS[
+    "cli-selftest-checks-what-each-call-answered"
+]
+
+# The week receipt's checker (BUILD.md exit test line 44): each refusal by its cause, what it
+# counts and allows, that it fails closed, and that it reads what the CLI prints.
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-refuses-a-span-under-seven-days",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (end.stats.atEpochMs - start.stats.atEpochMs < WEEK_SPAN_MS) {\n",
+            "  if (end.stats.atEpochMs - start.stats.atEpochMs < WEEK_SAMPLE_GAP_MS) {\n",
+            "a receipt whose first and last samples are a day and an hour apart is taken for a week",
+        ),
+        (
+            "week-receipt-refuses-a-missing-daily-snapshot",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (gap <= 0 || gap > WEEK_SAMPLE_GAP_MS) {\n",
+            "    if (gap <= 0) {\n",
+            "a week with a day that has no sample is accepted, so the bound is held on fewer days than the week has",
+        ),
+        (
+            "week-receipt-refuses-a-count-over-the-bound",
+            "apps/dogfood/src/week-receipt.ts",
+            "      if (one.sizes[table] > bound[table]) {\n",
+            "      if (one.sizes[table] > bound[table] + 1) {\n",
+            "a table one row over its bound is accepted",
+        ),
+        (
+            "week-receipt-refuses-fewer-than-160-periods",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (found < WEEK_PERIODS_REQUIRED) {\n",
+            "  if (found < WEEK_PERIODS_REQUIRED - 1) {\n",
+            "a week with 159 periods found is accepted",
+        ),
+        (
+            "week-receipt-refuses-a-seal-that-does-not-match",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (sealOf(week.injection) !== week.sealSha256) {\n",
+            "  if (week.sealSha256 === '') {\n",
+            "any hash is taken for the seal of the injected task, so the injection need not have been sealed",
+        ),
+        (
+            "week-receipt-refuses-an-explanation-of-another-cause",
+            "apps/dogfood/src/week-receipt.ts",
+            "    week.explanation.cause !== week.injection.cause\n",
+            "    week.explanation.cause === ''\n",
+            "an operator who named another cause than the sealed one is taken to have found it",
+        ),
+        (
+            "week-receipt-refuses-a-day-without-a-purge",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (!one.purges.some((purge) => purge.execute && purge.finished)) {\n",
+            "    if (one.purges.length < 0) {\n",
+            "a day on which no purge ran is accepted",
+        ),
+        (
+            "week-receipt-refuses-no-selftest-record",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (!week.selftest) {\n",
+            "  if (!week.selftest && week.lookups.length < 0) {\n",
+            "a week with no selftest before it is accepted",
+        ),
+        (
+            "week-receipt-counts-a-unit-whose-answer-was-lost",
+            "apps/dogfood/src/week-receipt.ts",
+            "    for (const unit of [...purge.taken, ...purge.outcomeNotKnown]) {\n",
+            "    for (const unit of purge.taken) {\n",
+            "a period whose purge was sent and not answered is not found, so one lost answer fails a week",
+        ),
+        (
+            "week-receipt-allows-a-unit-in-doubt-its-attempts",
+            "apps/dogfood/src/week-receipt.ts",
+            "    for (const unit of purge.outcomeNotKnown) shown(unit.keySha256, DEFAULT_MAX_ATTEMPTS)\n",
+            "    for (const unit of purge.outcomeNotKnown) shown(unit.keySha256, 1)\n",
+            "a unit whose purge was not answered is allowed one run, so a week whose retried unit went in doubt is refused for its runs",
+        ),
+        (
+            "week-receipt-refuses-a-test-clock",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (one.stats.fakeClock) {\n",
+            "    if (one.stats.fakeClock && one.name === '') {\n",
+            "a sample taken under a test clock is taken for an instant of the week",
+        ),
+        (
+            "week-receipt-refuses-an-unknown-kind",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (!isRecord(candidate) || candidate.kind !== 'week') {\n",
+            "  if (!isRecord(candidate)) {\n",
+            "a receipt of another kind is read as a week receipt",
+        ),
+        (
+            "week-receipt-fails-closed",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (!isRecord(unit) || !isText(unit.state)) return null\n",
+            "    if (!isRecord(unit)) return null\n",
+            "a unit of a purge report whose state is not text is read as a unit",
+        ),
+        (
+            "week-receipt-allows-the-runs-it-shows",
+            "apps/dogfood/src/week-receipt.ts",
+            "        (table === 'runs' ? beyondTheFirst : 0) +\n",
+            "        (table === 'runs' ? 0 : 0) +\n",
+            "the bound of runs allows no run a unit held beyond its first, so a week with one retried unit is refused",
+        ),
+        (
+            "week-receipt-unit-rows-are-the-measured-rows",
+            "apps/dogfood/src/week-receipt.ts",
+            "export const WEEK_DIGEST_UNIT_ROWS: WeekRows = Object.freeze({\n  tasks: 1,\n  runs: 1,\n  checkpoints: 2,\n",
+            "export const WEEK_DIGEST_UNIT_ROWS: WeekRows = Object.freeze({\n  tasks: 1,\n  runs: 1,\n  checkpoints: 3,\n",
+            "the bound allows a digest unit three checkpoints where the simulated week measures two",
+        ),
+        (
+            "week-receipt-reads-what-the-cli-prints",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (document === null || document.exit !== 'done' || !isRecord(document.task)) return null\n  const key = document.task.idempotencyKey\n",
+            "  if (document === null || document.exit !== 'done' || !isRecord(document.task)) return null\n  const key = document.task.key\n",
+            "the checker looks for a task's key where inspect does not print it, and reads no lookup the CLI printed",
+        ),
+    )
+)
+VERDICTS["week-receipt-refuses-a-span-under-seven-days"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses six days between the first snapshot and the last, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days",
+)
+VERDICTS["week-receipt-refuses-a-missing-daily-snapshot"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a missing daily snapshot, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot",
+)
+VERDICTS["week-receipt-refuses-a-count-over-the-bound"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a sizes count one row over the bound, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound",
+)
+VERDICTS["week-receipt-refuses-fewer-than-160-periods"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses fewer than 160 of 168 periods found, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-fewer-than-160-periods",
+)
+VERDICTS["week-receipt-refuses-a-seal-that-does-not-match"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a sealed hash that is not the sha256 of the injected task id, cause and nonce, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-seal-that-does-not-match",
+)
+VERDICTS["week-receipt-refuses-an-explanation-of-another-cause"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses an explanation that names another cause than the seal, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-an-explanation-of-another-cause",
+)
+VERDICTS["week-receipt-refuses-a-day-without-a-purge"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a day with no purge --execute, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge",
+)
+VERDICTS["week-receipt-refuses-no-selftest-record"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses no selftest record, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-no-selftest-record",
+)
+VERDICTS["week-receipt-counts-a-unit-whose-answer-was-lost"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker counts a period whose purge was sent and not answered: a lost answer loses no period",
+    "mutation-verdict:behavior:week-receipt-counts-a-unit-whose-answer-was-lost",
+)
+VERDICTS["week-receipt-allows-a-unit-in-doubt-its-attempts"] = VERDICTS[
+    "week-receipt-counts-a-unit-whose-answer-was-lost"
+]
+VERDICTS["week-receipt-refuses-a-test-clock"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a sample taken under a test clock, a hash attested as published after the start sample, an explanation of another task, and a selftest that did not pass",
+    "mutation-verdict:behavior:week-receipt-refuses-a-test-clock",
+)
+VERDICTS["week-receipt-refuses-an-unknown-kind"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker fails closed refuses a receipt of a kind it does not know, of no kind, and one that is no object",
+    "mutation-verdict:behavior:week-receipt-refuses-an-unknown-kind",
+)
+VERDICTS["week-receipt-fails-closed"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker fails closed refuses the receipt with any member it reads taken away, or of another type",
+    "mutation-verdict:behavior:week-receipt-fails-closed",
+)
+VERDICTS["week-receipt-allows-the-runs-it-shows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker allows a unit the runs its purge report or its lookup shows beyond the first, and no run the receipt does not show",
+    "mutation-verdict:behavior:week-receipt-allows-the-runs-it-shows",
+)
+VERDICTS["week-receipt-unit-rows-are-the-measured-rows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt-documents.test.ts",
+    "the week receipt reads what the CLI prints holds the receipt's rows of a digest unit equal to what the simulated week measures",
+    "mutation-verdict:behavior:week-receipt-unit-rows-are-the-measured-rows",
+)
+VERDICTS["week-receipt-reads-what-the-cli-prints"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt-documents.test.ts",
+    "the week receipt reads what the CLI prints reads the reports of stats, sizes, purge, inspect, explain and selftest as the commands print them",
+    "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
+)
+
+# The workflow of the maintainer's week (BUILD.md receipt M1), which lands off until a variable is set:
+# its gate, its guard of the pinned database, and its two command steps.
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-is-off-until-enabled",
+            ".github/workflows/operable-week.yml",
+            "    if: vars.DURABLERUN_WEEK_ENABLED == 'true'\n",
+            "    if: vars.DURABLERUN_WEEK_ENABLED == 'true' || github.event_name == 'workflow_dispatch'\n",
+            "a run started by hand writes to the pinned database while the week's variable is not set",
+        ),
+        (
+            "operable-week-workflow-requires-the-pinned-database",
+            ".github/workflows/operable-week.yml",
+            "          if [ \"$DURABLERUN_STORE_URL\" != \"$DURABLERUN_WEEK_EXPECTED_STORE_URL\" ]; then\n",
+            "          if [ \"$DURABLERUN_STORE_URL\" = \"\" ]; then\n",
+            "the job sends its commands to whatever database the secret names, though the variable pins another",
+        ),
+        (
+            "operable-week-workflow-purges-until-no-more-remain",
+            ".github/workflows/operable-week.yml",
+            "            [ \"$more\" = 'true' ] || break\n",
+            "            break\n",
+            "the daily purge runs once and stops while the verb says more remain, so a backlog over one limit is never caught up",
+        ),
+        (
+            "operable-week-workflow-enqueues-under-the-periods-key",
+            ".github/workflows/operable-week.yml",
+            "pnpm --silent cli enqueue periodic-digest --key \"digest-$period\" ",
+            "pnpm --silent cli enqueue periodic-digest --key \"digest\" ",
+            "every hour enqueues under one key, so the week holds one task and not one for each period",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-is-off-until-enabled"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week is off until its repository variable is set: its one job runs only under it, for a schedule and for a run by hand",
+    "mutation-verdict:behavior:operable-week-workflow-is-off-until-enabled",
+)
+VERDICTS["operable-week-workflow-requires-the-pinned-database"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week requires the pinned database before any step holds the credential, and no action and no job environment holds it",
+    "mutation-verdict:behavior:operable-week-workflow-requires-the-pinned-database",
+)
+VERDICTS["operable-week-workflow-purges-until-no-more-remain"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week samples the queue and then purges with --execute until the verb says no more remain, as the verbs take them",
+    "mutation-verdict:behavior:operable-week-workflow-purges-until-no-more-remain",
+)
+VERDICTS["operable-week-workflow-enqueues-under-the-periods-key"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week enqueues the digest of the hour under its key, as the verb takes it, with its report in a file",
+    "mutation-verdict:behavior:operable-week-workflow-enqueues-under-the-periods-key",
+)
+
+# More guards of the week receipt, of what selftest reports, of the workflow and of the example.
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-allows-the-injected-task-its-rows",
+            "apps/dogfood/src/week-receipt.ts",
+            "        WEEK_INJECTED_UNIT_ROWS[table],\n",
+            "        0,\n",
+            "the bound has no term for the rows the injected task comes to hold after the start sample, so a week that parked it and cancelled it is refused",
+        ),
+    )
+)
+VERDICTS["week-receipt-allows-the-injected-task-its-rows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker allows the injected task the rows it comes to hold after the start sample, which counted it parked: the event of its ending once the operator cancelled it, and no wait",
+    "mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-prints-a-label-by-what-was-sent",
+            "packages/cli/src/open-store.ts",
+            "          batches.push({ label, answered: false })\n",
+            "          batches.push({ label, answered: true })\n",
+            "a batch the store failed is recorded as answered, so selftest prints the label the store refused as ok",
+        ),
+    )
+)
+VERDICTS["cli-selftest-prints-a-label-by-what-was-sent"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a store that refuses one batch prints each label by what was sent, for every label it sends: the label the store refused as failed, the labels answered before it as ok, and the rest as not-run",
+    "mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-step-names-the-label-that-failed",
+            "packages/cli/src/main.ts",
+            "        ...(last?.answered === false ? { failedAt: last.label } : {}),\n",
+            "        ...(last?.answered === false ? {} : {}),\n",
+            "the step that was running no longer names the label of the batch the store failed",
+        ),
+    )
+)
+VERDICTS["cli-selftest-step-names-the-label-that-failed"] = VERDICTS[
+    "cli-selftest-prints-a-label-by-what-was-sent"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-reads-a-refused-row-as-an-answer",
+            "packages/cli/src/main.ts",
+            "      if (failed.exit === 'internal' && last?.answered === true) {\n",
+            "      if (failed.exit === 'internal' && last?.answered === null) {\n",
+            "a row the decoders refuse is no longer read as an answer of the database, so selftest exits as a defect of the CLI",
+        ),
+    )
+)
+VERDICTS["cli-selftest-reads-a-refused-row-as-an-answer"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read exits 11 and never 1 when the database answers a row the decoders refuse: the step is unexpected, the label is the one that was answered, and the row prints only with --reveal",
+    "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-reads-a-purge-that-reached-no-unit",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (STORE_FAILURE_KINDS.includes(failedOn)) return PURGE_THAT_TOOK_NOTHING\n",
+            "    if (STORE_FAILURE_KINDS.includes(failedOn)) return null\n",
+            "the failure of a purge that reached no unit is no document the checker reads, so a receipt that holds a day's reports as printed is refused",
+        ),
+    )
+)
+VERDICTS["week-receipt-reads-a-purge-that-reached-no-unit"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker reads the failure of a purge that reached no unit as a run that took nothing and did not finish: a day that holds it beside a run that finished is accepted, and a day that holds it alone ran no purge",
+    "mutation-verdict:behavior:week-receipt-reads-a-purge-that-reached-no-unit",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-refuses-a-failed-window-too-long",
+            "apps/dogfood/src/week-receipt.ts",
+            "  if (failedDryRun.failedSeconds !== null && failedDryRun.failedSeconds > MIN_RETENTION_SECONDS) {\n",
+            "  if (failedDryRun.failedSeconds !== null && failedDryRun.failedSeconds < 0) {\n",
+            "a dry run under a failed window too long to list every failed unit is accepted",
+        ),
+    )
+)
+VERDICTS["week-receipt-refuses-a-failed-window-too-long"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker refuses a dry run whose failed window is longer than the shortest the verb takes, for that cause and no other",
+    "mutation-verdict:behavior:week-receipt-refuses-a-failed-window-too-long",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-stops-at-a-report-it-cannot-read",
+            ".github/workflows/operable-week.yml",
+            "              echo \"purge run $run printed no report that can be read\" >&2\n              exit 1\n",
+            "              echo \"purge run $run printed no report that can be read\" >&2\n              more=false\n",
+            "a purge whose report cannot be read ends the daily job as if nothing more stood, so a backlog is left and the job is green",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-stops-at-a-report-it-cannot-read"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week samples the queue and then purges with --execute until the verb says no more remain, as the verbs take them",
+    "mutation-verdict:behavior:operable-week-workflow-stops-at-a-report-it-cannot-read",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-names-the-pinned-target",
+            ".github/workflows/operable-week.yml",
+            "cli purge --queue \"$DURABLERUN_WEEK_QUEUE\" --target \"$target\" ",
+            "cli purge --queue \"$DURABLERUN_WEEK_QUEUE\" --target \"${DURABLERUN_STORE_URL#libsql://}\" ",
+            "the daily purge names as its target whatever database the secret opens, so the CLI no longer refuses a credential of another database",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-names-the-pinned-target"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week names the pinned database as the target of every command that writes, whatever the credential opens, and no target for a read, which takes none",
+    "mutation-verdict:behavior:operable-week-workflow-names-the-pinned-target",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-a-failed-guard-stops-the-job",
+            ".github/workflows/operable-week.yml",
+            "      - name: Require the pinned dedicated database\n",
+            "      - name: Require the pinned dedicated database\n        continue-on-error: true\n",
+            "the job carries on after the guard refuses, so the samples of whatever database the secret names are read and uploaded",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-a-failed-guard-stops-the-job"] = VERDICTS[
+    "operable-week-workflow-requires-the-pinned-database"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-marks-every-label-a-step-was-answered-under",
+            "packages/cli/src/main.ts",
+            "        ended.answeredOtherwise = [...port.labels, ...answeredUnder()]\n",
+            "        ended.answeredOtherwise = [...port.labels]\n",
+            "a step that finds its call wrong by a second read marks only its call's labels, so the label whose answer was off prints ok",
+        ),
+    )
+)
+VERDICTS["cli-selftest-marks-every-label-a-step-was-answered-under"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise",
+    "mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-names-every-label-of-a-refused-answer",
+            "packages/cli/src/main.ts",
+            "        const labels = answeredUnder()\n",
+            "        const labels = [last.label]\n",
+            "a step answered under two labels says the answer to the last one was refused, when the other is the one that was bent",
+        ),
+    )
+)
+VERDICTS["cli-selftest-names-every-label-of-a-refused-answer"] = VERDICTS[
+    "cli-selftest-marks-every-label-a-step-was-answered-under"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-reads-a-label-from-its-last-batch",
+            "packages/cli/src/selftest.ts",
+            "    const last = sent.findLast((batch) => batch.label === label)\n",
+            "    const last = sent.find((batch) => batch.label === label)\n",
+            "a label the store answered once and then failed prints ok, so the report names no label that failed",
+        ),
+    )
+)
+VERDICTS["cli-selftest-reads-a-label-from-its-last-batch"] = VERDICTS[
+    "cli-selftest-prints-a-label-by-what-was-sent"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
+            "packages/cli/src/main.ts",
+            "        ...(answered.length > 0 ? { failedAt: answered.join(' or ') } : {}),\n",
+            "        ...(answered.length < 0 ? { failedAt: answered.join(' or ') } : {}),\n",
+            "a step that ends on a named error raised from an answer prints failed with no failedAt, so the report does not say which answer the step failed on",
+        ),
+    )
+)
+VERDICTS["cli-selftest-names-the-labels-a-step-that-failed-was-answered-under"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read names the label of a schema version the store refuses after the batch was answered: the step failed there, the label is not ok, and the exit is the schema's",
+    "mutation-verdict:behavior:cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-marks-the-labels-a-step-that-failed-was-answered-under",
+            "packages/cli/src/main.ts",
+            "      if (answered.length > 0) ended.answeredOtherwise = answered\n",
+            "      if (answered.length < 0) ended.answeredOtherwise = answered\n",
+            "a step that ends on a named error raised from an answer leaves that answer's label printed ok, so the report says the database answered a batch well that the step failed on",
+        ),
+    )
+)
+VERDICTS["cli-selftest-marks-the-labels-a-step-that-failed-was-answered-under"] = VERDICTS[
+    "cli-selftest-names-the-labels-a-step-that-failed-was-answered-under"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-keeps-what-is-sent-for-selftest-alone",
+            "packages/cli/src/main.ts",
+            "      keepsWhatIsSent: spec.verb === 'selftest',\n",
+            "      keepsWhatIsSent: spec.verb !== 'help',\n",
+            "every command asks the opener for a record of its batches, so a long purge or sweep holds an entry for each batch that nothing reads",
+        ),
+    )
+)
+VERDICTS["cli-keeps-what-is-sent-for-selftest-alone"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "the record of what a command sent is kept for selftest alone: every other command that opens a store asks the opener for none",
+    "mutation-verdict:behavior:cli-keeps-what-is-sent-for-selftest-alone",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-opener-keeps-a-record-only-when-asked",
+            "packages/cli/src/open-store.ts",
+            "    options.keepsWhatIsSent === true\n",
+            "    options.keepsWhatIsSent !== null\n",
+            "the opener keeps a record of every batch whether or not the command asked for one, so a command that reads none holds an entry for each batch it sends",
+        ),
+    )
+)
+VERDICTS["cli-opener-keeps-a-record-only-when-asked"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/open-store.test.ts",
+    "the store opener keeps a record of the batches it sends only when it is asked to, and hands out the record it holds",
+    "mutation-verdict:behavior:cli-opener-keeps-a-record-only-when-asked",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-reads-no-refusal-of-a-purge-as-a-run",
+            "apps/dogfood/src/week-receipt.ts",
+            "    if (STORE_FAILURE_KINDS.includes(failedOn)) return PURGE_THAT_TOOK_NOTHING\n",
+            "    if (failedOn !== TEST_CLOCK_KIND) return PURGE_THAT_TOOK_NOTHING\n",
+            "a refusal of the command, for the schema's version or a usage error, reads as a run of a purge that took nothing, so a day that holds one is accepted",
+        ),
+    )
+)
+VERDICTS["week-receipt-reads-no-refusal-of-a-purge-as-a-run"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/week-receipt.test.ts",
+    "the week receipt checker reads no refusal of the command as a run of a purge: a day that holds one is malformed, and one refused because the test clock was set refuses the week for the clock",
+    "mutation-verdict:behavior:week-receipt-reads-no-refusal-of-a-purge-as-a-run",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-refuses-a-purge-refused-under-a-test-clock",
+            "apps/dogfood/src/week-receipt.ts",
+            "  ...PURGE_THAT_TOOK_NOTHING,\n  underATestClock: true,\n",
+            "  ...PURGE_THAT_TOOK_NOTHING,\n  underATestClock: false,\n",
+            "a purge refused because the test clock was set reads as a run that took nothing, so a week whose clock was set between two samples is accepted",
+        ),
+    )
+)
+VERDICTS["week-receipt-refuses-a-purge-refused-under-a-test-clock"] = VERDICTS[
+    "week-receipt-reads-no-refusal-of-a-purge-as-a-run"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "week-receipt-allows-the-injected-task-no-wait",
+            "apps/dogfood/src/week-receipt.ts",
+            "  checkpoints: 0,\n  waits: 0,\n  events: 1,\n",
+            "  checkpoints: 0,\n  waits: 1,\n  events: 1,\n",
+            "the bound allows the injected task a wait beyond the one the start sample counted, so a stray wait is accepted at every sample of the week",
+        ),
+    )
+)
+VERDICTS["week-receipt-allows-the-injected-task-no-wait"] = VERDICTS[
+    "week-receipt-allows-the-injected-task-its-rows"
+]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-prints-a-stored-state-as-any-command-does",
+            "packages/cli/src/selftest.ts",
+            "    const was = typeof found === 'string' ? stateView(found, reveal) : null\n",
+            "    const was = typeof found === 'string' ? found : null\n",
+            "selftest prints a state a row stores as it is stored, so a state that is not one of the engine prints in the report with no --reveal",
+        ),
+    )
+)
+VERDICTS["cli-selftest-prints-a-stored-state-as-any-command-does"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read prints a state a row stores that is not one of the engine only with --reveal, as a hidden value prints: the state of the task, of its run, and the one the guards read",
+    "mutation-verdict:behavior:cli-selftest-prints-a-stored-state-as-any-command-does",
+)
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-prints-no-text-a-database-answered",
+            "packages/cli/src/selftest.ts",
+            "        differs('whether a repeated spawn answers the first task', again.taskId === a, true),\n",
+            "        differs('the task a repeated spawn answers', again.taskId as never, a as never),\n",
+            "selftest prints the id a repeated spawn answered beside the one it expects, so an id the database answered prints in the report with no --reveal",
+        ),
+    )
+)
+VERDICTS["cli-selftest-prints-no-text-a-database-answered"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read exits as a defect of the CLI for no answer of the database: every label it sends, bent four ways, ends the run as passed, as refused, or as answered otherwise",
+    "mutation-verdict:behavior:cli-selftest-prints-no-text-a-database-answered",
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -26238,7 +26917,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1482:
+        if len(MUTATIONS) != 1528:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

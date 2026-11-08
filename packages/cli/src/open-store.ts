@@ -67,7 +67,7 @@ export type CliOperator = Pick<
 /**
  * The retention calls a command may make, which is every one the port has: the listing of
  * what a purge may take, the purge of one unit, and the read of what the barrier says of
- * one. `purge` is the one command that calls them.
+ * one. `purge` calls them, and `selftest` sends each once.
  */
 export type CliRetention = Pick<Retention, 'purgeCandidates' | 'purgeUnit' | 'purgeAdmission'>
 
@@ -83,8 +83,51 @@ export interface OpenedStore {
   readonly scheduler: CliScheduler
   readonly operator: CliOperator
   readonly retention: CliRetention
+  /**
+   * The batches the ports sent so far, in order, when the command asked for the record to
+   * be kept, and nothing otherwise. It is a record: it sends nothing, and it is handed out
+   * as it is held, to be read and not changed.
+   */
+  sent(): readonly SentBatch[]
   close(): Promise<void>
 }
+
+/** One batch a command sent: its label, and whether the store answered it. */
+export interface SentBatch {
+  readonly label: string
+  /** False for a batch the store failed, or whose answer never came. */
+  readonly answered: boolean
+}
+
+/**
+ * An executor that keeps the label of every batch sent through it, in the order the
+ * answers came, with whether the store answered. `selftest` reads it to say which label
+ * failed: a call sends more batches than the ones the command table names it for.
+ */
+export function keepingWhatIsSent(real: SqlExecutor): {
+  readonly executor: SqlExecutor
+  sent(): readonly SentBatch[]
+} {
+  const batches: SentBatch[] = []
+  return {
+    executor: {
+      batch: async (label, statements, control) => {
+        try {
+          const answer = await real.batch(label, statements, control)
+          batches.push({ label, answered: true })
+          return answer
+        } catch (error) {
+          batches.push({ label, answered: false })
+          throw error
+        }
+      },
+    },
+    sent: () => batches,
+  }
+}
+
+/** What a store that keeps no record hands out: nothing, however many batches it sent. */
+const NOTHING_KEPT: readonly SentBatch[] = Object.freeze([])
 
 export interface OpenOptions {
   /**
@@ -93,6 +136,11 @@ export interface OpenOptions {
    * client creates the file it is pointed at.
    */
   readonly mayCreate?: boolean
+  /**
+   * Whether to keep a record of every batch sent. Only the command that reads the record
+   * asks for it, so a long run of any other command holds nothing for each batch.
+   */
+  readonly keepsWhatIsSent?: boolean
   /** For tests: wraps the executor every port sends through, to watch it or to fail it. */
   readonly wrapExecutor?: (executor: SqlExecutor) => SqlExecutor
 }
@@ -325,7 +373,13 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
   const loader = scheme === undefined ? undefined : LOADERS[scheme]
   if (scheme === undefined || loader === undefined) throw new StoreUrlError(unknownScheme())
   const opened = await loader(url, token, options.mayCreate === true, target)
-  const db = options.wrapExecutor?.(opened.executor) ?? opened.executor
+  // The record is kept outside a test's wrapper, so it sees the batch as the ports did.
+  const wrapped = options.wrapExecutor?.(opened.executor) ?? opened.executor
+  const kept =
+    options.keepsWhatIsSent === true
+      ? keepingWhatIsSent(wrapped)
+      : { executor: wrapped, sent: () => NOTHING_KEPT }
+  const db = kept.executor
   const admin = opened.admin(db)
   const scheduler = opened.scheduler(db, ids)
   const operator = opened.operator(db)
@@ -374,6 +428,7 @@ export const openStore: StoreOpener = async (url, token, ids, options = {}) => {
       purgeAdmission: (queue: string, unit: PurgeUnitTarget, policy: RetentionPolicy) =>
         retention.purgeAdmission(queue, unit, policy),
     }),
+    sent: kept.sent,
     close: () => opened.close(),
   }
 }

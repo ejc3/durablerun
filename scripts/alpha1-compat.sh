@@ -4,7 +4,10 @@
 # It installs the four release assets of v0.1.0-alpha.1 into a consumer directory the way
 # package-smoke.sh installs the current tarballs, after checking each against the sha256
 # that scripts/published-surface-v0.1.0-alpha.1.json records, and runs
-# packages/cli/test/alpha1-compat.ts against them. The asset URLs are the ones
+# packages/cli/test/alpha1-compat.ts against them: alpha.1's cycle at every schema version
+# the CLI can leave, the example's migrate script on a database the CLI migrated, and a
+# simulated week in which alpha.1 runs the example's tasks while the current CLI enqueues,
+# sweeps, explains and purges (packages/cli/test/alpha1-week.ts). The asset URLs are the ones
 # examples/vercel-turso/package.json pins. A sha256 that does not match fails. An asset
 # that cannot be downloaded skips the harness, and the skip is printed with its reason and
 # counted; set DURABLERUN_ALPHA1_REQUIRED=1 to make it fail instead, as CI's verify job does.

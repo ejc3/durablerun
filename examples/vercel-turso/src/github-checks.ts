@@ -1,3 +1,4 @@
+import { GITHUB_API as API, githubGet, githubRepositoryPath } from './github-request.js'
 import {
   PR_WATCHER_MAX_DELAY_SECONDS,
   PR_WATCHER_MIN_INTERVAL_SECONDS,
@@ -6,7 +7,6 @@ import {
   parsePrWatchInput,
 } from './pr-watcher.js'
 
-const API = 'https://api.github.com'
 const PAGE_LIMIT = 5
 const POLL_TIMEOUT_MS = 20_000
 
@@ -61,27 +61,19 @@ export async function observeGitHubChecks(
   options: { fetcher?: typeof fetch; token?: string; now?: () => number } = {},
 ): Promise<PrWatchObservation> {
   const input = parsePrWatchInput(raw)
-  const fetcher = options.fetcher ?? fetch
   const now = options.now ?? Date.now
-  const token = options.token ?? process.env.GITHUB_TOKEN
   const signal = AbortSignal.timeout(POLL_TIMEOUT_MS)
-  const root = `/repos/${input.repository.split('/').map(encodeURIComponent).join('/')}`
+  const root = githubRepositoryPath(input.repository)
   const observedAt = () => new Date(now()).toISOString()
 
   async function get(url: URL): Promise<{ value: unknown; links: string | null }> {
-    const response = await fetcher(url, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2026-03-10',
-        'user-agent': 'durablerun-pr-watcher',
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      redirect: 'error',
+    const response = await githubGet(url, {
+      fetcher: options.fetcher,
+      token: options.token,
+      userAgent: 'durablerun-pr-watcher',
       signal,
     })
     if (!response.ok) {
-      // Optional body disposal cannot delay or replace the received status.
-      void response.body?.cancel().catch(() => {})
       const retryAfter = response.headers.get('retry-after')
       const exhausted = response.headers.get('x-ratelimit-remaining') === '0'
       const limited =

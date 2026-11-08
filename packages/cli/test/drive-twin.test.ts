@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { runFuzzScenario } from '../../conformance/src/fuzz.js'
 import { makeLibsqlFixture } from '../../conformance/test/fixture-libsql.js'
-import { COMMANDS, SWEEP_DEFAULT_LIMIT, VERBS } from '../src/commands.js'
+import { COMMANDS, SWEEP_DEFAULT_LIMIT } from '../src/commands.js'
 import { type ExitName, exitCode } from '../src/exit.js'
 import { storeTarget } from '../src/open-store.js'
 import { parkedOnAnEvent } from './explain-seeds.js'
@@ -22,6 +22,7 @@ import {
   SELECTED,
   type SeededTasks,
   type StartingSchema,
+  driveVerbsOfTheTable,
   dumpOf,
   openCliDb,
   openerOver,
@@ -379,16 +380,7 @@ async function compared(
 describe('a drive verb is its port call and nothing else', () => {
   it('holds a twin for every command of the table that writes rows through a store', () => {
     // A command that joins the table as a write joins the calls above, or this fails.
-    // `purge` writes through the retention port, and its twin is in purge-twin.test.ts.
-    expect(
-      VERBS.filter(
-        (verb) =>
-          COMMANDS[verb].opensStore &&
-          COMMANDS[verb].writes &&
-          verb !== 'migrate' &&
-          verb !== 'purge',
-      ),
-    ).toEqual(WRITE_VERBS)
+    expect(driveVerbsOfTheTable()).toEqual(WRITE_VERBS)
     for (const verb of WRITE_VERBS) {
       const { steps } = TWINS[verb]
       // Each verb has a step that changes the database and one that does not, so neither

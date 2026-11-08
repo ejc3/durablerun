@@ -20,6 +20,7 @@ import {
   COMPLETED_KEY,
   type CliDb,
   type FaultSite,
+  OWN_QUEUE,
   PURGE_WINDOWS,
   QUEUE,
   SELECTED,
@@ -32,6 +33,7 @@ import {
   openerWrapping,
   recordingIds,
   recordingOpener,
+  rowsByQueue,
   runCli,
   seedTasks,
   withoutMinted,
@@ -49,7 +51,9 @@ import {
  * state. After each case, running the same command again reaches the state one successful
  * run leaves, and for a read prints what that run printed. A read also leaves every table as
  * it found it, and migrate leaves a recorded version between the one it started from and
- * the build's. A drive verb mints ids, and the repeat is another process, whose ids are not
+ * the build's. `selftest` runs on a queue of its own, so its repeat is refused on the queue
+ * the first run wrote to, changing nothing, and passes on another queue, where it leaves the
+ * rows a clean run leaves its own. A drive verb mints ids, and the repeat is another process, whose ids are not
  * the first run's: the repeat's ids go on from where the first run's stopped, and the two
  * states are compared with the ids each run minted read as one placeholder. Every database
  * holds the redaction sentinel of line 33 where it holds tasks, and no run of any case
@@ -259,6 +263,36 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       prepare: aKeptCandidate,
     },
   ],
+  // On a queue no seed writes to, beside a queue that holds the seeded tasks.
+  selftest: [
+    writeAt('the current version, on a queue that holds nothing', (db) => [
+      'selftest',
+      '--queue',
+      OWN_QUEUE,
+      '--target',
+      db.target,
+      '--json',
+    ]),
+  ],
+}
+
+/** The queue a repeat of `selftest` names, which the first run did not write to. */
+const ANOTHER_QUEUE = `${OWN_QUEUE}-again`
+
+/**
+ * How many rows one run of `selftest` leaves its queue at least: two tasks, their runs and
+ * three events. PostgreSQL holds one more, the lock an emit takes on its event's name.
+ */
+const SELFTEST_ROWS = 7
+
+/**
+ * The rows of one queue in a dump, with the queue's name and every id of `minted` read as
+ * placeholders, so two queues written by two runs compare.
+ */
+function rowsOfQueue(dump: string, queue: string, minted: readonly string[]): string[] {
+  return rowsByQueue(withoutMinted(dump, minted), queue).ofTheQueue.map((row) =>
+    row.replaceAll(JSON.stringify(queue), '"<queue>"'),
+  )
 }
 
 /** The windows every `purge` scenario names, and the flags every write takes. */
@@ -400,6 +434,32 @@ async function faultSurface(
           ).toBe(true)
         } else if (!spec.writes) {
           expect(await db.dump(), `${where}: a read changed a table`).toBe(untouched)
+        }
+        if (spec.repeat === 'fresh-queue') {
+          // Once the run wrote a row, the queue is no longer its own: the same line is
+          // refused and changes nothing. Before that, the same line passes.
+          const left = await db.dump()
+          const same = await runCli(line, db.env, openStore, minting.ids)
+          expect({ where, exit: same.exit }, `${where}: the repeat on the same queue`).toEqual({
+            where,
+            exit: left === untouched ? 0 : exitCode('usage'),
+          })
+          if (left !== untouched) expect(await db.dump(), `${where}: a refusal wrote`).toBe(left)
+          expectNoSentinel(same, `${where}: the repeat on the same queue`)
+          const elsewhere = line.map((word) => (word === OWN_QUEUE ? ANOTHER_QUEUE : word))
+          const fresh = await runCli(elsewhere, db.env, openStore, minting.ids)
+          expect(fresh.exit, `${where}: the repeat on another queue`).toBe(0)
+          const minted = [...cleanIds.minted, ...minting.minted]
+          const cleanRows = rowsOfQueue(settled, OWN_QUEUE, minted)
+          expect(cleanRows.length, `${where}: the rows a clean run leaves`).toBeGreaterThanOrEqual(
+            SELFTEST_ROWS,
+          )
+          expect(
+            rowsOfQueue(await db.dump(), ANOTHER_QUEUE, minted),
+            `${where}: the rows the repeat leaves another queue`,
+          ).toEqual(cleanRows)
+          cases++
+          continue
         }
         // The repeat is another process: its ids go on from where the first run's stopped.
         const again = await runCli(line, db.env, openStore, minting.ids)

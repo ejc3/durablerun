@@ -44,7 +44,7 @@ import {
 } from '../../conformance/test/dialect-selection.js'
 import { COMMANDS, type CliFault, type CommandSpec, VERBS } from '../src/commands.js'
 import { type Io, main } from '../src/main.js'
-import { type StoreOpener, openStore } from '../src/open-store.js'
+import { type StoreOpener, keepingWhatIsSent, openStore } from '../src/open-store.js'
 
 /** The dialects this run exercises, read from the one selection parser. */
 export const SELECTED: readonly EnrolledDialect[] = parseDialectSelection(
@@ -408,6 +408,29 @@ export function withoutMinted(dump: string, minted: readonly string[]): string {
     .join('\n')
 }
 
+/**
+ * A dump's rows as `<table> <row>` lines, those of one queue apart from the rest. A row is
+ * of the queue its `queue` column names, and a row of a table with no such column is of
+ * none.
+ */
+export function rowsByQueue(
+  dump: string,
+  queue: string,
+): { readonly ofTheQueue: string[]; readonly elsewhere: string[] } {
+  const ofTheQueue: string[] = []
+  const elsewhere: string[] = []
+  for (const line of dump.split('\n')) {
+    const at = line.indexOf(' ')
+    const table = line.slice(0, at)
+    if (table === 'objects') continue
+    for (const row of JSON.parse(line.slice(at + 1)) as string[]) {
+      const columns = Object.fromEntries(JSON.parse(row) as [string, unknown][])
+      ;(columns.queue === queue ? ofTheQueue : elsewhere).push(`${table} ${row}`)
+    }
+  }
+  return { ofTheQueue, elsewhere }
+}
+
 /** A store opener that records every batch every executor it makes is sent. */
 export function recordingOpener(): { opener: StoreOpener; sent(): RecordedBatch[] } {
   const recorders: RecordingExecutor[] = []
@@ -433,16 +456,20 @@ export function openerWrapping(wrap: (executor: SqlExecutor) => SqlExecutor): St
  */
 export const openerOver =
   (db: { readonly raw: SqlExecutor; readonly admin: StoreAdmin }): StoreOpener =>
-  async (_url, _token, ids: IdSource) => ({
-    scheme: 'file:',
-    window: READABLE_SCHEMA_WINDOW,
-    notes: SCHEMA_VERSION_NOTES,
-    admin: db.admin,
-    scheduler: new LibsqlSchedulerStore(db.raw, ids),
-    operator: operatorReads(db.raw),
-    retention: retention(db.raw, ids),
-    close: async () => undefined,
-  })
+  async (_url, _token, ids: IdSource) => {
+    const kept = keepingWhatIsSent(db.raw)
+    return {
+      scheme: 'file:',
+      window: READABLE_SCHEMA_WINDOW,
+      notes: SCHEMA_VERSION_NOTES,
+      admin: db.admin,
+      scheduler: new LibsqlSchedulerStore(kept.executor, ids),
+      operator: operatorReads(kept.executor),
+      retention: retention(kept.executor, ids),
+      sent: kept.sent,
+      close: async () => undefined,
+    }
+  }
 
 /** Where a fault meets a batch: the label, and which of its sendings, counted from one. */
 export interface FaultSite {
@@ -480,6 +507,9 @@ export function faulting(real: SqlExecutor, site: FaultSite, fault: CliFault): S
 export const SENTINEL = 'sentinel-6d1c9e0a'
 
 export const QUEUE = 'q'
+
+/** A queue no seed writes to, for a command that runs on a queue of its own. */
+export const OWN_QUEUE = 'own-queue'
 
 /** The idempotency key of the completed task `seedTasks` writes, which holds the sentinel. */
 export const COMPLETED_KEY = `key-${SENTINEL}`
@@ -774,6 +804,28 @@ export const PURGE_WINDOWS: readonly string[] = [
 
 /** The windows of a policy that names every ended state. */
 export const PURGE_EVERY_STATE: readonly string[] = [...PURGE_WINDOWS, '--failed-after', '1h']
+
+/**
+ * The commands that write through a store and are no drive verb, each with the file that
+ * holds its cases: `migrate` writes the schema, `purge` deletes through the retention
+ * port, and `selftest` sends the calls of the others to a queue of its own. Every other
+ * command that writes is a drive verb, so a new one joins the drive verbs' cases until
+ * someone names it here.
+ */
+const WRITES_WITH_CASES_OF_THEIR_OWN: Readonly<Record<string, string>> = {
+  migrate: 'migrate.test.ts',
+  purge: 'purge.test.ts and purge-twin.test.ts',
+  selftest: 'selftest.test.ts',
+}
+
+/** The drive verbs as the command table gives them: every command that writes but those above. */
+export const driveVerbsOfTheTable = () =>
+  VERBS.filter(
+    (verb) =>
+      COMMANDS[verb].opensStore &&
+      COMMANDS[verb].writes &&
+      !Object.hasOwn(WRITES_WITH_CASES_OF_THEIR_OWN, verb),
+  )
 
 /** What a run changed: its answer, and whether a dump of every table is as it was before. */
 export async function changedBy<T>(db: CliDb, run: () => Promise<T>) {

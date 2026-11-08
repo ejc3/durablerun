@@ -232,3 +232,6 @@ export function requireDogfoodReceipt(
   const errors = dogfoodReceiptErrors(candidate, fault, intent)
   if (errors.length > 0) throw new Error(`invalid dogfood receipt:\n- ${errors.join('\n- ')}`)
 }
+
+/** The receipt of a week of the recurring workflow has a checker of its own. */
+export { weekReceiptErrors } from './week-receipt.js'
