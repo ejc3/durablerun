@@ -384,11 +384,14 @@ describe('the week receipt checker', () => {
     ] as const) {
       const beside = refused({ kind, message: 'refused' }, exit)
       const alone = { command: 'purge', dialect: { scheme: 'libsql:' }, error: { kind }, exit }
-      expect({
-        kind,
-        beside: causes(withInTheThirdDay(beside)),
-        alone: causes(withInTheThirdDay(alone)),
-      }).toEqual({ kind, beside: ['malformed'], alone: ['malformed'] })
+      expect(
+        {
+          kind,
+          beside: causes(withInTheThirdDay(beside)),
+          alone: causes(withInTheThirdDay(alone)),
+        },
+        'mutation-verdict:behavior:week-receipt-reads-no-refusal-of-a-purge-as-a-run',
+      ).toEqual({ kind, beside: ['malformed'], alone: ['malformed'] })
     }
   })
 
@@ -516,7 +519,10 @@ describe('the week receipt checker', () => {
       const sample = over.days[day]
       if (sample === undefined) throw new Error(`the week has no day ${day + 1}`)
       setCount(sample, table, boundOf(table) + 1)
-      expect(causes(over)).toEqual(['sizes-over-bound'])
+      expect(
+        causes(over),
+        'mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows',
+      ).toEqual(['sizes-over-bound'])
     }
   })
 
