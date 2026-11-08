@@ -6134,8 +6134,8 @@ predicate, and the fragments its sweep's scan is built from. Core's statements f
 sweep legs are built on the same two bases as the sweep's own two reads. So a run that is
 due and that a claim would refuse, as one whose task is past its deadline is, is in neither
 claim leg however long it has been due. The legs do not go through the claim's candidate
-subquery, which locks rows and holds the claim's limit: they read the rows it reads without
-it.
+subquery, which holds the claim's limit and, on PostgreSQL and MySQL, locks rows: they read
+the rows it reads without it.
 
 Such a run is in `dueNotAdmitted`, and the sweep has two legs of the same kind. A leg of
 what the engine does not take holds no predicate of refusal. It is found by reading the same
@@ -6225,8 +6225,9 @@ sweep either way. A due run whose task is past its deadline is listed twice as w
 run in `dueNotAdmitted`, and its task in `cancelOverdue` with its newest live run.
 
 Every integer a leg selects is decoded under the bounds core gives its field, and one that
-fails is listed in `corrupt` with the run or the task that holds it. Such a row is listed
-whatever the grace, because nothing says it is inside the grace. Through a store an instant
+fails is listed in `corrupt` with the run or the task that holds it, unless its row is one
+a window did not settle, which the leg does not list. A row whose instant is the integer
+that fails is listed whatever the grace, because nothing says it is inside the grace. Through a store an instant
 outside its bounds does not reach a leg: each leg's predicate holds its instant to its
 bounds as the engine's does, so the engine takes no such row and the legs list none. The
 gauges below count it. A claim refuses the run of a task whose cancellation deadline is
@@ -6242,8 +6243,8 @@ tick (section 3.2). Under a tick once a minute, each
 tick's claim takes that task's run and the worker parks it 15 to 24 seconds on, so it is due
 and unclaimed for part of every minute, and never for as long as the default grace. A seed holds that in both forms, the current worker's `deferLaunch` and
 the release alpha.1's start and `reschedule`: at eight instants between each of four ticks
-no leg lists the task under the default grace, a grace of zero shows it at the same
-instants, and its age finds it. One batch, `aged-tasks`, reads the live tasks of each live
+no leg lists the task under the default grace, a grace of zero shows it at the last three
+of those instants and not at the first, and its age finds it. One batch, `aged-tasks`, reads the live tasks of each live
 state through the index of live tasks (schema version 11, below), in the order they were
 enqueued and one row past the limit, and then the clock. Core merges the legs and applies
 the age with the comparison it applies a grace with.
@@ -6265,8 +6266,8 @@ not readable.
 `stuck` prints `stuckRuns`, and with `--older-than` it prints `agedTasks` under `agedLive`,
 read after the legs in a snapshot of its own, with the database time it was read at. The
 default grace is `DUE_GRACE_MS`, the grace `explain` uses, and the default limit is 20 rows
-to a list. A duration is a whole number and a unit, `s`, `m`, `h` or `d`, of at most 100
-years. A grace, an age or a limit the command cannot read exits 2 before anything is sent.
+to a list. A duration is a whole number of at most nine digits and a unit, `s`, `m`, `h`
+or `d`, of at most 100 years. A grace, an age or a limit the command cannot read exits 2 before anything is sent.
 
 Listing a row is the command doing what it says, so it exits 0. With `--fail-if-any` it
 exits 9 when any row is listed: a row of any of the seven legs, and with `--older-than` a
@@ -6297,7 +6298,8 @@ deadline is named for the deadline before any of the three, and a row that is no
 is named as that. `explain` asks the engine's own predicate about a run that is due
 (`taskAdmission`). A run no claim admits is `due-run-no-claim-admits`, with the verdict
 `inconsistent` and `inspect` as its next command, and `stuck` lists it in `dueNotAdmitted`.
-A run a claim takes is one of the three late causes, and `stuck` lists it in a leg of due
+A run a claim takes is one of the three late causes, or a never-started cause when no
+worker started it, which stays `waiting`, and `stuck` lists it in a leg of due
 runs. So the two commands agree about which of the two a run is. The same holds of a lapsed
 lease the sweep's scan does not answer (`lapsed-lease-no-sweep-reclaims`) and of a deadline
 it does not answer (`deadline-no-sweep-cancels`). `explain` reads the facts and the
@@ -6317,7 +6319,7 @@ The legs of the sweep relate to the gauges the same way. The running runs
 live tasks `tasksPastTheirDeadline` counts are the rows of `cancelOverdue` and
 `deadlineNotCancelled`, as far as the limit and the window reach. A CLI case holds one such
 row end to end. A started run whose `activated_gen` was set past its `claim_gen`, an hour
-after its lease lapsed: the sweep takes nothing, `stats` counts one lapsed lease, `explain`
+after it was claimed under a lease of a minute: the sweep takes nothing, `stats` counts one lapsed lease, `explain`
 answers `lapsed-lease-no-sweep-reclaims` and `inconsistent`, and `stuck --grace 0s --fail-if-any` lists the
 run in `lapsedNotReclaimed` and exits 9.
 
