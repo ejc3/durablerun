@@ -289,7 +289,10 @@ only the hash, so the order of the steps is the maintainer's to attest.
    refuses an instant after the start sample.
 4. During the week the operator finds the task with `stuck --older-than`,
    names its cause with `explain`, keeps that report as the receipt's
-   `explanation`, and clears the task with `cancel --yes`.
+   `explanation`, and clears the task with `cancel --yes`. The bound allows
+   the rows a cancel adds to the task. A task cleared another way is over it:
+   an awaiting task whose event is emitted completes, and holds a checkpoint
+   the bound does not allow.
 5. After the week the second person reveals the task id, the cause and the
    nonce, which are the receipt's `injection`. The checker computes the hash
    again and requires the explanation to be of that task and to name that
