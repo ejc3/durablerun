@@ -341,7 +341,6 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
-          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
@@ -360,88 +359,38 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          def reaim_entry(repaired, candidate, name):
-              # Replace one entry of the base registry with this tree's entry of the same name, for a
-              # mutation whose target line this tree rewrote. Its name must stand, and so must
-              # whatever comment the entry opens with, so only the file, the find, the replacement and
-              # the description move. An entry stands at the top of the list or inside an extension
-              # of it, and its name may also stand in the verdict group that lists it, so the entry
-              # is the one whose next line is its file.
-              def span(text):
-                  found = list(re.finditer(
-                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
-                      text,
-                      re.M,
-                  ))
-                  if len(found) != 1:
-                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
-                  entry = found[0]
-                  named = entry.end() - len(entry.group('indent') + '    "packages/')
-                  close = '\n' + entry.group('indent') + '),\n'
-                  return entry.start(), named, text.index(close, named) + len(close)
-              start, named, end = span(repaired)
-              new_start, new_named, new_end = span(candidate)
-              if repaired[start:named] != candidate[new_start:new_named]:
-                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
-              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
-          if digest == 'a7f559430184d0340832c828546dc8bce7740ed9bd99dc7f6e0ff95f6da451f1':
-              # The purge verb and the simulated week register thirty-four mutations: three caught by
-              # cases of the simulated week, one by the case of the read of what each condition of the
-              # barrier says of a unit, fifteen by cases of the purge verb, one by the case of a read by
-              # key whose task a purge takes between its two reads, and fourteen for the one walk of a
-              # purge and what came with it: six by core's cases of the walk, two by cases of the verb,
-              # one by the case that holds the verb to the model, and one each by the cases of a flag
-              # given twice, of the frozen lists, of a control that holds nothing, of what a dry run
-              # lists, and of a week's turns of the event loop. Their cases carry thirty-four verdict
-              # markers. Each is newer than the base registry, so each is exempted there.
-              # Four base entries are re-aimed. Two conditions of the purge barrier now write the
-              # live states into the statement's text, where they bound them, so the two mutations
-              # that find those lines and the one whose replacement repeats one name them as they
-              # are written now. The retry command answers a task that is not there through one
-              # function, so the mutation of its unconfirmed branch names the lines as they stand.
+          if digest == 'd92ef6f06c840199a9b596620f0d89a4cec25739e956601708b777e621f5f975':
+              # The self-test command, the week receipt's checker and the workflow of the week
+              # register twenty-five mutations: five caught by cases of `selftest`, sixteen by cases
+              # of the week receipt's checker, and four by the case that reads the week's workflow.
+              # Their cases carry twenty-three verdict markers, two of them shared by two mutations
+              # each. Each is newer than the base registry, so each is exempted there. No base
+              # entry is re-aimed.
               repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:cli-a-read-by-key-says-its-task-is-gone",
-                  "mutation-verdict:behavior:cli-purge-deletes-nothing-without-execute",
-                  "mutation-verdict:behavior:cli-purge-holds-its-limit",
-                  "mutation-verdict:behavior:cli-purge-is-the-retention-port-and-nothing-else",
-                  "mutation-verdict:behavior:cli-purge-is-the-retention-port-over-a-walk",
-                  "mutation-verdict:behavior:cli-purge-keeps-no-unit-its-run-freed",
-                  "mutation-verdict:behavior:cli-purge-names-its-store",
-                  "mutation-verdict:behavior:cli-purge-names-the-condition-that-keeps-a-unit",
-                  "mutation-verdict:behavior:cli-purge-prints-a-key-only-as-its-digest",
-                  "mutation-verdict:behavior:cli-purge-prints-a-unit-whose-answer-was-lost",
-                  "mutation-verdict:behavior:cli-purge-prints-an-empty-outage-as-a-failure",
-                  "mutation-verdict:behavior:cli-purge-prints-exactly-the-units-that-went",
-                  "mutation-verdict:behavior:cli-purge-refuses-a-schema-that-is-not-the-builds",
-                  "mutation-verdict:behavior:cli-purge-refuses-a-window-under-the-floor",
-                  "mutation-verdict:behavior:cli-purge-refuses-under-a-test-clock",
-                  "mutation-verdict:behavior:cli-purge-reports-what-went-before-an-outage",
-                  "mutation-verdict:behavior:cli-purge-stops-at-its-limit-inside-a-page",
-                  "mutation-verdict:behavior:cli-purge-walks-past-the-units-the-barrier-keeps",
-                  "mutation-verdict:behavior:cli-purge-would-purge-is-what-the-port-lets-go",
-                  "mutation-verdict:behavior:cli-refuses-a-flag-given-twice",
-                  "mutation-verdict:behavior:cli-retry-says-a-task-may-have-been-retained-out",
-                  "mutation-verdict:behavior:purge-admission-reads-each-condition-as-its-own-flag",
-                  "mutation-verdict:behavior:purge-barrier-conditions-are-frozen",
-                  "mutation-verdict:behavior:purge-walk-keeps-a-unit-whose-second-look-is-lost",
-                  "mutation-verdict:behavior:purge-walk-reports-a-purge-in-doubt",
-                  "mutation-verdict:behavior:purge-walk-says-more-when-a-try-is-owed",
-                  "mutation-verdict:behavior:purge-walk-sends-no-listing-to-learn-more",
-                  "mutation-verdict:behavior:purge-walk-tries-again-a-unit-its-take-frees",
-                  "mutation-verdict:behavior:purge-walk-tries-again-what-a-held-outcome-kept",
-                  "mutation-verdict:behavior:retention-soak-fails-a-control-that-holds-nothing",
-                  "mutation-verdict:behavior:retention-soak-fails-as-vacuous-when-nothing-is-purged",
-                  "mutation-verdict:behavior:retention-soak-holds-each-pass-to-the-age-of-its-units",
-                  "mutation-verdict:behavior:retention-soak-holds-the-rows-of-a-queue-to-the-bound",
-                  "mutation-verdict:behavior:retention-soak-turns-the-event-loop-each-day",
+                  "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",
+                  "mutation-verdict:behavior:cli-selftest-declares-or-names-every-label",
+                  "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
+                  "mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds",
+                  "mutation-verdict:behavior:operable-week-workflow-enqueues-under-the-periods-key",
+                  "mutation-verdict:behavior:operable-week-workflow-is-off-until-enabled",
+                  "mutation-verdict:behavior:operable-week-workflow-purges-until-no-more-remain",
+                  "mutation-verdict:behavior:operable-week-workflow-requires-the-pinned-database",
+                  "mutation-verdict:behavior:week-receipt-allows-the-runs-it-shows",
+                  "mutation-verdict:behavior:week-receipt-counts-a-unit-whose-answer-was-lost",
+                  "mutation-verdict:behavior:week-receipt-fails-closed",
+                  "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-seal-that-does-not-match",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days",
+                  "mutation-verdict:behavior:week-receipt-refuses-a-test-clock",
+                  "mutation-verdict:behavior:week-receipt-refuses-an-explanation-of-another-cause",
+                  "mutation-verdict:behavior:week-receipt-refuses-an-unknown-kind",
+                  "mutation-verdict:behavior:week-receipt-refuses-fewer-than-160-periods",
+                  "mutation-verdict:behavior:week-receipt-refuses-no-selftest-record",
+                  "mutation-verdict:behavior:week-receipt-unit-rows-are-the-measured-rows",
               ))
-              for name in (
-                  "cli-retry-changes-nothing-without-yes",
-                  "purge-keeps-a-unit-with-a-live-run",
-                  "purge-keeps-the-child-of-a-failed-parent",
-                  "purge-keeps-the-child-of-a-live-parent",
-              ):
-                  repaired = reaim_entry(repaired, candidate, name)
           else:
               print('Base registry does not need the re-aim bridge.')
               raise SystemExit(0)
