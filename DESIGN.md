@@ -545,18 +545,30 @@ One invocation executes one claimed run to its next suspension point:
   lease story and the user's retry budget is never touched; only errors from
   user code spend user attempts.
 - **What a store executor throws, and what a pass does with it.** An executor
-  types a driver's failure from its error CODE, into one of four kinds, and
+  types a driver's failure from its error CODE, into one of five kinds, and
   from its message text in one case: libSQL tells the two schema errors by the
-  client's message. MySQL types one error apart from the four, 1406, a string
+  client's message. MySQL types one error apart from the five, 1406, a string
   longer than its column, as an invalid durable string. `SchemaNotInitializedError` and
   `SchemaMismatchError` say the database is not the one this build expects, and
   a migration repairs them. `PermanentStoreError` says the store answered and no
   retry changes the answer: the statement broke a constraint, carried a value
-  its column cannot hold, or is one the server will never accept. Everything
+  its column cannot hold, or is one the server will never accept.
+  `StoreAccessRefusedError` says the store refused the credential it was given,
+  or refused what that credential may do: a password or a token it does not
+  accept, an account that is locked or may not connect, a statement the account
+  has no privilege for. It is neither of the two types beside it. The store is
+  up, so waiting cures nothing, and the statement is one the store takes under
+  another credential, so it is not refused for good: another credential, or a
+  grant to this one, changes the answer. Everything
   else is `StoreUnavailableError`, an outage that waiting can cure, and a code
   the map does not know stays an outage, which is what every code was before
-  the map. A deadlock victim is none of the four: the two server executors run
-  it again, and a victim they report after three tries is an outage. The maps:
+  the map. A deadlock victim is none of the five: the two server executors run
+  it again, and a victim they report after three tries is an outage. Core holds
+  the five kinds in one table, `STORE_FAILURE_TYPES`, and `storeFailureKind`
+  names the kind of an error. Every consumer that answers a store's failure, the
+  worker's control, the hosted handler, the CLI and the self-concurrency
+  surface, holds a record keyed by the kind, so a sixth kind fails the
+  typecheck of each until it says what it does with it. The maps:
   libSQL reads the primary SQLite result code, and `SQLITE_CONSTRAINT`, with
   every extended code, and `SQLITE_MISMATCH` are permanent. PostgreSQL reads the
   SQLSTATE class after its schema mismatch states, and classes 22 (data
@@ -578,21 +590,54 @@ One invocation executes one claimed run to its next suspension point:
   refuses it with 22P02, which its class makes permanent, and MySQL refuses it
   with 1265, which only its number makes permanent. So it is held by each
   server's own case and by no shared one. The two lists are held to the
-  server's own list of error numbers (§3.4). One difference between dialects
-  is deliberate: a syntax error is
+  server's own list of error numbers (§3.4). The access refusals are read
+  before the permanent answers on every dialect. PostgreSQL: SQLSTATE class 28,
+  invalid authorization specification, which is a password that is not the
+  role's (28P01) and a role that may not log in (28000), and 42501,
+  insufficient privilege, which PostgreSQL files in class 42 beside a syntax
+  error. MySQL: 23 numbers whose names say the account was refused, kept by
+  number because MySQL files them under three states: 28000 for a refused
+  login (1045, a wrong password or an account that does not exist), 42000 for
+  a missing privilege (1142 on a table, 1044 on a database, 1227 for a
+  statement), and HY000 for an account that is locked (3118), blocked, or past
+  its password (1820, 1862). That list is held to the server's own list too
+  (§3.4). libSQL: its client reports every HTTP answer that is no success
+  under one code, `SERVER_ERROR`, and keeps the status as a number on the
+  error's cause. 401 and 403 are an access refusal, read from that number and
+  never from the message. A hosted libSQL server was measured to answer 401
+  for a token whose signature it does not accept and for no token at all. Three
+  answers of libSQL keep the type they had, an outage. A 400: a hosted server
+  answers it for a token that is not a token at all, a plain word, and a
+  server answers it for any request it cannot read, so the status does not say
+  that a credential was refused. A WebSocket upgrade the server refused, which
+  a `ws:` or `wss:` URL meets: the client reports it under another code,
+  `HRANA_WEBSOCKET_ERROR`, whatever the status, and carries the status only
+  inside its message, which the executor does not read. And a write sent under
+  a token that may only read: what a hosted server answers it is NOT KNOWN
+  here, because no test can reach one, so nothing is mapped for it and it
+  keeps whatever type its code has today, an outage unless the client names a
+  SQLite constraint code. A database file has no credential. One difference
+  between dialects is deliberate: a syntax error is
   permanent on the two servers, which give it a code of its own, and an outage
   on libSQL, because SQLite files it under its generic code `SQLITE_ERROR`
   together with a transaction state error that a new connection cures, and
   mapping by code cannot tell the two apart. A shared conformance surface holds
   the kinds a consumer can meet on every dialect (§3.4).
 
-  A worker pass treats a permanent store error EXACTLY as it treats an outage,
+  A worker pass treats a permanent store error, and a store's refusal of its
+  credential, EXACTLY as it treats an outage,
   at its own store calls and at a context store call alike: the pass ends
   `aborted`, nothing more is written, the task's attempts are untouched, and
   the lease recovers the run, on the infrastructure budget if the run had been
   activated. The reason is that naming an error more precisely must not change
-  who pays for it. Before the type existed these failures were outages and were
-  paid from the infrastructure budget. Thrown into task code as an ordinary
+  who pays for it. Before the types existed these failures were outages and were
+  paid from the infrastructure budget. A statement the credential may not send
+  was a permanent store error on PostgreSQL and MySQL and an outage on libSQL,
+  and a pass ended `aborted` for either, so the new type changes no pass's
+  ending. It changes one thing inside a pass, on the two servers, to what
+  libSQL did: an access refusal ends the pass for every flow of the task, as
+  an outage does, where a permanent answer reaches the task (see "After an
+  infrastructure error" below). Thrown into task code as an ordinary
   error, the same failure would be recorded through `fail` as the task's own
   and paid from the attempts the caller asked for. `SchemaMismatchError` at a
   context store call IS billed that way in this build, and is left alone here.
@@ -606,10 +651,11 @@ One invocation executes one claimed run to its next suspension point:
   treat every throw alike, and none of them changed. The SDK's replay
   equivalence harness holds "exactly as an outage" at every store call it
   SAMPLES, which is the odd calls of a program from the third and its last
-  call, and not every call: each sampled call is failed once with an outage and
-  once with a permanent store error, each run is held to the kind it asked for,
+  call, and not every call: each sampled call is failed once with an outage,
+  once with a permanent store error and once with a refusal of the credential,
+  each run is held to the kind it asked for,
   and the file's last case is a floor that fails unless every store method the
-  sweeps failed at all met both kinds. All twelve do.
+  sweeps failed at all met all three kinds. All twelve do.
 - **A failed batch is reported once, and its executor serves the next call.**
   Whatever a batch failed on, the executor answers the batches after it as if
   the failed one had never been sent. The failure is one error, to the one
@@ -960,7 +1006,8 @@ One invocation executes one claimed run to its next suspension point:
       memo, and a flow that was held for its turn registers its rollback after
       that. It waits on a release, and does not poll the event loop.
     - **After an infrastructure error.** A store call that fails with an outage
-      of the store, a lost lease or a cancelled run is thrown into the task
+      of the store, a refusal of the store's credential, a lost lease or a
+      cancelled run is thrown into the task
       function. A flow of the task that has yet to make a call is beside nothing
       when the error lands, and what it stores afterwards would be read by a
       replay with no marker to order it against what the failed call stored. So
@@ -970,7 +1017,9 @@ One invocation executes one claimed run to its next suspension point:
       `Promise.allSettled`, ends its pass as aborted and the run is retried,
       where it used to complete with the error in its result. This holds for an
       error from any store call of the pass, on the last call of a run as on the
-      first. The pass is ended only for what a retry can change. A permanent
+      first. The pass is ended only for what a retry can change, and a retry
+      under a credential the store accepts changes a refusal of the
+      credential. A permanent
       answer of the store repeats on every retry and an aborted pass spends no
       attempt, so it is not an error of this kind: it reaches the task and is
       handled as it was before markers, and a task that catches it completes with
@@ -3937,13 +3986,27 @@ not depend on careful reading:
   server's own list, `performance_schema.events_errors_summary_global_by_error`,
   which names each of the 1,776 numbers a client can be sent with its
   SQLSTATE, and asks the executor's classifier about every number whose name
-  says one of two things, 138 and 49 of them at MySQL 8.4.11. A number whose
+  says one of three things, 138 and 49 of them at MySQL 8.4.11 for the first
+  two. A number whose
   name says a limit must not be typed permanent, whatever class it is filed
   under, and whether the class or the list kept by hand types it, unless a
   table says why no retry lifts it. Outside classes 22, 23 and 42, a number
   whose name says a constraint, a default, a truncation or a bad value must be
   typed permanent, or match exactly one written reason. A reason that explains
   nothing fails it too, and so does a server version that adds such a number.
+  The third rule: a number whose name says the account was refused, by one of
+  the words DENIED, NOT_PRIVILEGED, PRIVILEGE, NEED_SUPER, NO_PERMISSION,
+  ACCOUNT_HAS_BEEN_LOCKED and MUST_CHANGE_PASSWORD, 32 numbers on the server it
+  was written against, must be typed `StoreAccessRefusedError`, or match exactly
+  one written reason, and no number outside that selection may be typed so.
+  The 23 it types are written out in the case, so a number dropped from the
+  executor's list fails it by that number, and nine are left with a reason: a
+  KILL of another account's thread, three refusals of a GRANT for what the
+  GRANT names, and five of a replication channel's own account. Its limit is
+  the same as the other two rules': a refusal of the account whose name uses
+  none of those words passes unseen. One such was left on purpose: 1129, a host
+  blocked after too many connection errors, is a limit that the server's
+  administrator lifts, and it stays an outage.
   Where a reason rests on what the store's schema lacks, a view, an
   auto-increment or a temporal column, a functional index or a stored program,
   the same file reads that from a migrated database. A reason about which
@@ -3953,6 +4016,25 @@ not depend on careful reading:
   unseen. PostgreSQL has no such catalog, so its map is held by its SQLSTATE
   classes alone, which the standard defines. A batch sent after the executor
   closed is a `StoreUnavailableError`.
+  One case holds a store's refusal of a credential to
+  `StoreAccessRefusedError`, with the batch's label in the message and the
+  driver's error as the cause. The fixture of a dialect whose store takes a
+  credential offers a surface for it: the dialect's real executor on the
+  fixture's own database, opened under a password that is not the account's,
+  and opened as a role of the fixture's own that may connect, may read the
+  tables and may write none. Under the wrong password a read and a write are
+  refused alike. The role is answered its read and refused its write, through
+  the executor and through `spawn`, and the tables hold what they held. A
+  dialect whose store takes no credential offers no surface, and the case
+  checks nothing for it. libSQL is one, because its fixture is a database file.
+  Each server's own file pins the codes on a real server: a wrong password, a
+  role that may not log in and a locked account, and the role that may only
+  read, refused with 42501 on PostgreSQL and 1142 on MySQL. What the libSQL
+  executor makes of a server's refusal is held by the libSQL store's own file,
+  which runs the real client against a loopback HTTP server that answers one
+  status: 401 and 403 are the access refusal, 400, 404, 429, 500 and 503 an
+  outage, a refused WebSocket upgrade an outage, and a 401 is the access
+  refusal whatever text the server sends beside it (§3.2).
   One case holds that a failed batch is reported once and its executor serves
   the next call (§3.2). Twelve write batches in a row fail INSIDE, the first
   statement a write and the second a broken primary key, which is more than
@@ -4717,9 +4799,21 @@ dialects — SQLite in-memory/file in CI, Turso and MySQL as integration targets
   suppress its release-asset dependencies.
 - **Hosted answers to a store failure**: a route answers a store outage,
   `StoreUnavailableError`, with 503 `service_unavailable`, because a retry can
-  cure it. It answers a permanent store error, `PermanentStoreError` (§3.2),
-  with 500 `internal_error`, as it answers `SchemaMismatchError`: a 503 would
-  invite a producer to retry a request the store refuses the same way every
+  cure it. It answers the store's refusal of the deployment's credential,
+  `StoreAccessRefusedError` (§3.2), with 503 too. A wrong credential answered
+  503 while it was typed an outage, and the answer is kept: the caller's
+  request is not at fault, and the deployment's owner repairs the credential
+  with no change to the request, after which the same request is taken. A
+  statement the credential may not send answered 500 on PostgreSQL and MySQL
+  before the type, and a 403 of a libSQL server answered 503. All three
+  answer 503 now. The answer does not say that a credential was refused, so a
+  caller cannot tell it from an outage. The CLI's `tick` reads the route's
+  answer, so it exits 6 for this 503, where it exited 7 for the 500 a refused
+  statement answered on PostgreSQL and MySQL. An operator learns the cause
+  from a command that opens the store, which exits 4 (§3.11). It answers a
+  permanent store error, `PermanentStoreError` (§3.2), with 500
+  `internal_error`, as it answers `SchemaMismatchError`: a 503 would invite a
+  producer to retry a request the store refuses the same way every
   time. It is never a 400, which is for what the caller sent, and a permanent
   store error is the store's answer. A limit on connections or on prepared
   statements is an outage and answers 503, though MySQL files it under a
@@ -6490,7 +6584,8 @@ under how many of each outcome the walks reach.
   The spawn has answered before that read, so the read fails nothing. When the task cannot
   be read back, the command still exits 0 with `created: false` and the task's id.
   `taskNameMatches` is then `unknown`, which is no mismatch, and `storedTaskNotRead` says
-  why: `store-unavailable`, `permanent-store-error`, `unreadable` for a row a read refuses,
+  why: `store-unavailable`, `store-access-refused`, `permanent-store-error`,
+  `unreadable` for a row a read refuses,
   or `not-found` for a task that is gone. The command table declares it: a fault at that
   read ends in exit 0, and the fault surface holds that on every dialect.
   An empty task name is a usage error: the hosted enqueue route refuses one. The parameters
@@ -6725,7 +6820,8 @@ beside the same command line with the cause taken away, which changes the databa
 An answered write is not reported as a failure. When the store fails partway through a
 purge, the command prints the units it had reached, on stdout, with `finished: false` and,
 under `stoppedAt`, the call it was in and the task that call was for. It exits as the
-failure does, 6 for an outage. A unit whose purge was sent and not answered is printed whole
+failure does, 6 for an outage and 4 for a refused credential.
+A unit whose purge was sent and not answered is printed whole
 under `outcomeNotKnown`, with its task's id and name, its state, the instant it ended and
 the sha256 of its key: its batch may have committed. An operator does nothing with it but
 run the command again. The repeat lists the unit again if it stands, and does not if it
@@ -6848,8 +6944,8 @@ of these errors, so exit 1 would call a database's answer a defect of the CLI, a
 report prints the error's class under `found`, which is where a reader starts either way.
 Decoders that mark their own refusals would tell the two apart, and BUILD.md records that
 as an option with its trigger. An executor names every error of its driver as an
-outage, a permanent error, a schema error or, on MySQL for a string longer than its column,
-a refusal of a port, so a driver's error is never among these. A
+outage, a refusal of its credential, a permanent error, a schema error or, on MySQL for a
+string longer than its column, a refusal of a port, so a driver's error is never among these. A
 case bends the answer to every label four ways (every text replaced, every value null, no
 row, one result too few) and requires that no run exits 1. What it leaves is two
 cancelled tasks and the event it emitted, and on PostgreSQL the row that locks that event's
@@ -6878,8 +6974,9 @@ printed, and the checker reads a few members of each:
   `purge --execute` reports, read for their policy, for `finished` and `more`, and for
   each unit's state, the sha256 of its key, and the runs that went with it. A day holds
   every run's report as printed. A purge the store failed before it reached a unit, by
-  an outage or a permanent error of its own, prints its failure and none of those
-  members, and it is read as a run that took nothing and did not finish, so it is no
+  an outage, a refusal of its credential or a permanent error of its own, prints its
+  failure and none of those members, and it is read as a run that took nothing and did
+  not finish, so it is no
   purge of its day and a later run that finished is. A refusal of the command is no run
   of a purge, and a day that holds one is malformed: the schema's version, a usage error,
   a port's refusal, and an internal error too. One refusal is read: a purge refused
@@ -7013,7 +7110,10 @@ outage: `internal_error` for every error it cannot name, a schema it does not re
 permanent store error among them, and `authorization_invalid` for an authorization answer
 it cannot use (section 3.5). The code promises no more than that. The command exits 7 as
 `deployment-error` and prints the code. A 500 with no such body is a platform's or a
-gateway's, and exits 6. It exits 7 as well for any other status, for a 200 whose
+gateway's, and exits 6. A deployment whose store refuses its credential answers 503
+(section 3.5), so `tick` exits 6 for it and not 4: the route's answer does not say what
+refused, and exit 4 of `tick` is for the tick token alone.
+It exits 7 as well for any other status, for a 200 whose
 body is not one JSON object (`unexpected-answer`), and for a 200 whose body is past the cap
 (`answer-too-large`): no tick route is known to have answered, and if one did the pass ran.
 An answer that does not come in time leaves the outcome unknown: the pass may have run, and
@@ -7093,9 +7193,9 @@ same table, which a test holds equal to this one.
 | 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
 | 2 | usage | usage, confirmation-required, target-mismatch, origin-mismatch, fake-clock or queue-not-empty; nothing was changed, and no request went to a deployment |
 | 3 | refused | the engine refused the call, and says why |
-| 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
+| 4 | unauthorized | the store refused the credential it was given, or what that credential may do, or the deployment tick called refused the token it was sent; a repeat fails the same way until the credential changes |
 | 5 | schema | the database's schema version is outside the store's readable window, the database is not initialized, or purge or selftest was asked of a database that is not at the build's version |
-| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a wrong store credential exits 6 too |
+| 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a repeat is not sure to succeed |
 | 7 | permanent | the store answered with a permanent error, or the deployment answered tick with what the command takes for no outage: a status no tick route gives, a 500 of a hosted route itself, or a 200 that is no JSON object or is too long to read |
 | 8 | not-found | no such task in the queue |
 | 9 | found | stuck --fail-if-any listed at least one row |
@@ -7115,20 +7215,49 @@ whole in one batch or not at all, so a repeat purges what is left. For `selftest
 repeat names another queue: every row it writes is in the queue it was given, so a run that
 stopped partway changes nothing a run on another queue reads. For `tick` it holds
 because a tick is one bounded pass, and a second does what the next cron tick would. Safe to
-repeat is not sure to succeed. A wrong credential exits 6 today on every store: both server
-executors type an authentication failure as an outage (a test measures it on PostgreSQL and
-MySQL), and the libSQL executor types every client error but a constraint, a type mismatch
-or a schema fault, which is a table or a column that is missing or a column that is there
-twice, as one. It fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is
-what `tick` gives for a token its deployment refuses. A store's wrong credential does not
-give it: typing an authentication failure apart from an outage changes the executors and
-core, and is the maintainer's decision.
+repeat is not sure to succeed, so a caller caps its retries of exit 6.
+
+Exit 4 says a credential was refused, and a repeat fails the same way until the credential
+changes. Every command that opens a store gives it when the store refuses the credential
+it was given, or what that credential may do (`StoreAccessRefusedError`, section 3.2),
+under the kind `store-access-refused`. `tick` gives it for a token its deployment refuses,
+under the kind `unauthorized`. The store's own message prints only with `--reveal`, as for
+every failure of a store. On PostgreSQL and MySQL the refusals are a wrong password, a role
+that may not log in, a locked account, and a statement the role has no privilege for. On
+libSQL the refusal is a token the server answers 401 or 403.
+
+A refused libSQL token exits 4 over a `libsql:` or `https:` URL and exits 6 over a `ws:` or
+`wss:` URL. The client sends the first two over HTTP and keeps the status of the answer as
+a number, which the executor reads. Over a WebSocket the client reports a refused upgrade
+under one code whatever the status, with the status only inside its message, and an
+executor decides from a code and never from message text. One more refusal exits 6 on
+every libSQL URL: a token that is not a token at all, a plain word, is answered 400, which
+a server answers for any request it cannot read, so the status does not say a credential
+was refused. Both fail again on every repeat, which is why the retries of exit 6 stay
+capped. What a hosted libSQL server answers a write sent under a token that may only read
+is not known, so that refusal exits as whatever its code is typed today.
+
+A refused credential is an answer the store gave before it ran a statement, so it leaves
+no statement half done. `migrate` reads the version again after a refused write, as after
+any failed one, prints the versions it applied and the version now recorded, and exits 4.
+A read that follows a write the
+store answered does not fail its command: the write stands, and the answer says the read
+did not happen, with `store-access-refused` under `storedTaskNotRead`. A purge that a
+refusal stops partway prints the units it reached, as for an outage, and exits 4, and
+`selftest` stops at the step that met it and exits 4. The week's workflow
+(`.github/workflows/operable-week.yml`) ends its job at the first command that does not
+exit 0, so a job whose credential is refused fails and does not run its purge again, and
+the week receipt's checker reads a purge that a refusal stopped before any unit as a run
+that took nothing, as it reads one an outage stopped.
 
 The CLI's fault surface (`packages/cli/test/fault-surface.test.ts`) injects at the
 executor, as the CLI sees it: crash-before (the executor rejects with
 StoreUnavailableError before the batch is sent), crash-after (it rejects after the batch
 commits) and duplicate (it delivers the batch twice). It is a CLI-level injection, not
-SimWorld's SimCrash. It meets every batch every store command sends, one sending at a
+SimWorld's SimCrash. It injects no refusal of a credential: a refusal is an answer, and no
+crash, and a case of its own runs every store command against a store that refuses its
+credential, on each dialect, and holds exit 4.
+It meets every batch every store command sends, one sending at a
 time, on each dialect, from each starting state the command runs from: `migrate` from a
 database that was never initialized, from version 5 and from one version below the
 build's, and each read from the current version. `inspect` runs by an idempotency key,

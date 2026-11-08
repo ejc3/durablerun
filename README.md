@@ -135,7 +135,10 @@ prints the token or a credential of the URL. Of the URL it prints the host or
 the file path, which `--target` names, and the scheme, in every answer of a
 command that opened a store. Every command that writes names its store a second
 time with `--target`: the host of the URL, or the path of a `file:` URL. A
-`--target` that names another store changes nothing and exits 2. In the lines
+`--target` that names another store changes nothing and exits 2. A command
+exits 4 when the store refuses the credential, or what the credential may do,
+and it fails the same way until the credential changes. Exit 6 is an outage,
+which is safe to repeat. In the lines
 below, `<host>` stands for that host and `example-queue` for the queue.
 
 **The schema window.** A build reads the schema versions its store package
@@ -247,7 +250,7 @@ A week receipt is one JSON document that holds what the CLI printed with
 - `start` and `end`: a `stats` report and a `sizes` report of the queue;
 - `days`: for each day, a `stats` report, a `sizes` report, and the day's
   `purge --execute` reports, every run's as printed, a run the store failed
-  (exit 6 or 7) beside the one that finished. A purge the command refused was
+  (exit 4, 6 or 7) beside the one that finished. A purge the command refused was
   no run and its report is left out, but for one: a purge refused because the
   database's test clock was set goes in, and the checker refuses the week for
   the clock, as `test-clock-set`;
