@@ -31,7 +31,7 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
-## Current milestone — an operable alpha: run it, inspect it, drive it, keep it small
+## Completed milestone — an operable alpha: run it, inspect it, drive it, keep it small
 
 From one terminal command, `pnpm cli <verb>`, an operator or an agent that holds
 a store URL works a deployment over libSQL, PostgreSQL or MySQL. It inspects a
@@ -47,16 +47,27 @@ and never migrate, and user-authored values print only with `--reveal`. The
 deployed alpha keeps running alpha.1: no exit test line needs a package release,
 packages/cli stays private, and a harness runs alpha.1's release assets on
 databases the CLI migrated. DESIGN.md section 3.11 (the operator surface) and
-section 3.12 (retention) will hold the design, written by the PRs named below;
+section 3.12 (retention) hold the design, written by the PRs named below;
 this section is the plan.
 
-**Status: IN PROGRESS (named 2026-09-24 by the maintainer, at main `f25d9f7`).**
-The exit test is lines 32 to 44 below, and each line says whether it is met.
-Each PR marks its own lines met, with the evidence in its own diff. The
-milestone is complete when lines 32 to 44 are all met, which PR5.5 records. The
-maintainer's live week on the deployed alpha is receipt M1, outside the numbered
-lines, and M1 is recorded met only when its receipt exists and line 44's checker
-accepts it.
+**Status: COMPLETE (named 2026-09-24 by the maintainer, at main `f25d9f7`;
+complete 2026-11-08).** PR5.4 merged as PR #124, the last pull request that
+owns a line of the exit test, and main at its merge commit meets every line
+below, 32 to 44. Each line says that it is met and names the pull request that
+owns it: lines 32, 33 and 34 PR5.3a (PR #112), line 35 PR5.3b1 (PR #114), line
+36 PR5.3b2 (PR #115), line 37 PR5.3c (PR #117), lines 38 and 39 PR5.3d (PR
+#119), line 40 PR5.2a (PR #113), line 41 PR5.2c1 (PR #116), line 42 PR5.2c2 (PR
+#120), line 43 PR5.2d (PR #121) and line 44 PR5.4 (PR #124). Each PR marked its
+own lines met, with the evidence in its own diff. Twelve pull requests make the
+milestone: those ten, PR5.0 (PR #111), which wrote this record, and PR5.5, the
+docs pull request that records the lines as met. Nine of them merged from
+2026-09-24 to 2026-10-06. The work was paused from 2026-10-06 to 2026-11-07,
+PR5.2d merged on 2026-11-07, and PR5.4 on 2026-11-08. Each of the eleven before
+PR5.5 has the postmortem of its reviews under `postmortems/`. No milestone is
+current: the maintainer has named none. The maintainer's live week on the
+deployed alpha is receipt M1, outside the numbered lines. It is NOT MET, as its
+paragraph below says, and M1 is recorded met only when its receipt exists and
+line 44's checker accepts it.
 
 **Exit test:**
 
@@ -1002,7 +1013,9 @@ themselves. At the end the receipt gains a dry run of `purge` with
 failed unit the week kept, and an `inspect --key` report for each period no
 purge report names. `pnpm week-receipt <receipt.json>`, line 44's checker, accepts
 the receipt. The README's section "Operating a deployment" holds the steps.
-NOT MET: it waits on the supplies and decisions held for the maintainer below.
+NOT MET on 2026-11-08, the day the milestone completed: no week receipt exists.
+It waits on the maintainer's supplies, a calendar week among them, and on the
+decisions held for the maintainer below.
 
 **Order:** PR5.0, this record, and then PR5.3a come first, and together they
 give a read-only tool for the deployed alpha and the harness that says whether
@@ -1057,8 +1070,9 @@ such a write clears); a `tick` over a direct store, which exits 2 and names
 any redeploy beyond the example app's one task registration; queue discovery, a
 stored per-queue retention policy, a web UI, a TUI, `--watch` and `--wait`;
 bytes on disk, since the bound is rows; purging anything but whole terminal
-units, so rows with a NULL `fence_at_ms` and units past the checkpoint cap are
-kept and reported; the usage-API quota alerting, the BLOCKED runbook and the
+units, so a row with a NULL `fence_at_ms` is kept and no listing names it, and
+a unit past the checkpoint cap is kept and reported; the usage-API quota
+alerting, the BLOCKED runbook and the
 fleet migration sweep, which need accounts and stay under the PR5.2 entry; and
 assurance machinery the lines above do not need (a fuzz-walk equality for
 `stats`, a fuzz-walk check of `nextTransitionAtMs`, an SDK replay differential
@@ -1066,8 +1080,76 @@ for purge, a generated classifier grid, and rewriting apps/dogfood `status` onto
 the new reads), with the trigger for each a wrong gauge, a wrong instant, or a
 purge mutant that survives the existing checks.
 
+**Options backlog:** not planned. Every non-goal above is in one of four
+places. The maintainer's live week is receipt M1, with its own paragraph. Some
+have a plan entry and stay there: sharding and fan-out (PR5.1), dedicated
+placement (Phase 6), the WDK wrapper (Phase 7), and the quota alerting, the
+BLOCKED runbook and the fleet migration sweep (the PR5.2 entry). Seven carry
+their trigger in the paragraph above: the hosted operator routes with their
+credential, `enqueue`, `emit` and `result` over HTTP, a recurring workflow
+built as a chain of children, the task-name check, the `claimed_at_ms` column
+with the percentiles, histograms, counters, sink and emitter, the `wake` verb,
+and the assurance machinery. Of the five pieces of that machinery one was
+built after all: exit test line 37 holds the gauges of `stats` to a count of
+the dump on every state its fuzz walks leave. The other four are not built.
+The rest are the options below, each with the event that brings it back. The
+last option is not a non-goal: it is a move PR5.4 did not make.
+
+- An audit trail of who cancelled, retried or emitted. The engine records no
+  author of a write. Trigger: a cancel, a retry or an emit on a deployed queue
+  that the maintainer has to attribute and cannot.
+- Retention of caller events. A purge takes the completion event of the unit
+  it takes and no event a caller emitted. An event's name answers every later
+  emit with its first payload, so a name that a purge removed would take a
+  second payload, and first-write-wins would hold only inside a window.
+  Trigger: a queue whose `sizes` report counts more events at each sample
+  while `purge` reports that no more remain.
+- Removal of PostgreSQL's `event_locks`. The PR3.3 entry holds it: the row
+  lock of a caller's event can be dropped once no build that takes it can
+  still run. Trigger: the maintainer states an oldest supported build.
+- Trimming a live task's checkpoints, and continue-as-new. Only the purge of
+  a task's unit deletes its checkpoints. Trigger: a live task that holds more
+  checkpoints than the 200,000 one purge may delete, or a task whose replay is
+  measured to be slow by the number of its checkpoints.
+- A schedule or cron primitive. The recurring workflow is one task per period,
+  which an external cron enqueues. Trigger: the one the paragraph above gives
+  the chain of children, that the maintainer wants the engine and not a cron
+  to be the scheduler, or a week that finds fewer than 160 periods because the
+  cron skipped them, which the PR5.4 entry names.
+- A `tick` over a direct store. `tick` runs one pass of a hosted deployment,
+  and over a store `sweep` takes back what a sweep takes and no command
+  claims. Trigger: a deployment found with due runs and no tick route that its
+  operator can reach.
+- Publishing the CLI, store-postgres or store-mysql, cutting alpha.2, and a
+  redeploy beyond the example app's one task registration. A release is the
+  maintainer's. Trigger: the maintainer decides to cut one, or line 32's
+  harness fails at a schema version, after which retention on the deployed
+  database needs an alpha.2 release, as the paragraph below says.
+- Queue discovery. A command that reads or writes a queue takes its name from
+  `--queue`. Trigger: the first operator who holds a store URL and cannot name
+  the queue a task is in.
+- A stored retention policy for each queue. `purge` takes its windows from the
+  command line, with no default. Trigger: a `purge --execute` of a deployed
+  queue under windows other than the maintainer's policy.
+- A web UI, a TUI, `--watch` and `--wait`. Trigger: a request from the
+  maintainer, or the first script that runs a read command in a loop until a
+  state appears.
+- Bytes on disk. The bound of line 44 counts rows. Trigger: a deployed
+  database whose size, as its host reports it, grows over a week in which
+  every `sizes` sample is at or below the bound.
+- Purging anything but whole terminal units. A task whose `fence_at_ms` is
+  NULL is in no listing, and a unit past the checkpoint cap is listed as kept,
+  `oversized`. Trigger: the first `oversized` unit in a purge report of a
+  deployed queue, or a queue whose `sizes` stay above the bound after `purge`
+  reports that no more remain.
+- Moving the week receipt's checker from apps/dogfood/src to packages/cli/src,
+  beside its cases. PR5.4 did not move it: exit test line 44 names
+  apps/dogfood/src/receipt.ts as the checker's home, so the move rewords the
+  exit test, which is the maintainer's to decide. Trigger: a request from the
+  maintainer, or the next pull request that changes the checker.
+
 **Held for the maintainer:** each of these is a supply or a decision that only
-the maintainer has, and no PR of this milestone makes it. Supply: a Turso
+the maintainer has, and no PR of this milestone made it. Supply: a Turso
 database URL and token for the deployed alpha and a branch or snapshot of it for
 the selftest (ideally a read-only token too, which the repository cannot show
 Turso mints), the Vercel project and its CRON_SECRET with the example app
@@ -1119,8 +1201,12 @@ recorded under `changed` in the same file with its reason, beside
 `FencedBatch`, whose generated statements take no set for a target that
 carries no provenance. A consumer that names one of the five older relations is
 unchanged. And the `gate-changes:` entry that adds `fence_at_ms` to the libSQL
-plan reader's due columns in PR5.2c2. Still held are the decisions that
-follow. Whether
+plan reader's due columns in PR5.2c2. That is the last decision this record
+holds. When the milestone completed, on 2026-11-08, the supplies, the migration
+of the deployed database and the retention numbers above were still the
+maintainer's, and so were naming the next milestone, cutting a release, and
+whether the week receipt's checker moves beside its cases, which the options
+backlog above records. Still held are the decisions that follow. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write that opens a store and loads no `.env`, and the
@@ -6316,7 +6402,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
 - **PR5.2 retention + metrics**: cleanup policies + event-GC barrier; metrics
   (queue depth, claim latency, lease expiries); usage-API quota alerting +
   BLOCKED runbook; fleet migration sweep. The operable alpha milestone above
-  owns the retention and the metrics: retention as PR5.2a (specs/Retention.tla
+  built the retention and the metrics, in pull requests that have each merged:
+  retention as PR5.2a (specs/Retention.tla
   and DESIGN.md section 3.12), PR5.2c1 (the terminal stamp and three history
   conditions), PR5.2c2 (schema version 12 and the purge port) and PR5.2d (the
   `purge` verb and the simulated-week soak), exit test lines 40 to 43, and the
@@ -6327,7 +6414,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
   relaxation of it: a child handle is valid until its unit is purged, after
   which an await is refused loudly and registers no wait. PR5.2a writes it into
   DESIGN.md section 3.12, and the maintainer approved it on 2026-10-03.
-- **PR5.2a retention spec**: DONE. `specs/Retention.tla` models the purge of
+- **PR5.2a retention spec**: DONE (#113). `specs/Retention.tla` models the purge of
   whole terminal task units ahead of any SQL (DESIGN.md §3.12): one child, its
   spawning parent in the child's queue, in another queue, or absent, and a third
   party holding the child's handle, beside every engine action the purge can
@@ -6365,11 +6452,13 @@ these three things; nothing else in the system does I/O, time, or randomness.
     its outcome, where that run's own unit is kept the same way by a run of the
     first.
 - **PR5.3 inspection**: inspect CLI over any store (local habitat-equivalent).
-  The operable alpha milestone above owns it as packages/cli: PR5.3a (the tool,
+  The operable alpha milestone above built it as packages/cli, in pull requests
+  that have each merged: PR5.3a (the tool,
   its schema window, `result` and `checkpoints`, and the alpha.1 harness),
   PR5.3b1 (`inspect` over new operator reads), PR5.3b2 (`explain`), PR5.3c
   (`stuck`, `stats`, `sizes` and schema version 11) and PR5.3d (the drive verbs
-  and the operator drill), exit test lines 32 to 39.
+  and the operator drill), exit test lines 32 to 39. PR5.2d added `purge` to it,
+  and PR5.4 added `selftest`.
 - **PR5.3a operator CLI, read-only**: DONE (#112). Exit test lines 32, 33 and 34 of the
   operable alpha milestone, which PR5.0 records. `packages/cli` is private with no `bin`
   field, run as `pnpm cli <verb>` with no `.env` file loaded, and DESIGN.md section 3.11
@@ -6830,7 +6919,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     instant, and a value that is no integer needs a second shape of statement, which is
     more than the hour the option was given. Trigger: the first report of a corrupt
     instant hidden behind a limit, or the purge pull request.
-- **PR5.3d the drive verbs and the operator drill**: DONE. Exit test lines 38 and 39 of
+- **PR5.3d the drive verbs and the operator drill**: DONE (#119). Exit test lines 38 and 39 of
   the operable alpha milestone, with lines 32 to 34 extended. The CLI gains `enqueue`,
   `emit`, `cancel`, `retry` and `sweep`, each one call of the store's port, and `tick
   --url`, one bounded pass of a hosted deployment over HTTP. `OperatorReads` gains
@@ -7076,7 +7165,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     nine entries of main's registry name, so the base gate's arm would have to re-aim them.
     Trigger: a fifth checker, or an ownership test of the fault matrix that nears its 300
     second limit.
-- **PR5.2c2 schema version 12 and the retention purge port**: DONE. Exit test line 42 of
+- **PR5.2c2 schema version 12 and the retention purge port**: DONE (#120). Exit test line 42 of
   the operable alpha milestone, and the first code that deletes durable state. Schema
   version 12 adds the indexes retention reads through, on the three dialects. Core gains
   the `Retention` port, `purgeCandidates` and `purgeUnit`, with its one implementation and
@@ -7197,7 +7286,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     (the entry of PR5.2c1), because the new batch ends no task. The remedy for a cycle of
     runs that hold each other's outcomes (the entry of PR5.2a) stays an option: its
     trigger is a unit seen kept that way, and no purge has run over a live history.
-- **PR5.2d the purge verb and the simulated week**: DONE. Exit test line 43 of the
+- **PR5.2d the purge verb and the simulated week**: DONE (#121). Exit test line 43 of the
   operable alpha milestone, and the first command by which an operator deletes durable
   state. `pnpm cli purge` is the retention port's calls and nothing else: a dry run unless
   `--execute`, with two required windows and no default, the store named again with
@@ -7328,7 +7417,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a week's turns of the event loop. Seven of the verb's fifteen were aimed again when
     the walk moved into core: three find lines of core's walk, three of the command's
     handler, and one of the command's reading of its windows.
-- **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: DONE.
+  - The one review found seventeen things, four of them MEDIUM, and a narrow re-review of
+    its fold found thirteen more, two of them MEDIUM and every one made by the fold.
+    `postmortems/pr5.2d-purge-verb-review.md` holds both rounds, and 21 count. No review
+    follows the second fold, which is the last: it was tested again and nobody has read
+    it, as the postmortem says.
+- **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: DONE (#124).
   Exit test line 44 of the operable alpha milestone, which says what was built and which
   cases hold it. `periodic-digest` joins the hosted example, a week of it runs on the
   release alpha.1 inside the compatibility harness with the current CLI as its operator,
@@ -7454,7 +7548,9 @@ these three things; nothing else in the system does I/O, time, or randomness.
     decoders that mark their own refusals, among the options above, and one recorder of
     labels for the CLI and the tests, under PR3.3e. Two change nothing: three fixes of
     the fold that had a plant and no red commit, as the fold was told it may, and a
-    step's line that prints its own call's labels beside the label that failed.
+    step's line that prints its own call's labels beside the label that failed. No review
+    follows that last fold: it was tested again and nobody has read it, as the postmortem
+    says.
   - The registry holds 1526 mutations where main held 1482: fifteen caught by cases
     of `selftest` and of the opener, twenty-two by cases of the week receipt's checker,
     and seven by cases of the week's workflow.
