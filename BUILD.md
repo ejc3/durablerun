@@ -63,7 +63,12 @@ milestone: those ten, PR5.0 (PR #111), which wrote this record, and PR5.5, the
 docs pull request that records the lines as met. Nine of them merged from
 2026-09-24 to 2026-10-06. The work was paused from 2026-10-06 to 2026-11-07,
 PR5.2d merged on 2026-11-07, and PR5.4 on 2026-11-08. Each of the eleven before
-PR5.5 has the postmortem of its reviews under `postmortems/`. No milestone is
+PR5.5 has the postmortem of its reviews under `postmortems/`. PR5.5 also added
+to CI's MySQL job the four test files of the CLI that the job did not run,
+`drive-twin.test.ts`, `drill.test.ts`, `purge-twin.test.ts` and
+`selftest.test.ts`. Lines 38, 39, 43 and 44 cite them for each dialect, CI's
+verify job ran them on libSQL and PostgreSQL, and no job ran them on MySQL,
+where they passed on 2026-11-08 before the change. No milestone is
 current: the maintainer has named none. The maintainer's live week on the
 deployed alpha is receipt M1, outside the numbered lines. It is NOT MET, as its
 paragraph below says, and M1 is recorded met only when its receipt exists and
@@ -1096,7 +1101,9 @@ and the assurance machinery. Of the five pieces of that machinery one was
 built after all: exit test line 37 holds the gauges of `stats` to a count of
 the dump on every state its fuzz walks leave. The other four are not built.
 The rest are the options below, each with the event that brings it back. The
-last option is not a non-goal: it is a move PR5.4 did not make.
+last two options are not non-goals: a move PR5.4 did not make, and a check
+that PR5.5's read of DESIGN.md sections 3.11 and 3.12 found narrower than the
+sentences it stands behind.
 
 - An audit trail of who cancelled, retried or emitted. The engine records no
   author of a write. Trigger: a cancel, a retry or an emit on a deployed queue
@@ -1150,6 +1157,14 @@ last option is not a non-goal: it is a move PR5.4 did not make.
   apps/dogfood/src/receipt.ts as the checker's home, so the move rewords the
   exit test, which is the maintainer's to decide. Trigger: a request from the
   maintainer, or the next pull request that changes the checker.
+- Markers for the counts that DESIGN.md sections 3.11 and 3.12 state. The
+  design-counts test holds twelve counts to the code, and neither section
+  states one of the twelve, so no marker was missing. The sections state other
+  counts that the code pins, with no marker: the nine conditions of the
+  barrier, the ten methods of the operator's reads and the thirteen conjuncts
+  of the retry guard among them. Each needs an entry in the test's table, and
+  the test reads no number word past twelve. Trigger: the first of those
+  counts found stale.
 
 **Held for the maintainer:** each of these is a supply or a decision that only
 the maintainer has, and no PR of this milestone made it. Supply: a Turso
