@@ -868,9 +868,10 @@ accepts it.
     tasks, a failed period does not touch the next, and re-enqueuing a period
     returns the same task. `pnpm verify:packages` passes, so the example
     compiles against the packed tarballs. The example's migrate and receipt
-    scripts call `migrate()` only when `schemaVersion()` is below 5, and
-    otherwise print that the durablerun CLI manages the schema, which is tested
-    against line 32's fixture at the build's version. The week runs on alpha.1:
+    scripts call `migrate()` only when `schemaVersion()` is below 5. At 5 they
+    print that the schema is ready, as they did before, and above 5 that the
+    durablerun CLI manages the schema, which is tested against line 32's fixture
+    at the build's version. The week runs on alpha.1:
     in line 32's alpha.1 consumer, `periodic-digest` and the example's awaiting
     task run on the alpha.1 SDK over a libSQL file the CLI migrated to version
     12, while the current CLI enqueues periods, sweeps, runs `stuck` and
@@ -910,7 +911,9 @@ accepts it.
     each doctored fixture exits non-zero and the well-formed one exits zero.
     This is met.
     `periodic-digest` is examples/vercel-turso/src/periodic-digest.ts, with its
-    one read in src/github-ref.ts. Its parameters name a repository and a ref,
+    one read in src/github-ref.ts, which asks GitHub for the commit's SHA alone
+    through the one request function both of the example's GitHub readers use
+    (src/github-request.ts). Its parameters name a repository and a ref,
     so an enqueue passes them with `--params`. The example's own tests hold the
     line under fake time, and `pnpm verify:packages` runs them over the build's
     packed tarballs: "48 periods are 48 completed
@@ -923,8 +926,9 @@ accepts it.
     that prepares the schema" reads the files. The week on alpha.1 is
     packages/cli/test/alpha1-week.ts, which scripts/alpha1-compat.sh runs
     inside `pnpm verify:packages`. It first runs the example's migrate script
-    as a process on a new file and on the same file once the CLI migrated it,
-    beside alpha.1's own `migrate()`, which refuses that file. Then alpha.1's
+    as a process on a new file, twice, where the second run says the schema is
+    ready again and changes nothing, and on the same file once the CLI migrated
+    it, beside alpha.1's own `migrate()`, which refuses that file. Then alpha.1's
     store and SDK run the example's `periodic-digest` and `wait-for-ready` for
     168 hourly periods, and it throws naming what differed, or prints one
     sentence of what it showed: the CLI's sweeps made one lost-launch, one

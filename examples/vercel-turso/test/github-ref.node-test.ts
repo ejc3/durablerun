@@ -5,7 +5,8 @@ import { observeGitHubRef } from '../src/github-ref.js'
 
 const SHA = 'c'.repeat(40)
 const INPUT = { repository: 'example/project', ref: 'release/1.x' }
-const COMMIT = { sha: SHA, commit: { committer: { date: '2026-10-01T00:00:00Z' } } }
+/** GitHub answers the SHA alone as plain text. */
+const answer = (): Response => new Response(SHA, { status: 200 })
 
 interface Sent {
   url: string
@@ -25,11 +26,10 @@ function answering(response: () => Response | Promise<Response>): {
   return { fetcher, sent }
 }
 
-test('one request reads the commit a ref names, and follows no redirect', async () => {
-  const { fetcher, sent } = answering(() => Response.json(COMMIT))
+test('one request reads the SHA of the commit a ref names and nothing else, and follows no redirect', async () => {
+  const { fetcher, sent } = answering(answer)
   assert.deepEqual(await observeGitHubRef(INPUT, { fetcher, token: 'example-token' }), {
     commitSha: SHA,
-    committedAt: '2026-10-01T00:00:00Z',
   })
   assert.equal(sent.length, 1)
   assert.equal(sent[0]?.url, 'https://api.github.com/repos/example/project/commits/release%2F1.x')
@@ -37,17 +37,29 @@ test('one request reads the commit a ref names, and follows no redirect', async 
   assert.ok(sent[0]?.init?.signal instanceof AbortSignal)
   const headers = new Headers(sent[0]?.init?.headers)
   assert.equal(headers.get('authorization'), 'Bearer example-token')
-  assert.equal(headers.get('accept'), 'application/vnd.github+json')
+  // The SHA alone, and not the commit with its files.
+  assert.equal(headers.get('accept'), 'application/vnd.github.sha')
+  assert.equal(headers.get('x-github-api-version'), '2026-03-10')
+  assert.equal(headers.get('user-agent'), 'durablerun-periodic-digest')
+})
+
+test('the request of every ref the parameters allow ends in that ref: the URL drops no part of it', async () => {
+  for (const ref of ['main', 'release/1.x', 'v1.0.0', '.hidden', 'a/.b', 'a.', 'c'.repeat(40)]) {
+    const { fetcher, sent } = answering(answer)
+    await observeGitHubRef({ repository: 'example/project', ref }, { fetcher })
+    const path = new URL(sent[0]?.url ?? '').pathname
+    assert.equal(path, `/repos/example/project/commits/${encodeURIComponent(ref)}`, ref)
+  }
 })
 
 test('no token is sent when the host has none', async () => {
-  const { fetcher, sent } = answering(() => Response.json(COMMIT))
+  const { fetcher, sent } = answering(answer)
   await observeGitHubRef(INPUT, { fetcher, token: '' })
   assert.equal(new Headers(sent[0]?.init?.headers).has('authorization'), false)
 })
 
 test('parameters that name no repository or no ref fail for good before any request', async () => {
-  const { fetcher, sent } = answering(() => Response.json(COMMIT))
+  const { fetcher, sent } = answering(answer)
   for (const invalid of [
     null,
     'example/project',
@@ -59,6 +71,12 @@ test('parameters that name no repository or no ref fail for good before any requ
     { repository: 'example/project/extra', ref: 'main' },
     { repository: 'example/project', ref: '' },
     { repository: 'example/project', ref: 'a..b' },
+    // A dot segment, which the URL of the read would drop: the request would list commits.
+    { repository: 'example/project', ref: '.' },
+    { repository: 'example/project', ref: '..' },
+    { repository: 'example/project', ref: './main' },
+    { repository: 'example/project', ref: 'release/.' },
+    { repository: 'example/project', ref: 'release/./1.x' },
     { repository: 'example/project', ref: 'main?x=1' },
     { repository: 'example/project', ref: 7 },
   ]) {
@@ -87,19 +105,36 @@ test('a status no retry cures fails for good, and any other failed status is an 
   }
 })
 
-test('a body that is not a commit fails for good', async () => {
+test('a body that is not a SHA fails for good, and a line feed after the SHA is no part of it', async () => {
   for (const body of [
-    'not json',
-    JSON.stringify([]),
-    JSON.stringify({}),
-    JSON.stringify({ sha: 'short', commit: COMMIT.commit }),
+    '',
+    'not a sha',
+    SHA.slice(1),
+    `${SHA}c`,
+    SHA.toUpperCase(),
+    `${SHA}\n${SHA}`,
+    // The commit as JSON, which is what the default media type answers, and a list of commits.
     JSON.stringify({ sha: SHA }),
-    JSON.stringify({ sha: SHA, commit: { committer: { date: 'yesterday' } } }),
-    JSON.stringify({ sha: SHA, commit: { committer: { date: 7 } } }),
+    JSON.stringify([{ sha: SHA }]),
   ]) {
     const { fetcher } = answering(() => new Response(body, { status: 200 }))
     await assert.rejects(observeGitHubRef(INPUT, { fetcher }), FatalTaskError, body)
   }
+  const { fetcher } = answering(() => new Response(`${SHA}\n`, { status: 200 }))
+  assert.deepEqual(await observeGitHubRef(INPUT, { fetcher }), { commitSha: SHA })
+})
+
+test('a body that breaks off in transit is an ordinary error, which the task retries', async () => {
+  const broken = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new TypeError('terminated'))
+    },
+  })
+  const { fetcher } = answering(() => new Response(broken, { status: 200 }))
+  await assert.rejects(observeGitHubRef(INPUT, { fetcher }), (error: unknown) => {
+    assert.equal(error instanceof FatalTaskError, false)
+    return true
+  })
 })
 
 test('a request that fails in transit is an ordinary error, which the task retries', async () => {

@@ -175,7 +175,8 @@ function exampleMigrate(consumer: string, file: string): { status: number | null
  * version 5 and the CLI then migrated to the build's version. The script must leave it as
  * it is and say the CLI manages the schema. The control is alpha.1's own migrate() on the
  * same file, which refuses it: a script that still migrated unasked would fail here. On a
- * file that does not exist yet the script still migrates, to alpha.1's version.
+ * file that does not exist yet the script still migrates, to alpha.1's version, and a
+ * second run on that file, which no CLI touched, says it is ready again and changes nothing.
  */
 export async function migrateGuard(consumer: string, dir: string): Promise<string> {
   const { store } = await load(consumer)
@@ -184,6 +185,16 @@ export async function migrateGuard(consumer: string, dir: string): Promise<strin
   must(
     first.status === 0 && first.out.includes('durablerun schema 5 is ready'),
     `the example's migrate script on a new file exited ${first.status}: ${first.out}`,
+  )
+  const atTheRelease = await dumpOf(fresh)
+  const again = exampleMigrate(consumer, fresh)
+  must(
+    again.status === 0 && again.out.includes('durablerun schema 5 is ready'),
+    `the example's migrate script on a database at alpha.1's own version exited ${again.status}: ${again.out}`,
+  )
+  must(
+    dumpDifferences(atTheRelease, await dumpOf(fresh)).length === 0,
+    "the example's migrate script changed a database that was at alpha.1's own version",
   )
   await cli(fresh, ['migrate', '--yes', '--target', fresh])
   const before = await dumpOf(fresh)
@@ -215,7 +226,7 @@ export async function migrateGuard(consumer: string, dir: string): Promise<strin
   } finally {
     executor.close()
   }
-  return `the example's migrate script migrated a new file to version 5 and left the same file alone at version ${CURRENT_SCHEMA_VERSION}, where alpha.1's own migrate() refuses it`
+  return `the example's migrate script migrated a new file to version 5, said it was ready again there and changed nothing, and left the same file alone at version ${CURRENT_SCHEMA_VERSION}, where alpha.1's own migrate() refuses it`
 }
 
 async function dumpOf(file: string): Promise<ProtocolSnapshot> {
@@ -267,10 +278,7 @@ export async function week(consumer: string, dir: string): Promise<string> {
           if ((PLAN.failing as readonly number[]).includes(period)) {
             throw new Error('github-http-503')
           }
-          return {
-            commitSha: period.toString(16).padStart(40, '0'),
-            committedAt: new Date(weekStartMs + period * HOUR_MS).toISOString(),
-          }
+          return { commitSha: period.toString(16).padStart(40, '0') }
         }),
       ],
       [tasks.WAIT_FOR_READY_TASK, awaiting],

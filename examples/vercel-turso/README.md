@@ -15,7 +15,8 @@ database. Do not point the migrator or receipt at another application's database
    credential Vercel adds to cron requests.
 2. Run `pnpm install --frozen-lockfile`, then `pnpm typecheck`, `pnpm test`, and `pnpm migrate`.
    `pnpm migrate` leaves a database at or above schema version 5 as it is (see
-   "A digest for each period").
+   "A digest for each period"): at 5 it prints that the schema is ready, and
+   above 5 that the durablerun CLI manages it.
 3. Create a Vercel project from this directory, add the five runtime variables
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DURABLERUN_QUEUE`,
    `DURABLERUN_API_TOKEN`, and `CRON_SECRET`), and deploy it. `api/*.ts` pins
@@ -209,7 +210,8 @@ does not attribute a particular resume to queue delivery versus cron.
 ## A digest for each period
 
 The `periodic-digest` task is one period of a recurring workflow. It reads the
-commit a ref of a GitHub repository names, once, in a checkpointed step. It
+SHA of the commit a ref of a GitHub repository names, once, in a checkpointed
+step. It asks GitHub for the SHA alone, so the answer is 40 characters. It
 sleeps 60 seconds and completes with what it read. It emits no event and awaits
 none. Its params are required:
 
@@ -226,7 +228,9 @@ operator CLI of the durablerun repository does, and the root README's
 hour.
 
 A status GitHub will not answer differently on a retry (401, 404 and 422) and
-a body that is not a commit fail the task at once. Every other failure of the
+a body that is not a SHA fail the task at once. A ref that is or holds a dot
+segment (`.` or `..`) is refused before any request, as the repository's name
+is. Every other failure of the
 read is retried under the task's retry strategy. The read follows no redirect
 and sends the optional `GITHUB_TOKEN` to `api.github.com` alone.
 

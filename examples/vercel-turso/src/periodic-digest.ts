@@ -1,6 +1,6 @@
 import { FatalTaskError } from '@durablerun/core'
 import type { TaskContext } from '@durablerun/sdk'
-import { isGitHubRepository } from './github-repository.js'
+import { isDotSegment, isGitHubRepository } from './github-repository.js'
 
 export const PERIODIC_DIGEST_TASK = 'periodic-digest'
 export const PERIODIC_DIGEST_OBSERVATION_STEP = 'github-ref'
@@ -16,7 +16,6 @@ export interface DigestInput {
 /** The commit a ref named when it was read. */
 export interface RefObservation {
   commitSha: string
-  committedAt: string
 }
 
 /**
@@ -38,7 +37,14 @@ export function parseDigestInput(params: unknown): DigestInput {
   const repository = Reflect.get(params, 'repository')
   const ref = Reflect.get(params, 'ref')
   if (!isGitHubRepository(repository)) throw new FatalTaskError('repository must be owner/name')
-  if (typeof ref !== 'string' || !/^[A-Za-z0-9._/-]{1,255}$/.test(ref) || ref.includes('..')) {
+  // The ref is held to the rule the repository's name is held to: no part of it is a dot
+  // segment, which the URL of the read would drop. No branch, tag or SHA has such a part.
+  if (
+    typeof ref !== 'string' ||
+    !/^[A-Za-z0-9._/-]{1,255}$/.test(ref) ||
+    ref.includes('..') ||
+    ref.split('/').some(isDotSegment)
+  ) {
     throw new FatalTaskError('ref must be a branch, a tag or a commit SHA')
   }
   return { repository, ref }
@@ -63,7 +69,6 @@ export function createPeriodicDigest(
     return {
       ...input,
       commitSha: observed.commitSha,
-      committedAt: observed.committedAt,
       settledSeconds: PERIODIC_DIGEST_SETTLE_SECONDS,
       attempt: ctx.attempt,
     }

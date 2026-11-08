@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { CURRENT_SCHEMA_VERSION, LibsqlExecutor, LibsqlStoreAdmin } from '@durablerun/store-libsql'
 import { type SchemaAdmin, prepareSchema } from '../src/schema.js'
 
+const READY = `durablerun schema ${CURRENT_SCHEMA_VERSION} is ready`
 const MANAGED = (version: number): string =>
   `durablerun schema ${version} is managed by the durablerun CLI: this script migrates only a database below version ${CURRENT_SCHEMA_VERSION}`
 
@@ -19,14 +20,15 @@ function counting(admin: SchemaAdmin): SchemaAdmin & { migrations: number } {
   }
 }
 
-test('a fresh database is migrated once, and a database at the release version is left to the CLI', async () => {
+test('a fresh database is migrated once, and a second run on it says it is ready again and migrates nothing', async () => {
   const raw = LibsqlExecutor.open(':memory:')
   try {
     const admin = counting(new LibsqlStoreAdmin(raw))
     assert.equal(await admin.schemaVersion(), 0)
-    assert.equal(await prepareSchema(admin), `durablerun schema ${CURRENT_SCHEMA_VERSION} is ready`)
+    assert.equal(await prepareSchema(admin), READY)
     assert.equal(admin.migrations, 1)
-    assert.equal(await prepareSchema(admin), MANAGED(CURRENT_SCHEMA_VERSION))
+    // No CLI touched this database: the line is the one a first run prints.
+    assert.equal(await prepareSchema(admin), READY)
     assert.equal(admin.migrations, 1)
   } finally {
     raw.close()
@@ -67,11 +69,16 @@ test('migrate() is called for every recorded version below the release version, 
         version = CURRENT_SCHEMA_VERSION
       },
     })
-    const below = recorded < CURRENT_SCHEMA_VERSION
-    assert.equal(migrations, below ? 1 : 0, `recorded version ${recorded}`)
+    assert.equal(
+      migrations,
+      recorded < CURRENT_SCHEMA_VERSION ? 1 : 0,
+      `recorded version ${recorded}`,
+    )
+    // At the release version and below it the database ends ready. Above it, it is the CLI's.
     assert.equal(
       message,
-      below ? `durablerun schema ${CURRENT_SCHEMA_VERSION} is ready` : MANAGED(recorded),
+      recorded <= CURRENT_SCHEMA_VERSION ? READY : MANAGED(recorded),
+      `recorded version ${recorded}`,
     )
   }
 })

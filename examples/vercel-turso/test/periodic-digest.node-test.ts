@@ -20,10 +20,7 @@ const keyOf = (period: number): string => `digest-${period}`
 
 /** What the ref names during one period: a commit of the period's own. */
 function commitOf(period: number): RefObservation {
-  return {
-    commitSha: period.toString(16).padStart(40, '0'),
-    committedAt: new Date(START + period * HOUR_MS).toISOString(),
-  }
+  return { commitSha: period.toString(16).padStart(40, '0') }
 }
 
 interface World {
