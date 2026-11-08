@@ -264,10 +264,11 @@ describe('the workflow of the operable week', () => {
       DURABLERUN_WEEK_COMMIT: '${{ vars.DURABLERUN_WEEK_COMMIT }}',
     })
     // No other part of the workflow names a commit, a ref or a checkout. These are every
-    // value of the run the workflow reads, and none is the run's commit or its ref. No step
-    // uses an action that checks out, and no other step's script runs git.
+    // value of the run the workflow reads, and none is the run's commit or its ref. The host
+    // name in the repository's URL follows a slash and is none of them. No step uses an
+    // action that checks out, and no other step's script runs git.
     const whole = JSON.stringify(workflow)
-    expect([...new Set(whole.match(/\bgithub\.[a-z_.]+/g))].sort()).toEqual([
+    expect([...new Set(whole.match(/(?<![\w/.])github\.[a-z_.]+/g))].sort()).toEqual([
       'github.event.schedule',
       'github.repository',
       'github.run_attempt',
@@ -301,7 +302,10 @@ describe('the workflow of the operable week', () => {
       ],
     })
     // A checkout that left another commit fails the step.
-    expect(checkout(PINNED_COMMIT, PINNED_COMMIT.replace('0', 'f')).status).toBe(1)
+    expect(
+      checkout(PINNED_COMMIT, PINNED_COMMIT.replace('0', 'f')).status,
+      'mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out',
+    ).toBe(1)
     // A value that is no full id stops the step before git is run at all: unset, empty, a
     // short id, an id one digit short and one digit long, upper case, a branch, a tag, and a
     // full id beside another word.
