@@ -22684,6 +22684,23 @@ MUTATION_SPECS.extend(
 VERDICTS["cli-selftest-step-names-the-label-that-failed"] = VERDICTS[
     "cli-selftest-prints-a-label-by-what-was-sent"
 ]
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-reads-a-refused-row-as-an-answer",
+            "packages/cli/src/main.ts",
+            "      if (failed.exit === 'internal' && last?.answered === true) {\n",
+            "      if (failed.exit === 'internal' && last?.answered === null) {\n",
+            "a row the decoders refuse is no longer read as an answer of the database, so selftest exits as a defect of the CLI",
+        ),
+    )
+)
+VERDICTS["cli-selftest-reads-a-refused-row-as-an-answer"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a database whose answer cannot be read exits 11 and never 1 when the database answers a row the decoders refuse: the step is unexpected, the label is the one that was answered, and the row prints only with --reveal",
+    "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
+)
 
 MUTATIONS = [
     Mutation(
@@ -26629,7 +26646,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1510:
+        if len(MUTATIONS) != 1511:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

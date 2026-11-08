@@ -1375,6 +1375,7 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
       reports.push({ ...named, result: 'not-run' })
       return
     }
+    const sentBefore = store.sent().length
     try {
       const found = await check()
       if (found === null) reports.push({ ...named, result: 'ok' })
@@ -1383,9 +1384,26 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
         reports.push({ ...named, result: 'unexpected', found })
       }
     } catch (error) {
-      ended.stopped = failure(error, reveal)
-      // The batch the store failed is the last one sent, and it need not be this call's.
-      const last = store.sent().at(-1)
+      const failed = failure(error, reveal)
+      // The last batch this step sent, which need not be its own call's.
+      const last = store.sent().slice(sentBefore).at(-1)
+      if (failed.exit === 'internal' && last?.answered === true) {
+        // An error the CLI has no name for, thrown once the store answered a batch of
+        // this step, is the answer being refused: by a decoder, for a row that is not the
+        // engine's, or by a check of the answer's shape. That is a database that answered
+        // otherwise, and not a defect of the CLI. The error's words can quote the row, so
+        // they print only with --reveal.
+        ended.answeredOtherwise = [last.label]
+        const name = error instanceof Error ? error.name : typeof error
+        const words = reveal && error instanceof Error ? `: ${error.message}` : ''
+        reports.push({
+          ...named,
+          result: 'unexpected',
+          found: `the answer to ${last.label} was refused as one the engine does not give (${name})${words}`,
+        })
+        return
+      }
+      ended.stopped = failed
       reports.push({
         ...named,
         result: 'failed',

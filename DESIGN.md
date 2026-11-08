@@ -6787,7 +6787,24 @@ answered prints `ok`, and a label that was not sent prints `not-run`. The step t
 running names the label that failed under `failedAt`. A case refuses each label in turn and
 requires exactly that. A call the store failed exits as the failure does, and a
 call that answered otherwise exits 11, with what it answered under `found`: a count, a
-flag, an id or a state of the engine's own, and never a stored text. What it leaves is two
+flag, an id or a state of the engine's own, and never a stored text.
+
+An answer the store cannot read is an answer that is not the engine's, so it exits 11 too
+and never 1, which is a defect of the CLI. Every error the CLI has no name for was asked
+whether an answer of the database can raise it inside a step, and each of these can: a
+`RangeError` that is no refusal of a port, which is a decoder refusing a stored row, such
+as a state that is not the engine's own; a `TypeError` that is no refusal of a port, which
+is a read that found no row or no column it needs, or a driver's result of another shape
+than its contract; a plain `Error` of a batch that answered another number of results than
+it sent statements; and any error of the step's own check reading such an answer. So an
+error of that kind thrown after the store answered a batch of the step is reported as that
+batch's answer: the step prints `unexpected`, the label of the batch prints `unexpected`,
+and `found` names the label and the error's class. The error's words can quote the row, so
+they print only with `--reveal`. An error thrown before the store answered any batch of
+the step is no answer, and stays exit 1. An executor names every error of its driver as an
+outage, a permanent error or a schema error, so a driver's error is never among these. A
+case bends the answer to every label four ways (every text replaced, every value null, no
+row, one result too few) and requires that no run exits 1. What it leaves is two
 cancelled tasks and the event it emitted, and on PostgreSQL the row that locks that event's
 name. A purge takes the tasks once they are a window old, and no purge takes an event a
 caller emitted. A run that stopped earlier leaves the tasks it had spawned pending, which
