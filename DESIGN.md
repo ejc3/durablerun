@@ -7056,8 +7056,9 @@ holds prints as its length and sha256 and never as text. `tick` prints neither U
 was given and never the token. `purge` prints a unit's task id, its task name, its state,
 the instant it ended and the rows that went, and of the idempotency key the task was
 spawned under only the sha256, with `--reveal` or without. `selftest` prints the names and
-the id it made, counts, flags, a state as every command prints a stored one, and the counts
-of a queue it refuses.
+the id it made, counts, flags, the names of the purge barrier's conditions, a state as every
+command prints a stored one, and the counts of a queue it refuses. With `--reveal` it prints
+the words of an error too, which can quote a stored row.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
