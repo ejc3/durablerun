@@ -22576,6 +22576,65 @@ VERDICTS["week-receipt-reads-what-the-cli-prints"] = ExpectedVerdict(
     "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
 )
 
+# The workflow of the maintainer's week (BUILD.md receipt M1), which lands off until a variable is set:
+# its gate, its guard of the pinned database, and its two command steps.
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-is-off-until-enabled",
+            ".github/workflows/operable-week.yml",
+            "    if: vars.DURABLERUN_WEEK_ENABLED == 'true'\n",
+            "    if: vars.DURABLERUN_WEEK_ENABLED == 'true' || github.event_name == 'workflow_dispatch'\n",
+            "a run started by hand writes to the pinned database while the week's variable is not set",
+        ),
+        (
+            "operable-week-workflow-requires-the-pinned-database",
+            ".github/workflows/operable-week.yml",
+            "          if [ \"$DURABLERUN_STORE_URL\" != \"$DURABLERUN_WEEK_EXPECTED_STORE_URL\" ]; then\n",
+            "          if [ \"$DURABLERUN_STORE_URL\" = \"\" ]; then\n",
+            "the job sends its commands to whatever database the secret names, though the variable pins another",
+        ),
+        (
+            "operable-week-workflow-purges-until-no-more-remain",
+            ".github/workflows/operable-week.yml",
+            "            [ \"$more\" = 'true' ] || break\n",
+            "            break\n",
+            "the daily purge runs once and stops while the verb says more remain, so a backlog over one limit is never caught up",
+        ),
+        (
+            "operable-week-workflow-enqueues-under-the-periods-key",
+            ".github/workflows/operable-week.yml",
+            "pnpm --silent cli enqueue periodic-digest --key \"digest-$period\" ",
+            "pnpm --silent cli enqueue periodic-digest --key \"digest\" ",
+            "every hour enqueues under one key, so the week holds one task and not one for each period",
+        ),
+    )
+)
+VERDICTS["operable-week-workflow-is-off-until-enabled"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week is off until its repository variable is set: its one job runs only under it, for a schedule and for a run by hand",
+    "mutation-verdict:behavior:operable-week-workflow-is-off-until-enabled",
+)
+VERDICTS["operable-week-workflow-requires-the-pinned-database"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week requires the pinned database before any step holds the credential, and no action and no job environment holds it",
+    "mutation-verdict:behavior:operable-week-workflow-requires-the-pinned-database",
+)
+VERDICTS["operable-week-workflow-purges-until-no-more-remain"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week samples the queue and then purges with --execute until the verb says no more remain, as the verbs take them",
+    "mutation-verdict:behavior:operable-week-workflow-purges-until-no-more-remain",
+)
+VERDICTS["operable-week-workflow-enqueues-under-the-periods-key"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week enqueues the digest of the hour under its key, as the verb takes it, with its report in a file",
+    "mutation-verdict:behavior:operable-week-workflow-enqueues-under-the-periods-key",
+)
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -26520,7 +26579,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1503:
+        if len(MUTATIONS) != 1507:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

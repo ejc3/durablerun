@@ -1,0 +1,144 @@
+name: operable-week
+
+# The maintainer's week on the deployed alpha (BUILD.md receipt M1, README "Operating a
+# deployment"). Its one job is off until the repository variable DURABLERUN_WEEK_ENABLED is
+# 'true', for a schedule and for a run started by hand. Turned on, the hourly schedule writes
+# one task to the pinned database, and the daily one samples its queue and then deletes ended
+# tasks from it.
+#
+# Turning it on needs the secrets DURABLERUN_WEEK_STORE_URL and DURABLERUN_WEEK_STORE_TOKEN,
+# and the variables DURABLERUN_WEEK_STORE_URL (the same URL, which pins the database),
+# DURABLERUN_WEEK_COMPLETED_AFTER and DURABLERUN_WEEK_CANCELLED_AFTER (the purge's two
+# windows, as `purge` takes them). The job holds a database credential, which is full admin,
+# so it first requires the secret URL to be the one the variable pins. No command's output
+# goes to the log: each report is a file, and the files are the job's artifact.
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Which of the two to run
+        required: true
+        default: enqueue
+        type: choice
+        options: [enqueue, daily]
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  week:
+    if: vars.DURABLERUN_WEEK_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: durablerun-operable-week-${{ github.event.schedule || inputs.operation }}
+      cancel-in-progress: false
+    env:
+      DURABLERUN_WEEK_QUEUE: digest
+      DURABLERUN_WEEK_REPOSITORY: ${{ github.repository }}
+      DURABLERUN_WEEK_REF: main
+      DURABLERUN_WEEK_COMPLETED_AFTER: ${{ vars.DURABLERUN_WEEK_COMPLETED_AFTER }}
+      DURABLERUN_WEEK_CANCELLED_AFTER: ${{ vars.DURABLERUN_WEEK_CANCELLED_AFTER }}
+    steps:
+      - name: Check out this public repository without a token
+        env:
+          DURABLERUN_SOURCE_REPOSITORY: ${{ github.repository }}
+          DURABLERUN_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${DURABLERUN_SOURCE_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$DURABLERUN_SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Require the pinned dedicated database
+        env:
+          DURABLERUN_STORE_URL: ${{ secrets.DURABLERUN_WEEK_STORE_URL }}
+          DURABLERUN_STORE_TOKEN: ${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}
+          DURABLERUN_WEEK_EXPECTED_STORE_URL: ${{ vars.DURABLERUN_WEEK_STORE_URL }}
+        run: |
+          if [ -z "$DURABLERUN_STORE_URL" ] || [ -z "$DURABLERUN_STORE_TOKEN" ]; then
+            echo 'Configure repository secrets DURABLERUN_WEEK_STORE_URL and DURABLERUN_WEEK_STORE_TOKEN.' >&2
+            exit 1
+          fi
+          if [ -z "$DURABLERUN_WEEK_EXPECTED_STORE_URL" ]; then
+            echo 'Configure repository variable DURABLERUN_WEEK_STORE_URL.' >&2
+            exit 1
+          fi
+          case "$DURABLERUN_STORE_URL" in
+            libsql://*) ;;
+            *) echo 'The store URL must name the dedicated remote libsql database.' >&2; exit 1 ;;
+          esac
+          if [ "$DURABLERUN_STORE_URL" != "$DURABLERUN_WEEK_EXPECTED_STORE_URL" ]; then
+            echo 'The store URL does not match the pinned database of the week.' >&2
+            exit 1
+          fi
+      - name: Enqueue the digest of this hour under its key
+        if: github.event.schedule == '7 * * * *' || inputs.operation == 'enqueue'
+        env:
+          DURABLERUN_STORE_URL: ${{ secrets.DURABLERUN_WEEK_STORE_URL }}
+          DURABLERUN_STORE_TOKEN: ${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}
+        run: |
+          target="${DURABLERUN_STORE_URL#libsql://}"
+          target="${target%%[/?#]*}"
+          period="$(date -u +%Y-%m-%dT%H)"
+          params="$(printf '{"repository":"%s","ref":"%s"}' "$DURABLERUN_WEEK_REPOSITORY" "$DURABLERUN_WEEK_REF")"
+          code=0
+          pnpm --silent cli enqueue periodic-digest --key "digest-$period" --params "$params" --queue "$DURABLERUN_WEEK_QUEUE" --target "$target" --json > "week-enqueue-$period.json" 2> "week-enqueue-$period.err" || code=$?
+          echo "enqueue exited $code"
+          exit "$code"
+      - name: Sample the queue, then purge until nothing more stands
+        if: github.event.schedule == '37 3 * * *' || inputs.operation == 'daily'
+        env:
+          DURABLERUN_STORE_URL: ${{ secrets.DURABLERUN_WEEK_STORE_URL }}
+          DURABLERUN_STORE_TOKEN: ${{ secrets.DURABLERUN_WEEK_STORE_TOKEN }}
+        run: |
+          if [ -z "$DURABLERUN_WEEK_COMPLETED_AFTER" ] || [ -z "$DURABLERUN_WEEK_CANCELLED_AFTER" ]; then
+            echo 'Configure repository variables DURABLERUN_WEEK_COMPLETED_AFTER and DURABLERUN_WEEK_CANCELLED_AFTER.' >&2
+            exit 1
+          fi
+          target="${DURABLERUN_STORE_URL#libsql://}"
+          target="${target%%[/?#]*}"
+          day="$(date -u +%Y-%m-%dT%H%M)"
+          code=0
+          pnpm --silent cli stats --queue "$DURABLERUN_WEEK_QUEUE" --json > "week-$day-stats.json" 2> "week-$day-stats.err" || code=$?
+          echo "stats exited $code"
+          [ "$code" -eq 0 ] || exit "$code"
+          pnpm --silent cli sizes --queue "$DURABLERUN_WEEK_QUEUE" --json > "week-$day-sizes.json" 2> "week-$day-sizes.err" || code=$?
+          echo "sizes exited $code"
+          [ "$code" -eq 0 ] || exit "$code"
+          # One run of purge takes at most its limit, from the oldest. The same command runs
+          # again until its report says no more remain.
+          run=0
+          while :; do
+            run=$((run + 1))
+            report="week-$day-purge-$run.json"
+            pnpm --silent cli purge --queue "$DURABLERUN_WEEK_QUEUE" --target "$target" --completed-after "$DURABLERUN_WEEK_COMPLETED_AFTER" --cancelled-after "$DURABLERUN_WEEK_CANCELLED_AFTER" --execute --json > "$report" 2> "week-$day-purge-$run.err" || code=$?
+            echo "purge run $run exited $code"
+            [ "$code" -eq 0 ] || exit "$code"
+            more="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).more === true' "$report")"
+            [ "$more" = 'true' ] || break
+            if [ "$run" -ge 50 ]; then
+              echo 'purge still says more remain after 50 runs' >&2
+              exit 1
+            fi
+          done
+      - name: Retain the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operable-week-${{ github.run_id }}-${{ github.run_attempt }}
+          path: week-*
+          if-no-files-found: warn
+          retention-days: 30
