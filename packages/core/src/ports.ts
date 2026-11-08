@@ -12,6 +12,7 @@ import type {
   FailedRollback,
   LaunchIdentity,
   LeaseState,
+  PurgeAdmission,
   PurgeCandidates,
   PurgeCandidatesOptions,
   PurgeUnitTarget,
@@ -365,6 +366,19 @@ export interface Retention {
     unit: PurgeUnitTarget,
     policy: RetentionPolicy,
   ): Promise<PurgedUnit | null>
+
+  /**
+   * What the barrier says of one unit as of this read: each condition of the purge's
+   * compare-and-set as a flag of its own, read by the predicates that statement holds, in
+   * one read batch. Null when no task of that id is in the queue. It writes nothing and
+   * decides nothing: `purgeUnit` reads every condition again, at the instant of deletion,
+   * and a unit can change between the two. A caller reads it to say why a unit is kept.
+   */
+  purgeAdmission(
+    queue: string,
+    unit: PurgeUnitTarget,
+    policy: RetentionPolicy,
+  ): Promise<PurgeAdmission | null>
 }
 
 /** Test/simulation-only surface; never used by engine actors. */

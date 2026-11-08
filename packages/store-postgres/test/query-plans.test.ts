@@ -1016,18 +1016,19 @@ it('reaches every row a purge reads or deletes through an index, beside a histor
     const purges = retention(recorder, db.ids)
     const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
     const listed = await purges.purgeCandidates('q', policy, { limit: 10 })
-    const purged = await purges.purgeUnit(
-      'q',
-      { taskId: task.taskId, idempotencyKey: 'order-7' },
-      policy,
-    )
+    const unit = { taskId: task.taskId, idempotencyKey: 'order-7' }
+    // What the barrier says of the unit is read first, by the conditions the purge holds.
+    const said = await purges.purgeAdmission('q', unit, policy)
+    const purged = await purges.purgeUnit('q', unit, policy)
     expect({
       listed: listed.candidates.length,
       more: listed.next !== null,
+      everyConditionHolds: Object.values(said?.holds ?? { read: false }).every(Boolean),
       purged: purged?.rows,
     }).toEqual({
       listed: 10,
       more: true,
+      everyConditionHolds: true,
       purged: { tasks: 1, runs: 1, checkpoints: 1, waits: 0, events: 1 },
     })
 
@@ -1036,11 +1037,23 @@ it('reaches every row a purge reads or deletes through an index, beside a histor
     // The candidates are read in the order of their stamps and then of their ids. The
     // index ends at the stamp, so PostgreSQL sorts each group of tasks that ended at one
     // instant, an incremental sort that stops at the LIMIT. A sort of every ended task of
-    // the state, which no LIMIT bounds, would be listed here. The one sort there is sorts
-    // one row: the compare-and-set reads its unit's parent by the primary key through a
-    // DISTINCT, which is what keeps that read a table of its own on every dialect.
-    expect(sorts).toEqual(['[purge-unit#0] ->  Sort'])
+    // the state, which no LIMIT bounds, would be listed here. Each sort there is sorts one
+    // row: the compare-and-set reads its unit's parent by the primary key through a
+    // DISTINCT, which is what keeps that read a table of its own on every dialect, and the
+    // read of what the barrier says holds the same condition.
+    expect(sorts).toEqual(['[purge-admission#0] ->  Sort', '[purge-unit#0] ->  Sort'])
     expect(reached).toEqual({
+      // The read of the barrier reaches each row the compare-and-set below reaches, through
+      // the same index: it holds the same conditions.
+      'purge-admission#0': [
+        'tasks_pkey on tasks: (task_id = $17)',
+        'runs_task_attempt on runs live: (task_id = $4)',
+        'runs_wake_holders on runs holder: ((queue = $5) AND (wake_event = $6))',
+        'waits_event on waits waiter: ((queue = $8) AND (event_name = $9))',
+        'tasks_pkey on tasks p: (task_id = $10)',
+        'runs_task_attempt on runs stray: (task_id = $12)',
+        'checkpoints_pkey on checkpoints c: (task_id = $14)',
+      ],
       'purge-candidates#0': [
         "tasks_terminal on tasks t: ((queue = $1) AND (state = 'completed'::text) AND (fence_at_ms >= 0) AND (fence_at_ms <= '253402300799000'::bigint) AND (fence_at_ms <= (COALESCE((InitPlan 1).col1, (floor((EXTRACT(epoch FROM statement_timestamp()) * '1000'::numeric)))::bigint) - $2)) AND (fence_at_ms >= $3))",
       ],
@@ -1052,11 +1065,11 @@ it('reaches every row a purge reads or deletes through an index, beside a histor
       ],
       'purge-unit#0': [
         'runs_task_attempt on runs live: (task_id = $7)',
-        'runs_wake_holders on runs holder: ((queue = $11) AND (wake_event = $12))',
-        'waits_event on waits waiter: ((queue = $14) AND (event_name = $15))',
-        'tasks_pkey on tasks p: (task_id = $16)',
-        'runs_task_attempt on runs stray: (task_id = $21)',
-        'checkpoints_pkey on checkpoints c: (task_id = $23)',
+        'runs_wake_holders on runs holder: ((queue = $8) AND (wake_event = $9))',
+        'waits_event on waits waiter: ((queue = $11) AND (event_name = $12))',
+        'tasks_pkey on tasks p: (task_id = $13)',
+        'runs_task_attempt on runs stray: (task_id = $15)',
+        'checkpoints_pkey on checkpoints c: (task_id = $17)',
         'tasks_pkey on tasks: (task_id = $2)',
       ],
       'purge-unit#1': [

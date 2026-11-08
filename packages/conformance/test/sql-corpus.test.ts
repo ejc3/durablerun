@@ -210,6 +210,9 @@ describe('generated SQL corpus', () => {
         const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
         const listed = await retention.purgeCandidates('q', policy, { limit: 10 })
         expect(listed.candidates.map(({ taskId }) => taskId)).toContain(late.taskId)
+        // What the barrier says of that unit, read before its purge: every condition holds.
+        const said = await retention.purgeAdmission('q', { taskId: late.taskId }, policy)
+        expect(Object.values(said?.holds ?? { read: false })).not.toContain(false)
         expect(await retention.purgeUnit('q', { taskId: late.taskId }, policy)).not.toBeNull()
         expect(
           await retention.purgeUnit(

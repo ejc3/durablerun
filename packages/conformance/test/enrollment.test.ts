@@ -23,6 +23,7 @@ const EXPECTED_SURFACE_IDS = [
   'executor-errors',
   'operator-reads',
   'retention',
+  'retention-soak',
 ] as const
 const EXPECTED_DIALECTS = ['libsql', 'postgres', 'mysql'] as const
 

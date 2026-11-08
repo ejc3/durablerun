@@ -20,11 +20,13 @@ import {
   COMPLETED_KEY,
   type CliDb,
   type FaultSite,
+  PURGE_WINDOWS,
   QUEUE,
   SELECTED,
   SENTINEL,
   type SeededTasks,
   type StartingSchema,
+  childrenOfARunningParent,
   faulting,
   openCliDb,
   openerWrapping,
@@ -238,6 +240,45 @@ const SCENARIOS: Readonly<Record<StoreVerb, readonly Scenario[]>> = {
       prepare: async (db) => (await owedToASweep(db)).lost.taskId,
     },
   ],
+  // A dry run reads what the barrier says of every candidate. With --execute the purge of
+  // each is sent, and the barrier is read of the one it keeps, so between the two scenarios
+  // each batch the command declares is sent, and a fault meets the read after a purge the
+  // port answered kept as well as the purge itself.
+  purge: [
+    {
+      ...writeAt('the current version, a dry run of units that are years old', (db) =>
+        purgeLine(db),
+      ),
+      prepare: aKeptCandidate,
+    },
+    {
+      ...writeAt(
+        'the current version, with --execute, of units the barrier lets go and one it keeps',
+        (db) => purgeLine(db, '--failed-after', '1h', '--execute'),
+      ),
+      prepare: aKeptCandidate,
+    },
+  ],
+}
+
+/** The windows every `purge` scenario names, and the flags every write takes. */
+const purgeLine = (db: CliDb, ...more: string[]): string[] => [
+  'purge',
+  ...PURGE_WINDOWS,
+  ...more,
+  ...named(db),
+]
+
+/**
+ * What a `purge` scenario adds to the seeded tasks: a child that completed under a parent
+ * that is still running, which is a candidate the barrier keeps. The test clock is then
+ * cleared, because a purge refuses under one, and every ending above is years old by the
+ * database's own clock.
+ */
+async function aKeptCandidate(db: CliDb): Promise<string> {
+  const [child] = await childrenOfARunningParent(db, 1)
+  await db.admin.setFakeNowEpochMs(null)
+  return String(child)
 }
 
 /** The idempotency key of the task the second `enqueue` scenario finds. */

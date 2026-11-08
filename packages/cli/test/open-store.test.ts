@@ -56,6 +56,7 @@ describe('the store opener', () => {
           'close',
           'notes',
           'operator',
+          'retention',
           'scheduler',
           'scheme',
           'window',
@@ -83,6 +84,12 @@ describe('the store opener', () => {
           'taskAdmission',
           'taskFacts',
           'taskIdByKey',
+        ])
+        // The retention port whole: the listing, the purge of one unit, and the read of the barrier.
+        expect(Object.keys(store.retention).sort()).toEqual([
+          'purgeAdmission',
+          'purgeCandidates',
+          'purgeUnit',
         ])
         // @ts-expect-error a worker's write under a claim cannot be made through the CLI's scheduler
         expect(store.scheduler.complete).toBeUndefined()

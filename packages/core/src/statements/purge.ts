@@ -12,7 +12,13 @@ import {
   rawSql,
 } from '../sql-tree.js'
 import { type StoreTables, treeBuilder } from '../store-tables.js'
-import { LIVE_STATES, type PurgeCursor, TERMINAL_STATES, type TerminalState } from '../types.js'
+import {
+  LIVE_STATES,
+  type PurgeBarrierCondition,
+  type PurgeCursor,
+  TERMINAL_STATES,
+  type TerminalState,
+} from '../types.js'
 import { markUnitPurge } from '../unit-purge.js'
 import { whereTaskInQueue } from './claimed-run.js'
 
@@ -106,6 +112,14 @@ export type PurgeUnitBinds = {
 /** A unit with the task that spawned it, which its key names, or null for a task no task spawned. */
 type UnitUnderItsParent = PurgeUnitBinds & { readonly parentTaskId: string | null }
 
+/**
+ * The live states, each written into the statement's text. The barrier's conditions are
+ * built once and stand in two statements, the purge's compare-and-set and the read of what
+ * the barrier says, and a read may not compare a state with a bound value: a partial index
+ * is matched by the literal. So both statements name the live states the one way a read may.
+ */
+const LIVE_STATE_LITERALS = LIVE_STATES.map((state) => literalValue(state))
+
 type TaskRow = ExpressionBuilder<StoreTables, 'tasks'>
 type Barrier = (task: TaskRow, binds: UnitUnderItsParent) => Expression<SqlBool>
 
@@ -137,7 +151,7 @@ const PURGE_BARRIER = {
           .selectFrom('runs as live')
           .select('live.run_id')
           .where('live.task_id', '=', binds.taskId)
-          .where('live.state', 'in', [...LIVE_STATES]),
+          .where('live.state', 'in', LIVE_STATE_LITERALS),
       ),
     ),
   // B3: no run of another unit in this queue, in any state, holds the task's outcome: a
@@ -187,7 +201,7 @@ const PURGE_BARRIER = {
           .select('parent.state')
           .where((parent) =>
             parent.or([
-              parent('parent.state', 'in', [...LIVE_STATES]),
+              parent('parent.state', 'in', LIVE_STATE_LITERALS),
               parent('parent.state', '=', literalValue('failed')),
             ]),
           ),
@@ -230,7 +244,7 @@ const PURGE_BARRIER = {
       '<=',
       MAX_PURGE_UNIT_CHECKPOINTS,
     ),
-} satisfies Readonly<Record<string, Barrier>>
+} satisfies Readonly<Record<PurgeBarrierCondition, Barrier>>
 
 const purgeCas = defineStatement(
   'purge-unit',
@@ -265,6 +279,44 @@ export const purgeUnitCas = (binds: PurgeUnitBinds): DefinedStatement => {
     )
   }
   return markUnitPurge(purgeCas({ ...binds, parentTaskId: parent.taskId }))
+}
+
+/** The task whose row a flag of `purge-admission` is read of. */
+const ofTheTask = expressionBuilder<StoreTables, 'tasks'>()
+
+const admissionRead = defineStatement('purge-admission', (binds: UnitUnderItsParent) =>
+  treeBuilder
+    .selectFrom('tasks')
+    .select(() =>
+      Object.entries(PURGE_BARRIER).map(([name, holds]: [string, Barrier]) =>
+        ofTheTask
+          .case()
+          .when(holds(ofTheTask, binds))
+          .then(literalValue(1))
+          .else(literalValue(0))
+          .end()
+          .as(name),
+      ),
+    )
+    .where('task_id', '=', binds.taskId)
+    .where('queue', '=', binds.queue),
+)
+
+/**
+ * `purge-admission`: every condition of the barrier as a flag of its own, over the one
+ * task of the queue. Each flag is the condition the purge's compare-and-set holds, built
+ * by the one function that statement builds it by, so the read holds no copy of the
+ * barrier: a condition the barrier gains is a flag the read selects. A flag is 1 when its
+ * condition holds of the row and 0 when it does not or is NULL, and the compare-and-set
+ * takes NULL for a refusal too.
+ *
+ * The parent is read from the unit's key, as the compare-and-set's builder reads it. A key
+ * in the engine's namespace that names no parent names nobody to look up, so the lookup
+ * finds no parent: the caller answers for that key, which keeps its unit.
+ */
+export const purgeAdmissionRead = (binds: PurgeUnitBinds): DefinedStatement => {
+  const parent = spawningParent(binds.idempotencyKey)
+  return admissionRead({ ...binds, parentTaskId: parent.known ? parent.taskId : null })
 }
 
 /**

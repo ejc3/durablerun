@@ -36,7 +36,7 @@ const ENDED_TASKS = Object.fromEntries(
 const STAMP_STORED = storedIntegerWithin(STAMP)
 
 /**
- * What this dialect supplies to core's retention: its two batches, each labelled here and
+ * What this dialect supplies to core's retention: its three batches, each labelled here and
  * run here, and its two fragments. The purge itself is core's (`createRetention`). It is a
  * class with the executor as `this.db` because that is where the batch checkers read a
  * store's batches: run as `batch.run(this.db)`, inside a member of a class.
@@ -55,6 +55,8 @@ class MysqlRetention {
           new FencedBatch('purge-candidates', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
         purgeUnit: () =>
           new FencedBatch('purge-unit', this.ids.token(), { now: NOW_MS, tree: TREE_DIALECT }),
+        purgeAdmission: () =>
+          new FencedBatch('purge-admission', READS_SEED, { now: NOW_MS, tree: TREE_DIALECT }),
       },
       endedTasks: (state, queue) => sqlFragment(ENDED_TASKS[state], [queue]),
       stampStored: sqlFragment(STAMP_STORED),

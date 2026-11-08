@@ -13,6 +13,7 @@ import {
   isLiveState,
   isPortRefusal,
   isTerminalState,
+  purgeWalk,
 } from '@durablerun/core'
 import {
   COMMANDS,
@@ -66,6 +67,7 @@ import {
 } from './http.js'
 import { corruptView, factsView, stateView, whatIsNotReadable } from './inspect.js'
 import {
+  type CliRetention,
   MissingDatabaseError,
   type OpenedStore,
   type SchemaWindow,
@@ -74,6 +76,7 @@ import {
   openStore,
   storeTarget,
 } from './open-store.js'
+import { keptView, limitOf, policyOf, policyView, unitView } from './purge.js'
 import { agedLiveView, rowsListed, sizesView, statsView, stuckView } from './queue.js'
 import { canonicalJson, checkpointView, humanText, resultView } from './render.js'
 import { userValue } from './render.js'
@@ -302,6 +305,7 @@ function help(json: boolean): Answer {
       'The store is DURABLERUN_STORE_URL, with DURABLERUN_STORE_TOKEN for a libSQL server.',
       'tick opens no store: it posts to the origin of DURABLERUN_BASE_URL, with DURABLERUN_TICK_TOKEN.',
       'A write names its store again with --target, and emit, cancel and retry change nothing without --yes.',
+      'purge deletes nothing without --execute.',
       'Values users wrote print as their length and sha256 unless --reveal.',
       '',
       'exit codes:',
@@ -543,13 +547,50 @@ function noSuchTask(queue: string, taskId: string): Answer {
 }
 
 /**
+ * The same answer from `retry`, which names a task that failed: a failed task that is not
+ * there may have been purged, and the answer says so. No row says which, because a purge
+ * leaves nothing of a unit behind.
+ */
+function noTaskToRevive(queue: string, taskId: string): Answer {
+  return notFound(
+    { queue, taskId },
+    `no task ${taskId} in queue ${queue}: it was never there, or it ended and a purge retained it out`,
+  )
+}
+
+/** The task a command names, and whether it was named by the key it was spawned under. */
+interface NamedTask {
+  readonly queue: string
+  readonly taskId: string
+  readonly byKey: boolean
+}
+
+/**
+ * The answer for a named task that the read of it does not find. A command that takes a
+ * key reads twice, the task's id by its key and then the task. A task its key found and
+ * the next read does not is gone as of that read, and the answer says so, with the id the
+ * key found. Why it is gone no read says: the engine deletes a task only by a purge, so it
+ * may have been retained out, and a database edited or restored between the two reads
+ * shows the same. The answer claims no more than `retry`'s does of a task that is not
+ * there. A key that names no task is answered by the first read and never reaches this.
+ * A task named by its id that is not there is answered as it always was: no read says
+ * whether it ever existed.
+ */
+function taskNotThere({ queue, taskId, byKey }: NamedTask): Answer {
+  if (byKey) {
+    return notFound(
+      { queue, taskId },
+      `the idempotency key named task ${taskId} in queue ${queue}, and the task is gone as of the next read: it may have been retained out`,
+    )
+  }
+  return noSuchTask(queue, taskId)
+}
+
+/**
  * The task a command names by its id or by the idempotency key it was spawned under, read
  * after the schema window is checked, or the answer that refuses.
  */
-async function namedTask({
-  invocation,
-  store,
-}: Context): Promise<{ readonly queue: string; readonly taskId: string } | Answer> {
+async function namedTask({ invocation, store }: Context): Promise<NamedTask | Answer> {
   const queue = invocation.strings.queue ?? ''
   const key = invocation.strings.key
   const version = await readableVersion(store)
@@ -562,7 +603,7 @@ async function namedTask({
     // The key is a value a user wrote, so the answer does not quote it.
     return notFound({ queue }, `no task in queue ${queue} was spawned under that idempotency key`)
   }
-  return { queue, taskId }
+  return { queue, taskId, byKey: key !== undefined }
 }
 
 /**
@@ -578,7 +619,7 @@ const inspect: Handler = async (context) => {
   const { queue, taskId } = named
   const { store, reveal } = context
   const facts = await store.operator.taskFacts(queue, taskId)
-  if (facts === null) return noSuchTask(queue, taskId)
+  if (facts === null) return taskNotThere(named)
   // The outcome is rendered as `result` renders it, a refused row included.
   const outcome =
     'result' in facts.outcome
@@ -666,7 +707,7 @@ const explain: Handler = async (context) => {
   if ('exit' in named) return named
   const { queue, taskId } = named
   const found = await explained(context.store, queue, taskId)
-  if (found === null) return noSuchTask(queue, taskId)
+  if (found === null) return taskNotThere(named)
   const { facts, diagnosis } = found
   return {
     exit: readUnreadableRow(diagnosis) ? 'unreadable' : 'done',
@@ -1059,7 +1100,7 @@ const retry: Handler = async (context) => {
     stateBefore: before === null ? null : stateView(before.state, reveal),
   }
   if (invocation.booleans.yes !== true) {
-    if (before === null) return noSuchTask(queue, taskId)
+    if (before === null) return noTaskToRevive(queue, taskId)
     const forecast = retryForecast(taskId, before)
     return notConfirmed({ ...named, ...forecast.view }, forecast.message)
   }
@@ -1071,7 +1112,7 @@ const retry: Handler = async (context) => {
     }
   }
   const admission = await store.operator.taskAdmission(queue, taskId)
-  if (admission === null) return noSuchTask(queue, taskId)
+  if (admission === null) return noTaskToRevive(queue, taskId)
   const liveRun = liveRunOf(admission)
   if (liveRun !== undefined) {
     return {
@@ -1128,6 +1169,131 @@ const sweep: Handler = async (context) => {
       // Each transition is a kind and the ids it names. None is a value a user wrote.
       transitions: swept,
       nextWakeAtEpochMs: await scheduler.nextWakeAtEpochMs(queue),
+    },
+  }
+}
+
+/**
+ * The batch a call of the retention port sends, by which a failure names the call it
+ * stopped at. The command table declares each call the verb makes with its label, and this
+ * reads that one declaration.
+ */
+const purgeLabel = (call: keyof CliRetention): string =>
+  COMMANDS.purge.ports.find((port) => port.call === `retention.${call}`)?.labels[0] ?? call
+
+/**
+ * Purge the units of a queue's ended tasks that are older than the windows named. It is
+ * the store's retention port and nothing else: it runs core's one walk over that port
+ * (`purgeWalk`), which lists the candidates by `purgeCandidates` and sends each unit's
+ * purge by `purgeUnit`, whose compare-and-set holds the whole barrier at the instant of
+ * deletion. The command builds no statement of its own.
+ *
+ * Without `--execute` it is a dry run that sends only reads: each candidate is listed with
+ * what the barrier says of it as of that read (`purgeAdmission`), and nothing is deleted.
+ * With it, each candidate's purge is sent. A unit the port answers kept is not a failure:
+ * what keeps it is then read, and it is listed as kept, or as gone when no task is there at
+ * that read, which is a unit another purge took or this call delivered twice.
+ *
+ * One run is one pass from the oldest candidate. A pass takes what it frees: a unit kept
+ * only by a unit the same run then purges is tried again and goes with it. `--limit` is the
+ * most units a run takes, and its one bound: nothing bounds the candidates it examines but
+ * the queue, and `examined` prints how many it looked at. `finished` says every call was
+ * answered. `more` is false only when the run reached its end: every candidate was
+ * examined and no kept unit was owed another try. When the limit stopped it short, the
+ * same command line run again takes what it left.
+ *
+ * It refuses, before any candidate is read, a schema version that is not the build's, whose
+ * indexes the purge's statements read, and a database whose test clock is set, because a
+ * unit's age is read against database time. When the store fails partway, the units the
+ * run had reached are printed all the same, on stdout, and the exit is the failure's: the
+ * answers already given stand, and running the command again purges what is left. A unit
+ * whose purge was sent and not answered is printed whole under `outcomeNotKnown`: it may
+ * have gone. A failure before any unit was reached prints as any failure does.
+ */
+const purge: Handler = async (context) => {
+  const { invocation, store, reveal } = context
+  const { strings, booleans } = invocation
+  const asked = policyOf(strings)
+  if ('refused' in asked) return flagRefused(asked.refused)
+  const { policy } = asked
+  const bound = limitOf(strings.limit)
+  if ('refused' in bound) return flagRefused(bound.refused)
+  const { limit } = bound
+  const queue = strings.queue ?? ''
+  const execute = booleans.execute === true
+  const named = { queue, execute, policy: policyView(policy), limit }
+  const recorded = await store.admin.schemaVersion()
+  if (recorded !== store.window.newest) {
+    const message =
+      windowProblem(recorded, store.window) ??
+      `the schema is recorded at version ${recorded}, and a purge needs version ${store.window.newest}, the build's, whose indexes its statements read: migrate it first`
+    return {
+      exit: 'schema',
+      view: { ...named, recordedSchemaVersion: recorded, error: { kind: 'schema', message } },
+    }
+  }
+  const status = await store.operator.queueStatus(queue)
+  if (status.fakeClock) {
+    return {
+      exit: 'usage',
+      view: {
+        ...named,
+        error: {
+          kind: 'fake-clock',
+          message:
+            "the database's test clock is set, and a purge reads every unit's age against database time: nothing is purged under a test clock. Nothing was changed",
+        },
+      },
+    }
+  }
+  const walked = await purgeWalk(store.retention, queue, policy, { limit, execute })
+  const report = {
+    ...named,
+    examined: walked.examined,
+    [execute ? 'purged' : 'wouldPurge']: walked.taken.map(({ candidate, rows }) =>
+      rows === null ? unitView(candidate) : { ...unitView(candidate), rows },
+    ),
+    kept: walked.kept.map(({ candidate, admission }) => keptView(candidate, admission)),
+    gone: walked.gone.map(unitView),
+    outcomeNotKnown: walked.outcomeNotKnown.map(unitView),
+    more: walked.more,
+  }
+  const { failed } = walked
+  if (failed !== null) {
+    const answer = failure(failed.error, reveal)
+    // A report that holds no unit says nothing a failure does not: it prints as one.
+    const holdsAUnit =
+      walked.taken.length +
+        walked.kept.length +
+        walked.gone.length +
+        walked.outcomeNotKnown.length >
+      0
+    if (!holdsAUnit) return answer
+    return {
+      exit: answer.exit,
+      holdsFacts: true,
+      view: {
+        ...report,
+        finished: false,
+        stoppedAt: {
+          call: purgeLabel(failed.call),
+          ...(failed.taskId === undefined ? {} : { taskId: failed.taskId }),
+        },
+        ...answer.view,
+      },
+    }
+  }
+  return {
+    exit: 'done',
+    view: {
+      ...report,
+      finished: true,
+      ...(execute
+        ? {}
+        : {
+            dryRun:
+              'nothing was deleted. Each verdict is as of this read: a purge reads every condition again, inside the statement that deletes, and takes with a unit the units that only it kept',
+          }),
     },
   }
 }
@@ -1243,4 +1409,5 @@ const HANDLERS: Readonly<Record<Exclude<Verb, 'help' | 'tick'>, Handler>> = Obje
   cancel,
   retry,
   sweep,
+  purge,
 })

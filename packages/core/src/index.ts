@@ -36,6 +36,9 @@ export * from './primitives.js'
 // §3.12). The statements of a purge and the windows of a policy are not exported: they take
 // the barrier's inputs, and whoever can hand them inputs has no barrier in front of them.
 export { type HeldRetention, type RetentionDialect, createRetention } from './retention.js'
+// The walk of a purge is exported whole: it takes the port and calls nothing but the port's
+// three methods, so a caller it is handed to has no way round the barrier.
+export * from './retention-walk.js'
 export * from './retry.js'
 export * from './sagas.js'
 export * from './schema-version.js'

@@ -11,6 +11,7 @@ import type { SqlFragment } from './sql-tree.js'
 import {
   type PurgeUnitBinds,
   type RetentionWindows,
+  purgeAdmissionRead,
   purgeCandidatesRead,
   purgeUnitCas,
   purgedTaskDelete,
@@ -18,6 +19,9 @@ import {
 } from './statements/purge.js'
 import { QUEUE_TABLES, type QueueTable } from './store-tables.js'
 import {
+  PURGE_BARRIER_CONDITIONS,
+  type PurgeAdmission,
+  type PurgeBarrierCondition,
   type PurgeCandidate,
   type PurgeCandidates,
   type PurgeCandidatesOptions,
@@ -69,6 +73,8 @@ export interface RetentionDialect {
     purgeCandidates(): FencedBatch
     /** `purge-unit`, a transition under a seed no other invocation uses. */
     purgeUnit(): FencedBatch
+    /** `purge-admission`, a batch of one read. */
+    purgeAdmission(): FencedBatch
   }
   /**
    * Over a task `t`: it is in this queue, it ended in `state`, and it holds a stamp instant
@@ -363,6 +369,50 @@ async function purgeUnit(
   return ran.won === 'purge' ? purgedRows(b, ran, taskId) : null
 }
 
+const FLAG = freeze({ min: 0, max: 1 })
+
+async function purgeAdmission(
+  dialect: RetentionDialect,
+  queue: string,
+  unit: PurgeUnitTarget,
+  policy: RetentionPolicy,
+): Promise<PurgeAdmission | null> {
+  const windowsMs = retentionWindowsMs(policy)
+  const taskId = unit.taskId
+  const idempotencyKey = unit.idempotencyKey ?? null
+  const b = dialect.open.purgeAdmission()
+  b.readTree(
+    'barrier',
+    purgeAdmissionRead({
+      queue,
+      taskId,
+      idempotencyKey,
+      windowsMs,
+      stampStored: dialect.stampStored,
+    }),
+  )
+  const ran = await dialect.run(b)
+  const row = readRows(b, ran, 'barrier')[0]
+  if (row === undefined) return null
+  const holds = createObject(null) as Record<PurgeBarrierCondition, boolean>
+  for (let index = 0; index < PURGE_BARRIER_CONDITIONS.length; index++) {
+    const condition = PURGE_BARRIER_CONDITIONS[index]
+    if (condition === undefined) continue
+    const flag = decodeBoundedInteger(row[condition], FLAG)
+    if (!flag.ok) {
+      throw new TrustedTypeError(
+        `purge-admission answered no flag of ${condition} for task ${taskId}`,
+      )
+    }
+    holds[condition] = flag.value === 1
+  }
+  // A key in the engine's spawn namespace that names no parent: nothing says the unit's
+  // parent can no longer run, and `purgeUnit` keeps such a unit before it builds a batch.
+  // The read looked up no parent for it, so the answer is given here.
+  if (!spawningParent(idempotencyKey).known) holds.parentCannotRunAgain = false
+  return freeze({ holds: freeze(holds) })
+}
+
 /**
  * The retention port over one dialect, and the only implementation of it. Every method
  * the string table names is reached through `requireRetentionStrings`, put in front of it
@@ -397,6 +447,7 @@ export function createRetention(dialect: RetentionDialect): HeldRetention {
   const entries: Retention = {
     purgeCandidates: (queue, policy, options) => purgeCandidates(dialect, queue, policy, options),
     purgeUnit: (queue, unit, policy) => purgeUnit(dialect, queue, unit, policy),
+    purgeAdmission: (queue, unit, policy) => purgeAdmission(dialect, queue, unit, policy),
   }
   const held: Partial<Record<RetentionMethod, unknown>> = {}
   for (let index = 0; index < RETENTION_METHODS.length; index++) {

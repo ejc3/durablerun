@@ -194,13 +194,15 @@ export async function recordHistory(
   await admin.setFakeNowEpochMs(1_000_000 + 120_000)
   await store.sweep('q', 10)
   // Retention (DESIGN.md §3.12), last of all, because it removes what the history made. A
-  // window after the sweep, the candidates are read and the unit of each is purged.
+  // window after the sweep, the candidates are read, and of each what the barrier says is
+  // read and its unit is purged.
   await admin.setFakeNowEpochMs(1_000_000 + 120_000 + 3_600_000)
   const purges = retention(recorder, testIdSource('shipped-purges'))
   const policy = { completedSeconds: 3_600, cancelledSeconds: 3_600 }
   const listed = await purges.purgeCandidates('q', policy, { limit: 20 })
   let purged = 0
   for (const candidate of listed.candidates) {
+    await purges.purgeAdmission('q', candidate, policy)
     if ((await purges.purgeUnit('q', candidate, policy)) !== null) purged += 1
   }
   if (purged === 0) throw new Error('expected the history to purge a unit')

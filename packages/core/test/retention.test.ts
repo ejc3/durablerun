@@ -14,7 +14,10 @@ import {
   sqlFragment,
   stampValue,
 } from '../src/index.js'
+import { RETENTION_METHODS } from '../src/port-strings.js'
 import { addUnitPurge, retentionWindowsMs } from '../src/retention.js'
+import { QUEUE_TABLES } from '../src/store-tables.js'
+import { PURGE_BARRIER_CONDITIONS, TERMINAL_STATES } from '../src/types.js'
 import {
   accepts,
   batch,
@@ -300,13 +303,17 @@ describe("what core's entry exports of retention", () => {
     const inside = {
       ...(await import('../src/statements/purge.js')),
       ...(await import('../src/retention.js')),
+      ...(await import('../src/retention-walk.js')),
       ...(await import('../src/unit-purge.js')),
     }
     const exported = Object.keys(inside)
       .filter((name) => name in entry)
       .sort()
+    // The walk and the size of its page are exported: the walk calls only the port.
     expect(exported, 'mutation-verdict:behavior:entry-exports-no-builder-of-a-purge').toEqual([
+      'PURGE_WALK_PAGE',
       'createRetention',
+      'purgeWalk',
     ])
   })
 })
@@ -335,5 +342,26 @@ describe('a generated delete of an event', () => {
     expect(() => batch().casTree('win', locked).derived('event', ofTheTask)).toThrow(
       /deletes an event, and the batch holds no completion event's lock/,
     )
+  })
+})
+
+describe('the lists the retention port reads', () => {
+  it('are frozen, each of them: a caller that imports one cannot empty it under the port', () => {
+    // The port's read of the barrier answers a flag for each condition of the list, and a
+    // caller asks whether every one holds. Over a list a caller emptied, nothing keeps a unit.
+    expect(
+      {
+        PURGE_BARRIER_CONDITIONS: Object.isFrozen(PURGE_BARRIER_CONDITIONS),
+        TERMINAL_STATES: Object.isFrozen(TERMINAL_STATES),
+        RETENTION_METHODS: Object.isFrozen(RETENTION_METHODS),
+        QUEUE_TABLES: Object.isFrozen(QUEUE_TABLES),
+      },
+      'mutation-verdict:behavior:purge-barrier-conditions-are-frozen',
+    ).toEqual({
+      PURGE_BARRIER_CONDITIONS: true,
+      TERMINAL_STATES: true,
+      RETENTION_METHODS: true,
+      QUEUE_TABLES: true,
+    })
   })
 })

@@ -15,7 +15,7 @@ export const EXITS = Object.freeze([
     code: 2,
     name: 'usage',
     meaning:
-      'usage, confirmation-required, target-mismatch or origin-mismatch; nothing was changed, and no request went to a deployment',
+      'usage, confirmation-required, target-mismatch, origin-mismatch or fake-clock; nothing was changed, and no request went to a deployment',
   },
   { code: 3, name: 'refused', meaning: 'the engine refused the call, and says why' },
   {
@@ -28,7 +28,7 @@ export const EXITS = Object.freeze([
     code: 5,
     name: 'schema',
     meaning:
-      "the database's schema version is outside the store's readable window, or the database is not initialized",
+      "the database's schema version is outside the store's readable window, the database is not initialized, or purge was asked of a database that is not at the build's version",
   },
   {
     code: 6,

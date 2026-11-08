@@ -25,6 +25,7 @@ import {
   QUEUE,
   SENTINEL,
   type SeededTasks,
+  changedBy,
   onDb,
   recordingOpener,
   rollingBack,
@@ -51,13 +52,6 @@ async function drive(db: CliDb, argv: readonly string[], env: CliDb['env'] = db.
   driven += 1
   const run = await runCli([...argv, '--json'], env, undefined, testIdSource(`driven-${driven}`))
   return { exit: run.exit, stderr: run.stderr, answer: JSON.parse(run.stdout) as JsonAnswer }
-}
-
-/** What a run changed: its answer, and whether a dump of every table is as it was before. */
-async function changedBy<T>(db: CliDb, run: () => Promise<T>) {
-  const before = await db.dump()
-  const out = await run()
-  return { out, unchanged: (await db.dump()) === before }
 }
 
 interface Seeded extends SeededTasks {
@@ -129,9 +123,15 @@ const CAUSE_NAMED: Readonly<Record<RetryGuardConjunct, string>> = {
 
 describe('the drive verbs on libSQL', () => {
   it('are the commands of the table that write through a store, and each requires --target and --queue', () => {
+    // `migrate` writes the schema and `purge` deletes through the retention port. Each has
+    // cases of its own, and every other command that writes is a drive verb.
     expect(
       VERBS.filter(
-        (verb) => COMMANDS[verb].opensStore && COMMANDS[verb].writes && verb !== 'migrate',
+        (verb) =>
+          COMMANDS[verb].opensStore &&
+          COMMANDS[verb].writes &&
+          verb !== 'migrate' &&
+          verb !== 'purge',
       ),
     ).toEqual(WRITE_VERBS)
     for (const verb of WRITE_VERBS) {

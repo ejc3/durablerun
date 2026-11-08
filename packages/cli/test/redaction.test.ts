@@ -14,6 +14,8 @@ import {
   BIN,
   COMPLETED_KEY,
   type CliDb,
+  PURGE_EVERY_STATE,
+  PURGE_WINDOWS,
   QUEUE,
   ROOT,
   SENTINEL,
@@ -32,6 +34,8 @@ import {
  * human text and in --json, and reads stdout and stderr.
  */
 interface SentinelCase {
+  /** What the database needs besides its seeded tasks, before the lines run. */
+  prepare?(db: CliDb): Promise<void>
   /** The command lines to run. */
   lines(db: CliDb, seeded: SeededTasks): string[][]
   /** Whether --reveal must print the sentinel, which shows the case reaches the values. */
@@ -174,6 +178,28 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     ],
     shows: false,
   },
+  // A purge prints each unit's task id and name, its state, the instant it ended, the rows
+  // that went, and of the key it was spawned under only the sha256, with --reveal too. The
+  // completed task's key holds the sentinel. The test clock is cleared first, because a
+  // purge refuses under one, and every seeded ending is then years old.
+  purge: {
+    prepare: (db) => db.admin.setFakeNowEpochMs(null),
+    lines: (db) => {
+      const windows = PURGE_EVERY_STATE
+      return [
+        ['purge', ...windows, ...writeFlags(db)],
+        ['purge', ...windows, '--execute', ...writeFlags(db)],
+        // The same again, which finds nothing left to take.
+        ['purge', ...windows, '--execute', ...writeFlags(db)],
+        // Refusals: a window and a limit that cannot be read, a window left out, and --yes.
+        ['purge', '--completed-after', SENTINEL, '--cancelled-after', '1h', ...writeFlags(db)],
+        ['purge', ...windows, '--limit', SENTINEL, ...writeFlags(db)],
+        ['purge', '--completed-after', '1h', ...writeFlags(db)],
+        ['purge', ...windows, '--yes', ...writeFlags(db)],
+      ]
+    },
+    shows: false,
+  },
   // `tick` opens no store. Each line is refused before anything is sent, and no refusal
   // quotes what it was given.
   tick: {
@@ -223,6 +249,7 @@ async function runCase(verb: Verb, marker: string): Promise<void> {
   const db = await openCliDb('libsql', `redaction-${verb}`)
   try {
     const seeded = await seedTasks(db)
+    await CASES[verb].prepare?.(db)
     let shown = false
     for (const line of CASES[verb].lines(db, seeded)) {
       for (const output of [[], ['--json']]) {
@@ -321,6 +348,14 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
     ['sweep', '--queue', QUEUE, '--target', target],
     ['sweep', '--queue', QUEUE, '--target', 'elsewhere'],
   ],
+  purge: (target) => {
+    const windows = PURGE_WINDOWS
+    return [
+      ['purge', ...windows, '--queue', QUEUE, '--target', target],
+      ['purge', ...windows, '--queue', QUEUE, '--target', target, '--execute'],
+      ['purge', ...windows, '--queue', QUEUE, '--target', 'elsewhere', '--execute'],
+    ]
+  },
   // `tick` reads nothing of the store URL, and names no deployment here, so it sends nothing.
   tick: () => [['tick', '--url', 'https://deployment.example']],
 }

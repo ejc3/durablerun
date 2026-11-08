@@ -10,7 +10,13 @@ import {
 import { engineHistoryViolations } from './engine-history.js'
 import type { StoreFixture, StoreFixtureFactory } from './fixture.js'
 import { type ProtocolSnapshot, snapshot } from './poison-matrix.js'
-import { type KeptBy, type UnitTable, dumpDifferences, purgeOracle } from './retention-oracle.js'
+import {
+  type KeptBy,
+  type ModelHolds,
+  type UnitTable,
+  dumpDifferences,
+  purgeOracle,
+} from './retention-oracle.js'
 import { NAMING_FAILED, SHORTEST_WINDOW_MS } from './retention-policies.js'
 import {
   awaitTaskOwned,
@@ -388,6 +394,11 @@ export interface CellOutcome {
   readonly cell: string
   /** What keeps the unit: by the oracle over the dump, and in `expected` by the cell's name. */
   readonly keptBy: readonly KeptBy[]
+  /**
+   * What a read of the barrier says of the unit before the purge, each condition by name:
+   * by the store's read, and in `expected` by the model's reading of the dump.
+   */
+  readonly says: ModelHolds | null
   /** The rows the purge answered that it deleted, or null when it took nothing. */
   readonly purged: Readonly<Record<UnitTable, number>> | null
   /** How every table afterwards differs from the dump less what the oracle lets go. */
@@ -404,7 +415,8 @@ const violationsOf = (cell: GridCell, id: string): string[] =>
 
 /**
  * Build each cell, send its purge, and say what happened beside what must: the oracle's
- * reading of the rows equals the cell's name, the purge answered what the oracle lets go,
+ * reading of the rows equals the cell's name, the read of the barrier says of each
+ * condition what the model says of it, the purge answered what the oracle lets go,
  * every table of every queue is the dump less exactly that, and the history checkers say
  * of the rows afterwards what they said before.
  *
@@ -435,6 +447,7 @@ export async function runGridCells(
       const before = await snapshot(f.raw)
       const violationsBefore = await engineHistoryViolations(f.raw)
       const oracle = purgeOracle(before, built.purgeAtMs, built.queue, built.target, GRID_POLICY)
+      const said = await retention.purgeAdmission(built.queue, built.target, GRID_POLICY)
       const answer = await retention.purgeUnit(built.queue, built.target, GRID_POLICY)
       const after = await snapshot(f.raw)
       const keptBy = keptByOf(cell)
@@ -442,6 +455,7 @@ export async function runGridCells(
       observed.push({
         cell: cellName(cell),
         keptBy: oracle.keptBy,
+        says: said === null ? null : { ...said.holds },
         purged: answer === null ? null : answer.rows,
         differences: dumpDifferences(oracle.after, after),
         violations: {
@@ -452,6 +466,7 @@ export async function runGridCells(
       expected.push({
         cell: cellName(cell),
         keptBy,
+        says: oracle.holds,
         purged: keptBy.length === 0 ? oracle.rows : null,
         differences: [],
         violations: { before: [...known].sort(), after: [...known].sort() },
