@@ -323,7 +323,7 @@ function help(json: boolean): Answer {
       'tick opens no store: it posts to the origin of DURABLERUN_BASE_URL, with DURABLERUN_TICK_TOKEN.',
       'A write names its store again with --target, and emit, cancel and retry change nothing without --yes.',
       'purge deletes nothing without --execute.',
-      'selftest writes two tasks and one event to a queue of its own, which must hold nothing.',
+      'selftest spawns two tasks and emits one event in a queue of its own, which must hold nothing.',
       'Values users wrote print as their length and sha256 unless --reveal.',
       '',
       'exit codes:',

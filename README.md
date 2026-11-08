@@ -119,3 +119,158 @@ before the fault, hard-exits at the selected actor boundary, clears only the
 one-shot injection hook while retaining the probe queue identity, waits through
 the short test lease/backoff, runs normal recovery ticks, and records status
 afterward.
+
+## Operating a deployment
+
+The operator CLI reads and drives a deployment's database directly. It is in
+this repository and is not published: run it from a checkout, as `pnpm cli
+<command>`. `pnpm cli help` lists every command, flag and exit code, and
+DESIGN.md section 3.11 says what each one does.
+
+**The environment.** `DURABLERUN_STORE_URL` names the database, and
+`DURABLERUN_STORE_TOKEN` holds the token of a libSQL server. No other variable
+is read for the store. A database credential is full admin, so the CLI never
+prints the URL or the token. Every command that writes names its store a second
+time with `--target`: the host of the URL, or the path of a `file:` URL. A
+`--target` that names another store changes nothing and exits 2. In the lines
+below, `<host>` stands for that host and `example-queue` for the queue.
+
+**The schema window.** A build reads the schema versions its store package
+names, from 5, the release alpha.1, to its own. A database outside that window
+is refused with exit 5 before anything is sent. `pnpm cli doctor --queue
+example-queue` prints the build's version and the version the database records.
+`purge` and `selftest` take only the build's own version.
+
+**The order, for a database the release alpha.1 serves.** Each step is one
+command, and each is safe to stop after.
+
+1. Take a snapshot or a branch of the database. Everything up to step 4 runs on
+   the branch, with `DURABLERUN_STORE_URL` and `--target` naming the branch.
+2. Migrate the branch. Without `--yes` the command prints the versions it would
+   apply and changes nothing.
+
+   ```sh
+   pnpm cli migrate --target <branch-host>
+   pnpm cli migrate --target <branch-host> --yes
+   ```
+
+3. Run the self-test on the branch, on a queue of its own that holds nothing.
+   It sends the batches the other commands send and says what each call
+   answered. It spawns two tasks and emits one event there and deletes nothing. Keep
+   its `--json` report: the week's receipt holds it.
+
+   ```sh
+   pnpm cli selftest --queue selftest-example --target <branch-host> --json
+   ```
+
+4. Migrate the database itself, with the alpha.1 host left running. The release
+   alpha.1 runs on a database at the build's version: the compatibility harness
+   of `pnpm verify:packages` holds that, at every version from 5 to the build's.
+5. Never run the example's `pnpm migrate` or `pnpm receipt` from an alpha.1
+   checkout against that database again. alpha.1's own `migrate()` refuses a
+   database recorded above version 5. The example's scripts in this repository
+   check the recorded version first and leave such a database alone.
+6. Read a dry run of the purge, under the windows of your retention policy. It
+   lists what a purge would take and what the barrier keeps, with the reason,
+   and writes nothing.
+
+   ```sh
+   pnpm cli purge --queue example-queue --target <host> --completed-after 7d --cancelled-after 7d
+   ```
+
+7. Purge. One run takes at most `--limit` units, 100 by default, from the
+   oldest. Run the same command again until its report says `more: false`. A
+   purge with no `--failed-after` keeps every failed task.
+
+   ```sh
+   pnpm cli purge --queue example-queue --target <host> --completed-after 7d --cancelled-after 7d --execute
+   ```
+
+**Find, explain, act.** `stuck` lists what the driver owes a queue, and with
+`--older-than` every live task older than a duration. `explain` names one cause
+for a task, from a closed table, with a verdict and the next command to read.
+`cancel`, `retry` and `emit` change nothing without `--yes`, and no command
+suggests `--yes` for you.
+
+```sh
+pnpm cli stuck --queue example-queue --older-than 1d
+pnpm cli explain <task-id> --queue example-queue
+pnpm cli inspect <task-id> --queue example-queue
+pnpm cli cancel <task-id> --queue example-queue --target <host> --yes
+```
+
+`stats` prints a queue's gauges and `sizes` its row counts. `sweep` makes the
+moves a driver's sweep makes, once. `enqueue` spawns a task under an
+idempotency key, so the same line after a lost answer finds the task it made.
+
+### A week on a deployment, and its receipt
+
+The recurring workflow of the hosted example is one task for each period:
+`periodic-digest` reads one GitHub ref and sleeps once. An external scheduler
+enqueues it each hour under the key `digest-<period>`, where the period is the
+hour in UTC, as `date -u +%Y-%m-%dT%H` prints it:
+
+```sh
+pnpm cli enqueue periodic-digest --key digest-2026-01-05T09 --params '{"repository":"example-owner/example-repository","ref":"main"}' --queue example-queue --target <host>
+```
+
+`.github/workflows/operable-week.yml` is that scheduler and the daily purge.
+It is off: its one job runs only while the repository variable
+`DURABLERUN_WEEK_ENABLED` is `true`. Turned on, it writes one task to
+the pinned database each hour, and once a day it records `stats` and `sizes`
+and then runs `purge --execute` until the verb says no more remain. It holds a
+database credential, so it first requires the secret URL to equal the URL a
+repository variable pins. Its reports are files in the run's artifact, and no
+report goes to the log. The file's first comment lists the secrets and
+variables it needs.
+
+A week receipt is one JSON document that holds what the CLI printed with
+`--json` during a week of at least 168 hours:
+
+- `selftest`: the report of step 3;
+- `start` and `end`: a `stats` report and a `sizes` report of the queue;
+- `days`: for each day, a `stats` report, a `sizes` report, and the day's
+  `purge --execute` reports;
+- `failedDryRun`: a dry run of `purge` with `--failed-after`, which lists the
+  failed tasks a purge without that flag keeps;
+- `lookups`: an `inspect --key` report for each period no purge report names;
+- `seal`, `injection`, `explanation` and `attestation`: the sealed injection,
+  below.
+
+`pnpm week-receipt <receipt.json>` checks it and exits 0 when it
+accepts the receipt. It refuses, each by a name: a span under seven days, a
+sample more than 25 hours after the one before it, a table over its bound,
+fewer than 160 of the 168 periods found, a hash that is not the seal's, an
+explanation of another task or cause, a day with no purge, no selftest report,
+a sample taken under a test clock, and any member that is missing or of the
+wrong type. The bound of a table is the start sample's count, plus a digest's
+rows for each hour of the completed window and 25 more, plus a digest's rows
+for each failed task the dry run lists. A task that was tried again holds a run
+for each attempt, so the bound of runs also allows the runs a purge report or a
+lookup shows beyond a task's first.
+
+**The sealed injection.** It shows that an operator who holds only the CLI and
+the store URL finds a stuck task nobody told them about. The checker can prove
+only the hash, so the order of the steps is the maintainer's to attest.
+
+1. Before the start sample, a second person enqueues one task that will not
+   end by itself: a task name the deployment has no handler for, or a task
+   that awaits an event nobody emits.
+2. The same person notes the task's id and the cause `pnpm cli explain` names
+   for it, picks a nonce, and publishes the sha256 of the three, each followed
+   by a line feed, telling the operator nothing else:
+
+   ```sh
+   printf '%s\n%s\n%s\n' "$TASK_ID" "$CAUSE" "$NONCE" | sha256sum
+   ```
+
+3. The maintainer records when the hash was published. The receipt's
+   `attestation` holds that instant and who attests it, and the checker
+   refuses an instant after the start sample.
+4. During the week the operator finds the task with `stuck --older-than`,
+   names its cause with `explain`, keeps that report as the receipt's
+   `explanation`, and clears the task with `cancel --yes`.
+5. After the week the second person reveals the task id, the cause and the
+   nonce, which are the receipt's `injection`. The checker computes the hash
+   again and requires the explanation to be of that task and to name that
+   cause.

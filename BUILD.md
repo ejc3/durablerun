@@ -226,8 +226,10 @@ accepts it.
     `enqueue`, `emit`, `cancel`, `retry` and `sweep` and holds what the line says of them,
     and its red is the registered mutation `cli-enqueue-spawns-under-its-key`, which spawns
     under no key and fails "an enqueue whose answer was lost, run again, finds the task
-    under its key and spawns no second one". The PR that adds `selftest` holds what the
-    line says of that command. PR5.3b1 adds `inspect` to the same surface, from
+    under its key and spawns no second one". PR5.4 adds `selftest` and holds what the
+    line says of that command: after each fault the same line is refused on the queue
+    it wrote to, with exit 2 and not exit 6, and changes nothing, and on another queue
+    it passes and leaves the rows a run without a fault leaves. PR5.3b1 adds `inspect` to the same surface, from
     the current version by an idempotency key, which sends the read by key and
     then every batch a read by a task id sends, so each batch it declares
     (`task-id-by-key`, `task-facts` and `fake-clock`) meets every fault. PR5.3b2
@@ -882,9 +884,10 @@ accepts it.
     row. The run then clears the clock and purges with the `purge` verb and
     `--execute` under windows of at least 3,600 seconds, so the verb and its
     report run on rows alpha.1 wrote. `pnpm cli selftest` sends every batch
-    label the command table can send, which an executor spy compares against the
-    table, including a `purgeUnit` of its own young unit that the barrier
-    refuses, and it refuses a queue that already holds tasks. The receipt
+    label the command table declares but the four the table names with a
+    reason, which an executor spy compares against the table, including a
+    `purgeUnit` of its own young unit that the barrier refuses, and it refuses
+    a queue that already holds a row. The receipt
     checker in apps/dogfood/src/receipt.ts accepts one well-formed week receipt
     and refuses each of these by name: 6 days between first and last snapshot; a
     missing daily snapshot; a `sizes` count one row over the bound; fewer than
@@ -896,29 +899,96 @@ accepts it.
     rows per digest unit that line 43's soak measured for this task's shape,
     plus the rows of the failed units, which a policy with no failed window
     keeps: a dry-run purge lists a failed unit only under a failed window, so
-    the receipt's dry run names one, and it writes nothing. A period
+    the receipt's dry run names one, and it writes nothing. A unit that was
+    tried again holds a run for each attempt, which the soak's shape does not
+    count, so the bound of runs also allows the runs a purge report or a lookup
+    shows a unit held beyond its first. A period
     counts as found from the union of the per-day `purge --execute` reports,
     which carry each removed unit's key sha256, and live `taskIdByKey` lookups,
+    which are `inspect --key` reports,
     and a fixture that drops one day's purge report fails the period count. Red:
-    each doctored fixture exits non-zero and the well-formed one exits zero. NOT
-    MET.
+    each doctored fixture exits non-zero and the well-formed one exits zero.
+    This is met.
+    `periodic-digest` is examples/vercel-turso/src/periodic-digest.ts, with its
+    one read in src/github-ref.ts. Its parameters name a repository and a ref,
+    so an enqueue passes them with `--params`. The example's own tests hold the
+    line under fake time, and `pnpm verify:packages` runs them over the build's
+    packed tarballs: "48 periods are 48 completed
+    tasks, each with one read and one sleep, ended inside its period", "a
+    failed period does not touch the next", "enqueuing a period again returns
+    the same task" and "the registry holds the digest under its name".
+    src/schema.ts holds the example's one call of `migrate()`, behind the
+    recorded version, and test/schema.node-test.ts holds it in four cases, of
+    which "no script or source file of the example calls migrate() but the one
+    that prepares the schema" reads the files. The week on alpha.1 is
+    packages/cli/test/alpha1-week.ts, which scripts/alpha1-compat.sh runs
+    inside `pnpm verify:packages`. It first runs the example's migrate script
+    as a process on a new file and on the same file once the CLI migrated it,
+    beside alpha.1's own `migrate()`, which refuses that file. Then alpha.1's
+    store and SDK run the example's `periodic-digest` and `wait-for-ready` for
+    168 hourly periods, and it throws naming what differed, or prints one
+    sentence of what it showed: the CLI's sweeps made one lost-launch, one
+    claim-timeout and one cancellation, `explain` named
+    `never-started-alpha1-form` and `awaiting-an-untimed-event` on rows alpha.1
+    wrote, `purge` refused under the test clock, and after the clock was
+    cleared seven purge commands took 125 units, 119 completed, 3 cancelled and
+    3 failed, each command held to line 42's oracle over a dump before it and
+    after it. `selftest` then passes there on a queue of its own.
+    `selftest` is packages/cli/src/selftest.ts. In
+    packages/cli/test/selftest.test.ts, "declares every batch label a store
+    command declares, or names it with the reason it is not sent" walks the
+    command table, "refuses a queue that holds a row with exit 2, prints the
+    counts, and sends only reads" and "refuses a database below the build's
+    schema version with exit 5, at a version its reads accept, and changes
+    nothing" hold its refusals, and "exits 11 at the step that checks a call
+    when that call answers of another queue, says what it answered, and runs
+    no step after it, for every call it checks" bends each call in turn. The
+    spy is line 34's: the fault surface records every batch `selftest` sends
+    and requires each to be one the table declares, and each declared label to
+    be sent. The checker is apps/dogfood/src/week-receipt.ts, which receipt.ts
+    exports and `pnpm week-receipt` runs. Its cases are in
+    packages/cli/test/week-receipt.test.ts, where the mutation audit reads
+    them: "accepts the well-formed receipt", one case for each of the eight
+    doctored receipts, named "refuses <what is wrong>, for that cause and no
+    other", and "exits 0 for the well-formed receipt and 1 for each doctored
+    one, naming its cause", which is the line's red. Each doctored receipt is
+    the well-formed one with one thing broken by one function. "refuses the
+    receipt with any member it reads taken away, or of another type" records
+    every member the checker reads of the well-formed receipt and breaks each
+    in turn. "the week receipt reads what the CLI prints" in
+    packages/cli/test/week-receipt-documents.test.ts hands the checker's
+    readers what the commands print. The workflow is
+    .github/workflows/operable-week.yml, off until a repository variable is
+    set, and packages/cli/test/operable-week-workflow.test.ts reads the file
+    and runs its steps against a stand-in for the CLI.
 
 **Receipt M1 (the maintainer's, outside the exit test):** a week of at least 168
-hours on the deployed alpha. Before the week, `pnpm cli selftest` passes on a
-branch or snapshot of the production database, and its output goes in the
-receipt. An external cron runs `pnpm cli enqueue periodic-digest --key
-digest-<period> --queue digest --target <host>` hourly, on a queue of its own
-that the redeployed host drives, and `pnpm cli purge --queue digest --target
-<host> --completed-after <window> --cancelled-after <window> --execute`
-runs at least daily with the windows of the maintainer's policy. `stats --json
---queue digest` and `sizes --json --queue digest` are recorded at the start,
-once a day and at the end, each at or below line 44's bound. A second person
-injects one cause (an unregistered task name, or an await nobody emits) and
-publishes the sha256 of its task id, cause and a nonce before the operator
-starts, and the maintainer attests that ordering, since the checker can prove
-only the hash. The operator, holding the CLI and the store URL, finds the cause
-with `stuck --older-than`, names it with `explain`, and clears it, adding
-`--yes` themselves. Line 44's checker accepts the receipt.
+hours on the deployed alpha. Before the week, a branch or snapshot of the
+production database is migrated with `pnpm cli migrate --target <branch-host>
+--yes`, `pnpm cli selftest --queue <a queue of its own> --target <branch-host>
+--json` passes on it, and its output goes in the receipt. An external cron runs
+`pnpm cli enqueue periodic-digest --key digest-<period> --params <the
+repository and the ref, as JSON> --queue digest --target <host>` hourly, on a
+queue of its own that the redeployed host drives, where the period is the hour
+in UTC, and `pnpm cli purge --queue digest --target <host> --completed-after
+<window> --cancelled-after <window> --execute` runs at least daily with the
+windows of the maintainer's policy, again until its report says no more remain.
+`pnpm cli stats --queue digest --json` and `pnpm cli sizes --queue digest
+--json` are recorded at the start, once a day and at the end, each at or below
+line 44's bound. .github/workflows/operable-week.yml is that cron, the daily
+samples and the daily purge, and it is off until the maintainer sets its
+variable. A second person injects one cause (an unregistered task name, or an
+await nobody emits) before the start sample, so the start sample counts its
+rows, and publishes the sha256 of its task id, the cause as `explain` names it
+and a nonce, each followed by a line feed. The maintainer attests when the hash
+was published, since the checker can prove only the hash. The operator, holding
+the CLI and the store URL, finds the cause with `pnpm cli stuck --queue digest
+--older-than <age>`, names it with `explain`, and clears it, adding `--yes`
+themselves. At the end the receipt gains a dry run of `purge` with
+`--failed-after` and an `inspect --key` report for each period no purge report
+names. `pnpm week-receipt <receipt.json>`, line 44's checker, accepts
+the receipt. The README's section "Operating a deployment" holds the steps.
+NOT MET: it waits on the supplies and decisions held for the maintainer below.
 
 **Order:** PR5.0, this record, and then PR5.3a come first, and together they
 give a read-only tool for the deployed alpha and the harness that says whether
@@ -991,10 +1061,13 @@ redeployed once with `periodic-digest` registered and run with
 `DURABLERUN_QUEUE` set to `digest`, since a host drives only the one queue that
 variable names (so the build runs as a second deployment, unless the maintainer
 moves the alpha's own queue), the repository variable and secrets for the week's
-workflow, a second person for the sealed injection, and a calendar week. The
+workflow, which the first comment of .github/workflows/operable-week.yml lists
+and which turn on an hourly write and a daily delete against the database the
+maintainer pins, a second person for the sealed injection, and a calendar week. The
 migration of the deployed database: the CLI migrates it with the alpha.1 host
 left running, only after line 32's harness is green at the build's version,
-after a snapshot or branch on which `pnpm cli selftest` ran, in a quiet window
+after a snapshot or branch which the CLI migrated and on which `pnpm cli
+selftest` then passed, in a quiet window
 with the finding query from the version 10 comment in
 packages/store-libsql/src/schema.ts run first (crossing version 10 held the
 libSQL writer 14.9 seconds on a cold 4.5 GB file, and under half a second with
@@ -7234,11 +7307,76 @@ these three things; nothing else in the system does I/O, time, or randomness.
     a week's turns of the event loop. Seven of the verb's fifteen were aimed again when
     the walk moved into core: three find lines of core's walk, three of the command's
     handler, and one of the command's reading of its windows.
-- **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: NOT
-  STARTED. Exit test line 44. One thing PR5.2d hands it: the week's count of periods must
-  read a unit that a purge printed under `outcomeNotKnown`, by the sha256 of its key, as
-  it reads a unit a purge printed as purged. A purge whose answer was lost may have taken
-  the unit, and no later run lists a unit that went.
+- **PR5.4 the recurring workflow, alpha.1 in the loop, and the receipt checker**: DONE.
+  Exit test line 44 of the operable alpha milestone, which says what was built and which
+  cases hold it. `periodic-digest` joins the hosted example, a week of it runs on the
+  release alpha.1 inside the compatibility harness with the current CLI as its operator,
+  `pnpm cli selftest` sends the commands' batches to a queue of its own, the week receipt
+  has a checker, and the workflow of the maintainer's week lands off. DESIGN.md section
+  3.11 holds `selftest` and the receipt, and the README's section "Operating a
+  deployment" holds the order of an operator's steps and the sealed injection. Receipt M1
+  stays NOT MET: it is the maintainer's week.
+  - What PR5.2d handed it is built. The week's count of periods reads a unit that a purge
+    printed under `outcomeNotKnown`, by the sha256 of its key, as it reads a unit a purge
+    printed as purged, and "counts a period whose purge was sent and not answered: a lost
+    answer loses no period" holds it.
+  - What the week on alpha.1 found, which the plan did not have. The harness holds every
+    digest unit a purge printed to the rows the receipt's bound allows a unit. A completed
+    digest held two runs: a sweep had taken its first back from a worker that died. A
+    failed one held five. The soak's shape, which the bound was built from, has one run.
+    So the bound of runs allows, beside a unit's one run, every run a purge report or a
+    lookup shows a unit held beyond its first. A unit whose purge was not answered prints
+    no rows, so it is allowed the five attempts of the default retry policy. Every other
+    table keeps the bound line 44 wrote. alpha.1 and the build agreed on every row.
+  - Corrections of the plan, each with its reason. (1) `periodic-digest` requires its
+    parameters, the repository and the ref, so receipt M1's enqueue and the workflow pass
+    `--params`. A digest that guessed a repository would read the wrong one for a week.
+    (2) `selftest` declares every batch label of the command table but four, and the table
+    names the four with the reason. Two are a migration's, sent only below the build's
+    version. Two are a sweep's, sent for a run a worker claimed, and the ports the CLI
+    opens hold no claim. Line 44 said every label. (3) `selftest` takes only the build's
+    schema version, as `purge` does, because the batches it sends are that version's. So
+    the order is: migrate the branch, then run the self-test on it. (4) Its refusal of a
+    queue that holds a row sends two reads, the recorded version and the queue's row
+    counts, and exits 2 with `queue-not-empty`. The plan said nothing is sent, and a
+    command cannot know a queue holds rows without a read. It is not exit 6, so line 34's
+    claim that exit 6 is safe to repeat stands. (5) A call that answers otherwise than the
+    engine does exits 11, `failed`, a new exit code: no older code means that a database
+    took a batch and answered it wrong. (6) Five of its calls answer of its queue what
+    they answer of an empty one, because what would tell the two apart is a claimed run or
+    a unit a window old. A case names the five, and for every other call it requires the
+    run to fail when that call is routed to another queue. (7) `purge` is no longer the
+    one command that calls the retention port: `selftest` sends each of its calls once,
+    and deletes nothing. (8) The seal is the sha256 of the task id, the cause as `explain`
+    names it and the nonce, each followed by a line feed. The second person injects and
+    publishes before the start sample, so the start sample counts the injected task's
+    rows, which the bound has no other term for. The receipt carries the instant the
+    maintainer attests the hash was published, and the checker refuses one after the
+    start sample. (9) The checker refuses four things line 44 did not list: a sample taken
+    under a test clock, a receipt of a kind it does not know, a member that is missing or
+    of the wrong type, and a failed-window dry run that is not whole. (10) The checker's
+    cases are in packages/cli/test and not in apps/dogfood/test, because the mutation
+    audit reads test files under packages/ only, and they hand the checker documents the
+    CLI prints. (11) The example's own tests run over the build's packed tarballs in
+    `pnpm verify:packages`, as they did before. What runs on alpha.1 is the week.
+  - What `selftest` leaves in its queue: two cancelled tasks, each with its run and the
+    event the engine writes as a task ends, and the one event it emitted, seven rows. On
+    PostgreSQL the row that locks the emitted event's name stays too. A purge takes the
+    tasks once they are a window old, and no purge takes the emitted event. It is for a
+    branch or a snapshot.
+  - Options not built, each with its trigger. A `selftest` that claims a run, so that it
+    sends the two labels of a sweep it does not send: the CLI's ports gain a claim, or a
+    database is found to take every batch `selftest` sends and refuse one of those two. A
+    command that assembles a week receipt from the workflow's artifacts: the maintainer's
+    first week. The workflow enqueues the hour it runs in, so a schedule that runs late by
+    a whole hour skips a period, and the floor of 160 of 168 absorbs it: a week that
+    finds fewer than 160 periods for that reason alone. A mutation audit that reads test
+    files under apps/: a second app whose cases need it.
+  - The week adds 37 seconds to the compatibility harness on a loaded host, where the
+    harness took 22 seconds before it. CI's verify job has a 120 minute limit.
+  - The registry holds 1507 mutations where main held 1482: five caught by cases
+    of `selftest`, sixteen by cases of the week receipt's checker, and four by cases of the
+    week's workflow.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 

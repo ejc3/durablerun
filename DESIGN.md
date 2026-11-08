@@ -6739,7 +6739,7 @@ port's answers is held in core, over a port held in memory (section 3.12).
 a queue of its own, and says what each call answered. It is for a branch or a snapshot of a
 database, before the database itself is migrated or purged for the first time: a database
 that refuses a batch, or answers one otherwise than the engine does, is found there and not
-during an incident. It writes two tasks and one event and deletes nothing. It spawns a task
+during an incident. It spawns two tasks and emits one event and deletes nothing. It spawns a task
 under a key and spawns it again, which must find the first. It spawns a second task whose
 cancellation deadline passes as it is spawned. It reads the first task by its key, its
 snapshot, its outcome, its checkpoints and what the guards say of it, then what the driver
@@ -6789,6 +6789,88 @@ registered under its name: `stuck --older-than` lists it and `cancel` ends it. S
 after a lost answer names another queue: on the queue it wrote to it is refused. The fault surface holds that at
 every batch it sends: the same line is refused there and changes nothing once a row was
 written, and on another queue it passes and leaves the rows a run without a fault leaves.
+
+**The week receipt.** A week of the recurring workflow on a deployment is shown by one
+JSON document, the week receipt, and `apps/dogfood/src/week-receipt.ts` checks it. `pnpm
+week-receipt <receipt.json>` exits 0 when the checker accepts the receipt, 1 when
+it refuses it, with each refusal on a line, and 2 when no one file is named or the file is
+not JSON. The receipt holds documents this CLI printed with `--json`, as they were
+printed, and the checker reads a few members of each:
+
+- `kind`, which is `week`, and `queue`, the week's queue. Every document but the
+  self-test's must be of that queue.
+- `selftest`: the report of a `selftest` that passed, on a branch or a snapshot.
+- `start` and `end`: a `stats` report, read for the database's instant and for whether a
+  test clock is set, and a `sizes` report, read for each table's count.
+- `days`: for each day a `stats` report, a `sizes` report, and under `purges` that day's
+  `purge --execute` reports, read for their policy, for `finished` and `more`, and for
+  each unit's state, the sha256 of its key, and the runs that went with it.
+- `failedDryRun`: a dry run of `purge` with `--failed-after` that finished and says no
+  more remain, read for the failed units it lists.
+- `lookups`: `inspect --key` reports, each read for the sha256 of the key and for how
+  many runs the task holds.
+- `seal`, `injection`, `explanation` and `attestation`: the hash a second person
+  published, the task id, cause and nonce that person revealed, the operator's `explain`
+  report, and the instant the maintainer attests the hash was published.
+
+A period is one hour, named as `date -u +%Y-%m-%dT%H` prints it, and its task is enqueued
+under the key `digest-<period>`. The week's periods are the 168 hours from the hour of
+the start sample. A period is found when the sha256 of its key is in a `purge --execute`
+report, under `purged` or under `outcomeNotKnown`, or in a lookup. A unit whose purge was
+sent and not answered may have gone, and no later report lists a unit that went, so it
+counts.
+
+The bound of a table is the start sample's count, plus a digest unit's rows for each hour
+of the completed window and 25 more, plus a digest unit's rows for each failed unit the
+dry run lists. A daily purge leaves standing the units of its window and of the day and
+the hour until the next, and a purge with no failed window keeps every failed unit. A
+digest unit's rows are its task, one run, the checkpoint of its read and of its sleep, and
+its completion event, which is what the simulated week of section 3.12 measures, and a
+case holds the two equal. A unit that was tried again holds a run for each attempt, and so
+does one a sweep took back from a worker that died. The week on the release alpha.1 holds
+every digest unit its purges print to the bound's rows, and it has a completed unit with
+two runs and failed ones with five. So the bound of runs also allows every run the
+receipt shows a unit held beyond its first: the rows a purge report prints of a unit it
+purged, and the runs a lookup lists. A unit named by both counts once. A unit whose purge
+was not answered prints no rows, and it is allowed the five attempts of the default retry
+policy. The start sample counts whatever the queue held then, and the injected task is
+enqueued before it, so the bound needs no term for that task.
+
+The checker reads every member once, into the fields above, and then judges only what it
+read. It refuses a receipt for each thing that is wrong with it:
+
+| Cause | Refused when |
+| --- | --- |
+| unknown-kind | the receipt is no object, or its `kind` is not `week` |
+| malformed | a member the checker reads is missing or of the wrong type, a document is of another command or another queue, or the failed-window dry run is not whole |
+| test-clock-set | a sample was taken under a test clock, whose instant is no instant |
+| span-under-seven-days | the end sample is less than 168 hours after the start sample |
+| missing-daily-snapshot | a sample is more than 25 hours after the one before it, or not after it |
+| sizes-over-bound | a table's count at any sample is over its bound, or is a count the command capped |
+| periods-missing | fewer than 160 of the 168 periods are found |
+| seal-mismatch | the published hash is not the sha256 of the task id, the cause and the nonce, each followed by a line feed |
+| seal-published-after-the-start | the instant attested for the hash is after the start sample |
+| explanation-differs-from-the-seal | the `explain` report is of another task than the sealed one, or names another cause |
+| day-without-purge | a day holds no `purge --execute` report that finished |
+| no-selftest-record | the receipt holds no report of a `selftest` that passed |
+
+It fails closed. A case records every member the checker reads of a well-formed receipt
+and requires a refusal with each one taken away, and with each one of another type. The
+well-formed receipt of the cases is made by code from a model of a week, and each
+doctored receipt is that one with one thing broken by one function, refused for its own
+cause and no other. A second file of cases runs the commands against a database and hands
+the checker's readers what they printed, so a member a command renames is one the checker
+no longer reads.
+
+The checker can prove only what the documents say. That the hash was published before the
+operator started is the maintainer's attestation. The steps of the sealed injection are in
+the README's section "Operating a deployment". `.github/workflows/operable-week.yml`
+makes the hourly enqueue, the daily samples and the daily purge of such a week. Its one
+job runs only while a repository variable is set, it requires the secret store URL to
+equal the URL another variable pins before any command runs, and it writes each report to
+a file of the run's artifact and none to the log. Cases read the file and run its steps
+against a stand-in for the CLI: the enqueue is under the hour's key, and the purge runs
+again until the verb says no more remain.
 
 **The schema window for a write.** A drive verb is held to the window a read is held to. It
 exits 5 outside it and prints the recorded version and the versions the build reads. On

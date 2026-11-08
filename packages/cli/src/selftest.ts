@@ -15,7 +15,7 @@ import type { OpenedStore } from './open-store.js'
  * each batch below is one a command of this CLI sends, and a database that refuses one, or
  * answers it otherwise, is found here and not during an incident.
  *
- * It writes two tasks and one event, all its own, and it deletes nothing. Nothing else may
+ * It spawns two tasks and emits one event, all its own, and it deletes nothing. Nothing else may
  * work the queue while it runs: a worker that claims one of its tasks between two calls
  * shows as an answer that is not the expected one. One task is
  * cancelled by a sweep, through a cancellation deadline that passes as it is spawned, and
