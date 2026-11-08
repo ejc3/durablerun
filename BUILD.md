@@ -205,7 +205,9 @@ line 44's checker accepts it.
     table declares exit 6 for the first two and the exit of a clean run for
     duplicate, except crash-after at `migrate:bootstrap` and at each
     `migrate:v<N>`, which it declares 0 by label because core's migrate reads
-    the version again, and each case exits as the table declares. It is a
+    the version again, and both crashes at the read `enqueue` makes of the task
+    its key found, which it declares 0 by label because that read follows a
+    spawn the store has answered, and each case exits as the table declares. It is a
     CLI-level injection, not SimWorld's SimCrash. A duplicated `retry` sees null
     from its second delivery, so `retry` tells its own revival from a refusal by
     a read before the write. Exit 6 (store unavailable) means the outcome is
@@ -822,8 +824,9 @@ line 44's checker accepts it.
     control exceeds the bound by at least three times, and exceeds what the
     purged week holds by at least three times, in each of the four tables an
     ended unit holds rows in, which are tasks, runs, checkpoints and completion
-    events. Waits are not among them. Every batch that ends or parks a run
-    deletes that run's waits, so an ended unit holds none, the control's waits
+    events. Waits are not among them. Every batch that ends a run, or parks one
+    otherwise than on an await, deletes that run's waits, so an ended unit holds
+    none, the control's waits
     do not grow with the week, and no purge of a correct store takes one. For
     waits the surface holds what is true and can fail: every wait read belongs
     to a live run, and no purged unit held one. Outcomes sampled before each
