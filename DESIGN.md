@@ -5712,8 +5712,8 @@ again with `--target`, the URL's host with its port or the decoded path of a `fi
 URL, and a mismatch exits 2 before anything is opened, as does a write to a URL with no
 host, such as a socket URL, which `--target` cannot name. A store client that refuses
 the URL as it is made is answered with exit 2 too, without the client's message, which
-can quote the URL. Without `--yes` it prints the versions it would apply and exits 2
-with `confirmation-required`, and for a `file:` URL that names no file yet it plans
+can quote the URL. Without `--yes`, when a version is left to apply, it prints the
+versions it would apply and exits 2 with `confirmation-required`, and for a `file:` URL that names no file yet it plans
 every version and opens nothing. Before each version it would apply, it prints the note
 the store package exports for that version in `SCHEMA_VERSION_NOTES`, so what a version
 costs on each dialect is said by that dialect's package and the CLI holds none of it;
@@ -7015,9 +7015,9 @@ An answer that does not come in time leaves the outcome unknown: the pass may ha
 a tick is safe to send again.
 
 **Redaction.** A value a user wrote prints as its byte length and sha256, and its text
-prints only with `--reveal`: params, headers, a checkpoint's state, an event payload, a
+prints only with `--reveal`: params, a checkpoint's state, an event payload, a
 completed result, a failure reason the task's code wrote, a failed rollback's error, and
-an idempotency key. The four failure reasons the engine writes print by name
+an idempotency key. No command reads a task's headers. The four failure reasons the engine writes print by name
 (`$ClaimTimeout`, `$RelaunchCapExhausted`, `$InfraRetriesExhausted`, `$Cancelled`). Task
 ids, task names, event names, checkpoint names and queue names print. A store's own
 error message prints only with `--reveal`, because a driver can quote a stored value in
@@ -7036,8 +7036,12 @@ states and reason names of the engine's own, counts, instants and flags. Its cau
 row that is not readable prints one list, `notReadable`: an outcome the decoders refuse,
 each corrupt integer by its field and the ids of its row, and the task and each run or wait
 whose state or status is not the engine's own by the same. It quotes no stored value. One
-function builds that list, and a task's facts are readable when it is empty, so `inspect`
-exits 10 exactly when `explain` would name something. `stuck`, `stats` and `sizes` print
+function builds that list from a task's own facts, and those facts are readable when it is
+empty, so `inspect` exits 10 exactly when `explain` would name something of the task's own
+rows. `explain` answers `unreadable` for two things `inspect` does not read: a wait of
+another task on the event the task awaits whose timeout is outside its bounds, named in
+the same list, and a checkpoint row the decoders refuse, which prints as `checkpoints:
+unreadable` and no list. `stuck`, `stats` and `sizes` print
 ids, task names, states of the engine's own, instants and counts, and no value a user
 wrote. A drive verb prints the idempotency key, the parameters and the payload its caller
 passed as their length and sha256, and their text with `--reveal`. A port's refusal of an
@@ -7064,8 +7068,8 @@ that went print there, and the exit is the failure's. So is the report of `selft
 prints there with the calls it reached when it exits 11 or as a failure does. Every other answer that does not exit
 0 is a refusal and prints on stderr. That holds when the refusal names a fact about the
 store. On a database recorded at a schema version outside the window, every read exits 5 and
-prints the recorded version on stderr. `migrate` without `--yes` exits 2 and prints the
-version it starts from and the versions it would apply on stderr, and a `migrate` that fails
+prints the recorded version on stderr. `migrate` without `--yes`, when a version is left
+to apply, exits 2 and prints the version it starts from and the versions it would apply on stderr, and a `migrate` that fails
 partway prints the versions it applied there. A usage error, a refused call, a store that is
 unavailable, a task that is not there, and the answer of `result` or `checkpoints` for a row
 the decoders refuse print there too. A refusal of `stuck`, as of a grace it cannot read,
@@ -7106,8 +7110,9 @@ stopped partway changes nothing a run on another queue reads. For `tick` it hold
 because a tick is one bounded pass, and a second does what the next cron tick would. Safe to
 repeat is not sure to succeed. A wrong credential exits 6 today on every store: both server
 executors type an authentication failure as an outage (a test measures it on PostgreSQL and
-MySQL), and the libSQL executor types every client error but a constraint or a type mismatch
-as one. It fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is
+MySQL), and the libSQL executor types every client error but a constraint, a type mismatch
+or a schema fault, which is a table or a column that is missing or a column that is there
+twice, as one. It fails again on every repeat, so a caller caps its retries of exit 6. Exit 4 is
 what `tick` gives for a token its deployment refuses. A store's wrong credential does not
 give it: typing an authentication failure apart from an outage changes the executors and
 core, and is the maintainer's decision.
@@ -7126,8 +7131,9 @@ on its child, which reads the waiters of the child's completion and where a faul
 reads of both tasks, so between them each batch it declares is sent. `stuck` runs with
 `--older-than`, which sends each batch it declares, and `stats` and `sizes` send theirs. Each
 drive verb runs from the current version, over seeded tasks: `enqueue` under a key no task
-has, `emit` of an event a run awaits, `cancel` of a pending task, `retry` of a failed task
-and of a live one, which makes it read the guard, and `sweep` of a queue with a deadline
+has and under a key a task holds, which makes it read the task it found, `emit` of an event
+a run awaits, `cancel` of a pending task, `retry` of a failed task
+and of a live one, which makes it read the guard again, and `sweep` of a queue with a deadline
 passed, a launch lost and a lease lapsed. `purge` runs as a dry run and with `--execute`,
 over units that are years old by the database's own clock and one the barrier keeps, so a
 fault meets the listing, the purge of a unit, and the read of the barrier that follows a
@@ -7139,6 +7145,8 @@ table declares exit 6 for
 the first two and the exit of a clean run for duplicate, except at the batches whose lost
 answer `migrate` recovers, where it declares 0 for crash-after by label:
 `migrate:bootstrap` and each version's write, because the admin reads the version again.
+It also declares 0 for both crashes at the read `enqueue` makes of the task its key found
+(`task-facts` and `fake-clock`), because that read follows a spawn the store has answered.
 Every batch label and every per-label exit the table declares must be sent from some
 starting state, so a label that is stale or never met fails. After each case, running the
 same command again reaches the state one successful run leaves, and a read prints what
