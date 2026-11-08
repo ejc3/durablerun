@@ -1,3 +1,9 @@
 packages:
   - "packages/*"
   - "apps/*"
+
+linkWorkspacePackages: true
+
+allowBuilds:
+  '@biomejs/biome': true
+  esbuild: true

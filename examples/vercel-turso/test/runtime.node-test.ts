@@ -40,7 +40,7 @@ test('configuration installs the external app and gives its private queue a cron
     crons?: unknown
     functions: Record<string, { maxDuration?: unknown; experimentalTriggers?: unknown }>
   }
-  assert.equal(config.installCommand, 'npm install')
+  assert.equal(config.installCommand, 'pnpm install --frozen-lockfile')
   assert.deepEqual(config.crons, [{ path: '/api/tick', schedule: '* * * * *' }])
   const routes = readdirSync(new URL('../api/', import.meta.url))
     .filter((file) => file.endsWith('.ts'))

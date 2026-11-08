@@ -13,7 +13,7 @@ database. Do not point the migrator or receipt at another application's database
 1. Copy `.env.example` to `.env` and fill every value. Keep
    `DURABLERUN_API_TOKEN` and `CRON_SECRET` distinct. The latter is the Bearer
    credential Vercel adds to cron requests.
-2. Run `npm install`, then `npm run typecheck`, `npm test`, and `npm run migrate`.
+2. Run `pnpm install --frozen-lockfile`, then `pnpm typecheck`, `pnpm test`, and `pnpm migrate`.
 3. Create a Vercel project from this directory, add the five runtime variables
    (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `DURABLERUN_QUEUE`,
    `DURABLERUN_API_TOKEN`, and `CRON_SECRET`), and deploy it. `api/*.ts` pins
@@ -24,9 +24,9 @@ database. Do not point the migrator or receipt at another application's database
    is no additional service token. Queue operations and invocations use the
    project's existing Vercel billing.
 4. Set `DURABLERUN_BASE_URL` locally to the HTTPS production URL and run
-   `npm run receipt`. The receipt rejects a non-HTTPS destination before it
+   `pnpm receipt`. The receipt rejects a non-HTTPS destination before it
    constructs an authenticated request.
-5. Run `npm run receipt:unattended` against an otherwise idle dedicated queue.
+5. Run `pnpm receipt:unattended` against an otherwise idle dedicated queue.
    It never sends a tick request: it commits a task without its producer hint,
    observes cron/queue recovery, then enqueues another through the public API.
    Both tasks must visibly sleep for ten seconds and complete within 60 seconds
@@ -104,7 +104,7 @@ producer hint or alarm publish; Vercel cron itself is best-effort and does not
 retry missed invocations. Hobby users can restore `0 0 * * *` for a daily
 backstop, but then the dropped-hint receipt's recovery bound does not apply.
 
-The original `npm run receipt` still drives authorized ticks explicitly for
+The original `pnpm receipt` still drives authorized ticks explicitly for
 the earlier event and lost-launch checks; only `receipt:unattended` proves the
 new automatic wake path.
 
@@ -178,8 +178,8 @@ and [rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits
 
 ### Interruption recovery receipt
 
-Run `npm run receipt:pr-watcher` from a clean external copy of this directory
-installed with `npm install`; the four package URLs remain the immutable alpha
+Run `pnpm receipt:pr-watcher` from a clean external copy of this directory
+installed with `pnpm install --frozen-lockfile`; the four package URLs remain the immutable alpha
 release tarballs. Set `PR_WATCHER_INPUT` to the JSON **params** object above,
 using a real open PR whose selected checks are still pending. Use at least two
 polls and a polling budget that fits the receipt's 15-minute deadline. The

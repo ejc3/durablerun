@@ -65,16 +65,17 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ts = createRequire(import.meta.url)('typescript')
-const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed })
+import { parseSync, visitorKeys } from 'oxc-parser'
+import * as ts from 'typescript/ast'
+import * as factory from 'typescript/ast/factory'
+import { API, ModuleKind, ModuleResolutionKind, SymbolFlags } from 'typescript/sync'
 const sha256 = (data) => createHash('sha256').update(data).digest('hex')
 const pinOf = (shape) => sha256(shape.join('\n'))
-const same = (was, now) => was.join('\n') === now.join('\n')
+const same = (was, now) => canonicalQuotes(was) === canonicalQuotes(now)
 const by = (key) => (a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)
 const find = (table, { packageName, subpath, name }) => table?.[packageName]?.[subpath]?.[name]
 const TYPE_ONLY = '(a value exported as a type only)'
@@ -82,6 +83,36 @@ const NAMESPACE =
   'exports a whole module as a namespace, which has no shape here: export its names one by one, or teach this check the shape of a namespace before a release records one'
 // TS1362: a name cannot be used as a value because it was exported using `export type`.
 const EXPORTED_AS_A_TYPE = 1362
+
+// TypeScript 7 preserves source quotes in inferred declarations where older emitters
+// synthesized double quotes. Compare decoded string values, preserving every other byte.
+function canonicalQuotes(shape) {
+  let text = shape.join('\n')
+  const parsed = text
+    .replace(/^ {4}\(private members\)$/gm, (line) => ' '.repeat(line.length))
+    .replace(/^\(a value exported as a type only\)$/gm, (line) => ' '.repeat(line.length))
+  const syntax = parseSync('surface.d.ts', parsed)
+  if (syntax.errors.length)
+    throw new Error(`package-surface: cannot parse declaration shape: ${syntax.errors[0].message}`)
+  const literals = []
+  const visit = (node) => {
+    if (
+      (node.type === 'Literal' || node.type === 'StringLiteral') &&
+      typeof node.value === 'string'
+    )
+      literals.push(node)
+    for (const key of visitorKeys[node.type] ?? []) {
+      const child = node[key]
+      if (Array.isArray(child)) {
+        for (const each of child) if (each) visit(each)
+      } else if (child) visit(child)
+    }
+  }
+  visit(syntax.program)
+  for (const node of literals.sort((a, b) => b.start - a.start))
+    text = text.slice(0, node.start) + JSON.stringify(node.value) + text.slice(node.end)
+  return text
+}
 
 // A private constructor is not hidden: it says that a consumer cannot construct the class.
 const isPrivate = (member) =>
@@ -97,18 +128,17 @@ const HOW_EXPORTED = [
 const unexported = (node) => node.modifiers?.filter(({ kind }) => !HOW_EXPORTED.includes(kind))
 
 // One declaration as lines, without the modifiers that say how it is exported.
-function declared(node) {
-  const print = (shown) => printer.printNode(ts.EmitHint.Unspecified, shown, node.getSourceFile())
+function declared(node, api) {
+  const print = (shown) => api.printer.printNode(shown)
   if (ts.isVariableDeclaration(node)) {
     const flags = node.parent.flags
     const keyword = flags & ts.NodeFlags.Const ? 'const' : flags & ts.NodeFlags.Let ? 'let' : 'var'
     return `${keyword} ${print(node)};`.split('\n')
   }
-  if (!ts.isClassDeclaration(node))
-    return print(ts.factory.replaceModifiers(node, unexported(node))).split('\n')
+  if (!ts.isClassDeclaration(node)) return print(withoutExportModifiers(node)).split('\n')
   const members = node.members.filter((member) => !isPrivate(member))
   const lines = print(
-    ts.factory.updateClassDeclaration(
+    factory.updateClassDeclaration(
       node,
       unexported(node),
       node.name,
@@ -121,17 +151,55 @@ function declared(node) {
   return lines
 }
 
+// Native factory updates keep the original declaration while removing export-only modifiers.
+function withoutExportModifiers(node) {
+  const modifiers = unexported(node)
+  if (ts.isInterfaceDeclaration(node))
+    return factory.updateInterfaceDeclaration(
+      node,
+      modifiers,
+      node.name,
+      node.typeParameters,
+      node.heritageClauses,
+      node.members,
+    )
+  if (ts.isTypeAliasDeclaration(node))
+    return factory.updateTypeAliasDeclaration(
+      node,
+      modifiers,
+      node.name,
+      node.typeParameters,
+      node.type,
+    )
+  if (ts.isFunctionDeclaration(node))
+    return factory.updateFunctionDeclaration(
+      node,
+      modifiers,
+      node.asteriskToken,
+      node.name,
+      node.typeParameters,
+      node.parameters,
+      node.type,
+      node.body,
+    )
+  if (ts.isEnumDeclaration(node))
+    return factory.updateEnumDeclaration(node, modifiers, node.name, node.members)
+  if (ts.isModuleDeclaration(node))
+    return factory.updateModuleDeclaration(node, modifiers, node.name, node.attributes, node.body)
+  throw new Error(`package-surface: unsupported declaration kind ${node.kind}`)
+}
+
 // Every identifier of a declaration is asked what it names, so a name is reached however the
 // declaration refers to it: a type reference, a heritage clause, a `typeof` query, a computed
 // key, an `import()` type. One that names no top-level declaration of the packed packages,
 // a member, a parameter, a type parameter, a library type, is dropped by the caller.
 function identifiers(node, visit) {
   if (ts.isIdentifier(node)) visit(node)
-  ts.forEachChild(node, (child) => identifiers(child, visit))
+  node.forEachChild((child) => identifiers(child, visit))
 }
 
 function exportsOf(program, { packageName, subpath, file }) {
-  const checker = program.getTypeChecker()
+  const checker = program.getProject().checker
   const source = program.getSourceFile(file)
   const symbol = source && checker.getSymbolAtLocation(source)
   if (!symbol) throw new Error(`package-surface: cannot read ${packageName} ${subpath} (${file})`)
@@ -161,125 +229,126 @@ function packedSurface(unpackedRoot, released = () => true) {
   }
   const options = {
     target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    module: ModuleKind.NodeNext,
+    moduleResolution: ModuleResolutionKind.NodeNext,
     noEmit: true,
     // No printed line comes from the compiler's own library, so it is not parsed.
     noLib: true,
     skipLibCheck: true,
-    baseUrl: '/',
     paths,
     types: [],
   }
   // How a name is exported is asked of a consumer's compiler. For each entry point a module
-  // that exists only here imports every exported name and uses each as a value, one to a line,
+  // in a temporary directory imports every exported name and uses each as a value, one to a line,
   // and the compiler says which of them were exported as a type only. The names come from a
   // first program, and the two programs parse each file once.
-  const host = ts.createCompilerHost(options)
-  const consumers = new Map()
-  const parsed = new Map()
-  const fromDisk = host.getSourceFile.bind(host)
-  host.getSourceFile = (fileName, how, ...rest) => {
-    if (!parsed.has(fileName)) {
-      const text = consumers.get(fileName)
-      parsed.set(
-        fileName,
-        text === undefined
-          ? fromDisk(fileName, how, ...rest)
-          : ts.createSourceFile(fileName, text, how),
+  const api = new API({ cwd: resolve(unpackedRoot) })
+  const consumerDirectory = mkdtempSync(join(tmpdir(), 'durablerun-surface-consumers-'))
+  try {
+    const named = api.createProgram(roots, options)
+    for (const [index, entry] of entries.entries()) {
+      const { packageName, subpath } = entry
+      entry.names = exportsOf(named, entry).map((symbol) => symbol.name)
+      entry.consumer = join(consumerDirectory, `consumer-${index}.mts`)
+      const imports = entry.names.map((name, at) => `${name} as v${at}`).join(', ')
+      const from = subpath === '.' ? packageName : `${packageName}/${subpath.slice(2)}`
+      writeFileSync(
+        entry.consumer,
+        [`import { ${imports} } from '${from}'`, ...entry.names.map((_, at) => `v${at}`)].join(
+          '\n',
+        ),
       )
     }
-    return parsed.get(fileName)
-  }
-  const named = ts.createProgram(roots, options, host)
-  for (const [index, entry] of entries.entries()) {
-    const { packageName, subpath } = entry
-    entry.names = exportsOf(named, entry).map((symbol) => symbol.getName())
-    entry.consumer = join(resolve(unpackedRoot), `package-surface-consumer-${index}.mts`)
-    const imports = entry.names.map((name, at) => `${name} as v${at}`).join(', ')
-    const from = subpath === '.' ? packageName : `${packageName}/${subpath.slice(2)}`
-    consumers.set(
-      entry.consumer,
-      [`import { ${imports} } from '${from}'`, ...entry.names.map((_, at) => `v${at}`)].join('\n'),
+    const program = api.createProgram(
+      [...roots, ...entries.map((entry) => entry.consumer)],
+      options,
     )
-  }
-  const program = ts.createProgram([...roots, ...consumers.keys()], options, host)
-  const checker = program.getTypeChecker()
-  const typeOnly = ({ packageName, subpath, names, consumer }) => {
-    const source = program.getSourceFile(consumer)
-    if (program.getSyntacticDiagnostics(source).length > 0)
-      throw new Error(
-        `package-surface: cannot import every name of ${packageName} ${subpath} to ask how it is exported`,
+    const checker = program.getProject().checker
+    const typeOnly = ({ packageName, subpath, names, consumer }) => {
+      if (program.getSyntacticDiagnostics(consumer).length > 0)
+        throw new Error(
+          `package-surface: cannot import every name of ${packageName} ${subpath} to ask how it is exported`,
+        )
+      return new Set(
+        program
+          .getSemanticDiagnostics(consumer)
+          .filter(({ code }) => code === EXPORTED_AS_A_TYPE)
+          .map(({ startPosition }) => names[startPosition.line - 1]),
       )
-    return new Set(
-      program
-        .getSemanticDiagnostics(source)
-        .filter(({ code }) => code === EXPORTED_AS_A_TYPE)
-        .map(({ start }) => names[ts.getLineAndCharacterOfPosition(source, start).line - 1]),
-    )
-  }
-  // Where a declaration sits in the packed packages, or undefined for the compiler's own
-  // library and for a dependency, whose declarations are not this repository's to hold.
-  const place = (node) => {
-    const file = node.getSourceFile().fileName
-    const home = packages.find(({ dir }) => file.startsWith(dir + sep))
-    return home && `${home.name}/${relative(home.dir, file)}`
-  }
-  // A module is no declaration of its own: what a namespace import names is not reached, and
-  // the names read through it are.
-  const topLevel = (node) => {
-    if (ts.isSourceFile(node)) return false
-    const statement = ts.isVariableDeclaration(node) ? node.parent.parent : node
-    return ts.isSourceFile(statement.parent) || ts.isModuleBlock(statement.parent)
-  }
-  const resolved = (symbol) =>
-    symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
-  const declarationsOf = (symbol) =>
-    (symbol.declarations ?? [])
-      .filter((node) => place(node) !== undefined && topLevel(node))
-      .sort((a, b) => by(place)(a, b) || a.pos - b.pos)
-  const exported = entries.map((entry) => ({ ...entry, symbols: exportsOf(program, entry) }))
-  const compared = new Set()
-  for (const { packageName, subpath, symbols } of exported)
-    for (const symbol of symbols)
-      if (released({ packageName, subpath, name: symbol.getName() })) compared.add(resolved(symbol))
-  const reach = (symbol, reached) => {
-    for (const declaration of declarationsOf(symbol))
-      identifiers(declaration, (identifier) => {
-        const found = checker.getSymbolAtLocation(identifier)
-        const target = found && resolved(found)
-        if (!target || compared.has(target) || reached.has(target)) return
-        if (declarationsOf(target).length === 0) return
-        reached.add(target)
-        reach(target, reached)
-      })
-  }
-  const label = (symbol) => `${symbol.getName()} ${place(declarationsOf(symbol)[0])}`
-  const surface = {}
-  const namespaces = []
-  for (const entry of exported) {
-    const { packageName, subpath, symbols } = entry
-    const asTypes = typeOnly(entry)
-    const shapes = {}
-    for (const symbol of symbols.sort(by((each) => each.getName()))) {
-      const own = resolved(symbol)
-      if (own.declarations?.some(ts.isSourceFile)) {
-        namespaces.push(`${packageName} ${subpath}: ${symbol.getName()}`)
-        continue
+    }
+    // Where a declaration sits in the packed packages, or undefined for the compiler's own
+    // library and for a dependency, whose declarations are not this repository's to hold.
+    const place = (node) => {
+      const file = node.getSourceFile().fileName
+      const home = packages.find(({ dir }) => file.startsWith(dir + sep))
+      return home && `${home.name}/${relative(home.dir, file)}`
+    }
+    // A module is no declaration of its own: what a namespace import names is not reached, and
+    // the names read through it are.
+    const topLevel = (node) => {
+      if (ts.isSourceFile(node)) return false
+      const statement = ts.isVariableDeclaration(node) ? node.parent.parent : node
+      return ts.isSourceFile(statement.parent) || ts.isModuleBlock(statement.parent)
+    }
+    const resolved = (symbol) =>
+      symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
+    const declarationsOf = (symbol) =>
+      (symbol.declarations ?? [])
+        .map((handle) => handle.resolve())
+        .filter((node) => node !== undefined)
+        .filter((node) => place(node) !== undefined && topLevel(node))
+        .sort((a, b) => by(place)(a, b) || a.pos - b.pos)
+    const exported = entries.map((entry) => ({ ...entry, symbols: exportsOf(program, entry) }))
+    const compared = new Set()
+    for (const { packageName, subpath, symbols } of exported)
+      for (const symbol of symbols)
+        if (released({ packageName, subpath, name: symbol.name })) compared.add(resolved(symbol))
+    const reach = (symbol, reached) => {
+      for (const declaration of declarationsOf(symbol))
+        identifiers(declaration, (identifier) => {
+          const found = checker.getSymbolAtLocation(identifier)
+          const target = found && resolved(found)
+          if (!target || compared.has(target) || reached.has(target)) return
+          if (declarationsOf(target).length === 0) return
+          reached.add(target)
+          reach(target, reached)
+        })
+    }
+    const label = (symbol) => `${symbol.name} ${place(declarationsOf(symbol)[0])}`
+    const surface = {}
+    const namespaces = []
+    for (const entry of exported) {
+      const { packageName, subpath, symbols } = entry
+      const asTypes = typeOnly(entry)
+      const shapes = {}
+      for (const symbol of symbols.sort(by((each) => each.name))) {
+        const own = resolved(symbol)
+        if (own.declarations?.some((handle) => handle.kind === ts.SyntaxKind.SourceFile)) {
+          namespaces.push(`${packageName} ${subpath}: ${symbol.name}`)
+          continue
+        }
+        const reached = new Set([own])
+        reach(own, reached)
+        reached.delete(own)
+        const beside = [...reached].sort(by(label))
+        shapes[symbol.name] = [
+          ...(asTypes.has(symbol.name) ? [TYPE_ONLY] : []),
+          ...[own, ...beside].flatMap((each) =>
+            declarationsOf(each).flatMap((node) => declared(node, api)),
+          ),
+        ]
       }
-      const reached = new Set([own])
-      reach(own, reached)
-      reached.delete(own)
-      const beside = [...reached].sort(by(label))
-      shapes[symbol.getName()] = [
-        ...(asTypes.has(symbol.getName()) ? [TYPE_ONLY] : []),
-        ...[own, ...beside].flatMap((each) => declarationsOf(each).flatMap(declared)),
-      ]
+      surface[packageName] ??= {}
+      surface[packageName][subpath] = shapes
     }
-    surface[packageName] ??= {}
-    surface[packageName][subpath] = shapes
+    return { surface, namespaces }
+  } finally {
+    try {
+      api.close()
+    } finally {
+      rmSync(consumerDirectory, { recursive: true, force: true })
+    }
   }
-  return { surface, namespaces }
 }
 
 // What differs, for a reader: the lines only the release has, then the lines only the packed
