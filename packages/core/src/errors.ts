@@ -22,6 +22,11 @@ const {
   ObjectHasOwn: hasOwn,
   StringFrom: stringifyPrimitive,
 } = TASK_INTRINSICS
+const ordinaryHasInstance = Function.prototype[Symbol.hasInstance]
+const hasInstance = ordinaryHasInstance.call.bind(ordinaryHasInstance) as (
+  errorType: object,
+  value: unknown,
+) => boolean
 const AUTHENTIC_FATAL_FAILURES = new WeakMap<object, TaskThrowableSnapshot>()
 const getAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.get.bind(AUTHENTIC_FATAL_FAILURES)
 const setAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.set.bind(AUTHENTIC_FATAL_FAILURES)
@@ -252,6 +257,25 @@ export class PermanentStoreError extends Error {
 }
 
 /**
+ * The store refused the credential it was given, or refused what that credential may do: a
+ * password or a token it does not accept, an account that is locked or may not connect, a
+ * statement the account has no privilege for. The store is up and the statement is one it
+ * takes under another credential. So this is DELIBERATELY NEITHER a StoreUnavailableError,
+ * whose whole meaning is that waiting helps, NOR a PermanentStoreError, whose meaning is
+ * that the statement is refused for good: what changes the answer is another credential,
+ * or a grant to this one.
+ *
+ * An executor decides this from the driver's error CODE and never from message text, and a
+ * code it does not know keeps the type it had. The message carries the driver's code and
+ * `cause` carries the driver's error. A worker pass treats this type exactly as it treats
+ * an outage (DESIGN.md §3.2), because naming an error more precisely must not change who
+ * pays for it. Task construction alone carries no runtime authority.
+ */
+export class StoreAccessRefusedError extends Error {
+  override readonly name = 'StoreAccessRefusedError'
+}
+
+/**
  * A durable identity cannot be represented unchanged by every supported
  * store. Callers may classify this as invalid input without conflating it
  * with infrastructure or programmer failures.
@@ -297,6 +321,56 @@ export class SchemaMismatchError extends Error {
  */
 export class SchemaNotInitializedError extends Error {
   override readonly name = 'SchemaNotInitializedError'
+}
+
+/**
+ * The kinds of failure a store's executor raises for what its driver or its database
+ * answered, each with its type. This is the ONE definition of them. `storeFailureKind`
+ * reads it, and a consumer that answers a store's failure holds a record keyed by
+ * `StoreFailureKind`, so a kind added here fails the typecheck of every consumer until it
+ * says what it does with the new one. No type here extends another, so an error is of one
+ * kind at most.
+ *
+ * Two things an executor throws are not here. A value it refuses before anything is sent
+ * is a programming error and a TypeError. A string longer than its MySQL column is an
+ * `InvalidDurableStringError`, which a port's own check also raises, and `isPortRefusal`
+ * names that family.
+ */
+export const STORE_FAILURE_TYPES = freeze({
+  unavailable: StoreUnavailableError,
+  'access-refused': StoreAccessRefusedError,
+  permanent: PermanentStoreError,
+  'schema-mismatch': SchemaMismatchError,
+  'schema-not-initialized': SchemaNotInitializedError,
+} as const)
+
+export type StoreFailureKind = keyof typeof STORE_FAILURE_TYPES
+
+/** The table as pairs, made once when the module loads, before any task code runs. */
+const STORE_FAILURES = freeze(
+  (Object.keys(STORE_FAILURE_TYPES) as StoreFailureKind[]).map((kind) =>
+    freeze([kind, STORE_FAILURE_TYPES[kind]] as const),
+  ),
+)
+
+/**
+ * Which kind of store failure an error is, or undefined when it is none of them. The type
+ * is checked with the ordinary check captured when this module loaded, so a
+ * `Symbol.hasInstance` that task code installs on a public class grants nothing, and a
+ * value that cannot be asked, as a revoked proxy cannot, is no store failure. Like every
+ * type here, the kind says what the error is and not where it came from: a consumer that
+ * needs authority classifies only at its own store boundary.
+ */
+export function storeFailureKind(error: unknown): StoreFailureKind | undefined {
+  try {
+    for (let at = 0; at < STORE_FAILURES.length; at++) {
+      const failure = STORE_FAILURES[at]
+      if (failure !== undefined && hasInstance(failure[1], error)) return failure[0]
+    }
+  } catch {
+    // A value that cannot be asked for its type is not a typed failure of the store.
+  }
+  return undefined
 }
 
 /** Intentionally public task policy: permanent failure, skip retries. */

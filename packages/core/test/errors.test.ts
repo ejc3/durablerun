@@ -3,10 +3,15 @@ import {
   FatalTaskError,
   LeaseLostError,
   PermanentStoreError,
+  STORE_FAILURE_TYPES,
+  SchemaMismatchError,
+  StoreAccessRefusedError,
+  type StoreFailureKind,
   StoreUnavailableError,
   SuspendSignal,
   UNINSPECTABLE_TASK_FAILURE_JSON,
   snapshotTaskThrowable,
+  storeFailureKind,
 } from '../src/errors.js'
 import { attributeExpectedFailure } from '../src/testing.js'
 
@@ -213,5 +218,89 @@ describe('PermanentStoreError', () => {
   it('is no outage, and an outage is not one', () => {
     expect(new PermanentStoreError('refused for good')).not.toBeInstanceOf(StoreUnavailableError)
     expect(new StoreUnavailableError('offline')).not.toBeInstanceOf(PermanentStoreError)
+  })
+})
+
+describe('StoreAccessRefusedError', () => {
+  it('is neither an outage nor a permanent answer, and neither of those is one', () => {
+    const refused = new StoreAccessRefusedError('refused', { cause: new Error('the driver') })
+    expect(refused).not.toBeInstanceOf(StoreUnavailableError)
+    expect(refused).not.toBeInstanceOf(PermanentStoreError)
+    expect(new StoreUnavailableError('offline')).not.toBeInstanceOf(StoreAccessRefusedError)
+    expect(new PermanentStoreError('for good')).not.toBeInstanceOf(StoreAccessRefusedError)
+    expect({ name: refused.name, cause: (refused.cause as Error).message }).toEqual({
+      name: 'StoreAccessRefusedError',
+      cause: 'the driver',
+    })
+    // Constructed by task code it is an ordinary failure, as every public type is.
+    expect(snapshotTaskThrowable(refused)).toEqual(failure('StoreAccessRefusedError', 'refused'))
+  })
+})
+
+describe('storeFailureKind', () => {
+  const kinds = Object.keys(STORE_FAILURE_TYPES) as StoreFailureKind[]
+
+  it('names the kind of every type of the table and of a subclass of one, and each error is of one kind', () => {
+    expect(kinds).toEqual([
+      'unavailable',
+      'access-refused',
+      'permanent',
+      'schema-mismatch',
+      'schema-not-initialized',
+    ])
+    for (const kind of kinds) {
+      const Type = STORE_FAILURE_TYPES[kind]
+      class Narrower extends Type {}
+      expect(
+        { kind, own: storeFailureKind(new Type('x')), narrower: storeFailureKind(new Narrower()) },
+        'mutation-verdict:behavior:store-failure-kind-reads-every-type-of-the-table',
+      ).toEqual({ kind, own: kind, narrower: kind })
+      // No type of the table extends another, so the order of the table decides nothing.
+      expect(kinds.filter((other) => new Type('x') instanceof STORE_FAILURE_TYPES[other])).toEqual([
+        kind,
+      ])
+    }
+  })
+
+  it('answers no kind for an error of another type and for a value that is no error', () => {
+    for (const other of [
+      new Error('ordinary'),
+      new TypeError('ordinary'),
+      new LeaseLostError('lost'),
+      { name: 'StoreUnavailableError', message: 'a look-alike' },
+      'StoreUnavailableError',
+      null,
+      undefined,
+    ]) {
+      expect(storeFailureKind(other)).toBeUndefined()
+    }
+  })
+
+  it('uses the type check captured when the module loaded, not a hook installed on a public type', () => {
+    for (const kind of kinds) {
+      const Type = STORE_FAILURE_TYPES[kind]
+      Object.defineProperty(Type, Symbol.hasInstance, { configurable: true, value: () => true })
+      try {
+        expect(
+          storeFailureKind(new Error('ordinary')),
+          'mutation-verdict:construction:store-failure-kind-ordinary-has-instance',
+        ).toBeUndefined()
+      } finally {
+        Reflect.deleteProperty(Type, Symbol.hasInstance)
+      }
+    }
+  })
+
+  it('answers no kind for a value that cannot be asked for its type', async () => {
+    const revocable = Proxy.revocable(Object.create(null), {})
+    revocable.revoke()
+    const kind = await attributeExpectedFailure(
+      { kind: 'behavior', mutation: 'store-failure-kind-total-fallback' },
+      /proxy that has been revoked/,
+      async () => storeFailureKind(revocable.proxy),
+    )
+    expect(kind).toBeUndefined()
+    // The control: the same type check does throw for such a value.
+    expect(() => revocable.proxy instanceof SchemaMismatchError).toThrow(/revoked/)
   })
 })
