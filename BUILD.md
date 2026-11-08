@@ -564,8 +564,10 @@ line 44's checker accepts it.
     the same port call leaves on a twin database with the same seeded IdSource,
     through `main()` on all three dialects, and line 32's child-process runs
     cover the bin. `emit`, `cancel` and `retry` without `--yes` change nothing,
-    exit 2 with `confirmation-required`, and print what they would do (control:
-    with `--yes` the dump changes). Every write that opens a store and has no
+    exit 2 with `confirmation-required`, and print what they would do, unless
+    the command refuses for another cause first, as a `cancel` or a `retry` of
+    a task the read does not find (exit 8) and an `emit` of a reserved name
+    (exit 3) do (control: with `--yes` the dump changes). Every write that opens a store and has no
     `--target` equal to the opened URL's host (or its path for `file:`) exits 2
     and changes nothing (dump control); `tick` opens no store, and its origin
     check below is its target check. Nothing falls back to TURSO_* or
