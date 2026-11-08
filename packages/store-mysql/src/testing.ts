@@ -51,6 +51,17 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
   /** An executor on this database under a password that is not the account's. Its caller closes it. */
   openUnderAWrongPassword(): MysqlExecutor
+  /**
+   * An executor on this database as an account of the fixture's own that may connect, may
+   * read every table of the database, and may write none. Its close drops the account, and
+   * comes before the fixture's.
+   */
+  openAsAnAccountThatMayOnlyRead(): Promise<{
+    raw: MysqlExecutor
+    account: string
+    password: string
+    close(): Promise<void>
+  }>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_MYSQL_URL
@@ -115,6 +126,33 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     return MysqlExecutor.open({ uri: wrong.href, database: databaseName })
   }
 
+  const openAsAnAccountThatMayOnlyRead = async () => {
+    // The database's name holds only the lowercase identifier alphabet, and so does the
+    // account's. An account name holds at most 32 characters.
+    const account = `dr_cred_${databaseName.slice(-16)}`
+    const dropAccount = () => control.query(`DROP USER IF EXISTS '${account}'@'%'`)
+    try {
+      await control.query(`CREATE USER '${account}'@'%' IDENTIFIED BY 'may-only-read'`)
+      await control.query(`GRANT SELECT ON ${databaseName}.* TO '${account}'@'%'`)
+    } catch (error) {
+      await dropAccount().catch(() => undefined)
+      throw error
+    }
+    const as = new URL(connectionString)
+    as.username = account
+    as.password = 'may-only-read'
+    const reader = MysqlExecutor.open({ uri: as.href, database: databaseName })
+    return {
+      raw: reader,
+      account,
+      password: as.password,
+      close: async () => {
+        await reader.close()
+        await dropAccount()
+      },
+    }
+  }
+
   try {
     await control.query(
       `CREATE DATABASE ${databaseName} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`,
@@ -131,6 +169,7 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
       databaseName,
       holdTaskRowLock,
       openUnderAWrongPassword,
+      openAsAnAccountThatMayOnlyRead,
       close: cleanup,
     }
   } catch (error) {

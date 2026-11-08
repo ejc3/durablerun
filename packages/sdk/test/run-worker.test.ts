@@ -4,6 +4,7 @@ import {
   LeaseLostError,
   PermanentStoreError,
   type SchedulerStore,
+  StoreAccessRefusedError,
   StoreUnavailableError,
   SuspendSignal,
   snapshotTaskThrowable,
@@ -1628,6 +1629,132 @@ describe('runClaimedRun', () => {
       ),
       'mutation-verdict:behavior:sdk-permanent-store-error-aborts-the-pass',
     ).toEqual({ observed: { value: { kind: 'aborted' } }, failCalls: 0 })
+  })
+
+  it("a store's refusal of its credential at a transition write aborts the pass exactly as an outage does", async () => {
+    // The credential is the deployment's, and not the task's failure. The pass ends as it
+    // ends on an outage: no transition, the user's budget untouched, and the lease recovers
+    // the run once the store accepts a credential.
+    expect(
+      await passOver('sdk-complete-access-refused', {
+        complete: () =>
+          Promise.reject(new StoreAccessRefusedError('batch(complete) was refused access')),
+      }),
+      'mutation-verdict:behavior:sdk-store-access-refusal-at-a-transition-write-aborts-the-pass',
+    ).toEqual({ observed: { value: { kind: 'aborted' } }, failCalls: 0 })
+  })
+
+  it("a store's refusal of its credential at a context store call aborts the pass and is never billed to the task", async () => {
+    // Thrown into task code as an ordinary error, it would be recorded through fail() as
+    // the task's own failure and charged to the attempts the caller asked for.
+    expect(
+      await passOver(
+        'sdk-checkpoint-access-refused',
+        {
+          setCheckpoint: () =>
+            Promise.reject(new StoreAccessRefusedError('batch(set-checkpoint) was refused access')),
+        },
+        async (ctx) => {
+          await ctx.step('once', () => 1)
+          return 'done'
+        },
+      ),
+      'mutation-verdict:behavior:sdk-store-access-refusal-aborts-the-pass',
+    ).toEqual({ observed: { value: { kind: 'aborted' } }, failCalls: 0 })
+  })
+
+  it("a pass that meets a refusal of the store's credential spends none of the task's attempts: its row holds no attempt and no failure, and its run is the one that was claimed", async () => {
+    const f = await fx('sdk-access-refused-no-attempt')
+    try {
+      const spawned = await f.store.spawn(Q, 'job', '{}')
+      const invocation = await claimInvocation(f, 'w1')
+      const refusing = withStoreOverrides<SchedulerStore>(f.store, {
+        setCheckpoint: () =>
+          Promise.reject(new StoreAccessRefusedError('batch(set-checkpoint) was refused access')),
+      })
+      const outcome = await runClaimedRun(
+        {
+          store: refusing,
+          clock: f.clock,
+          registry: registry({
+            job: async (ctx) => {
+              await ctx.step('once', () => 1)
+              return 'done'
+            },
+          }),
+        },
+        invocation,
+      )
+      // What the store holds of the task after the pass, read from its rows.
+      const [task, runs] = await f.raw.batch(
+        'fixture:after-the-pass',
+        [
+          {
+            sql: 'SELECT state, attempts, infra_retries, failure_reason FROM tasks WHERE task_id = ?',
+            args: [spawned.taskId],
+          },
+          {
+            sql: 'SELECT run_id, state FROM runs WHERE task_id = ? ORDER BY attempt',
+            args: [spawned.taskId],
+          },
+        ],
+        'read',
+      )
+      expect({
+        outcome,
+        task: task?.rows.map((row) => [
+          row.state,
+          Number(row.attempts),
+          Number(row.infra_retries),
+          row.failure_reason,
+        ]),
+        runs: runs?.rows.map((row) => [row.run_id, row.state]),
+      }).toEqual({
+        outcome: { kind: 'aborted' },
+        // No attempt is spent and nothing is recorded as the task's failure. The run is the
+        // one the pass claimed, still running, for the lease to recover.
+        task: [['running', 0, 0, null]],
+        runs: [[invocation.runId, 'running']],
+      })
+    } finally {
+      f.close()
+    }
+  })
+
+  it('a task that catches a refusal of the credential and returns is not completed: the pass ends as it ends on an outage', async () => {
+    // An outage ends the pass for every flow of the task, and so does a refused credential.
+    // A permanent answer does not: it reaches the task, and a task that catches it completes.
+    const swallowing = async (seed: string, failure: Error): Promise<unknown> => {
+      const pass = await passOver(
+        seed,
+        { setCheckpoint: () => Promise.reject(failure) },
+        async (ctx) => {
+          await ctx.step('once', () => 1).catch(() => undefined)
+          return 'swallowed'
+        },
+      )
+      return (pass.observed as { value?: { kind?: string } }).value?.kind
+    }
+    expect(
+      {
+        outage: await swallowing('sdk-swallowed-outage', new StoreUnavailableError('offline')),
+        refused: await swallowing(
+          'sdk-swallowed-access-refused',
+          new StoreAccessRefusedError('refused'),
+        ),
+        permanent: await swallowing('sdk-swallowed-permanent', new PermanentStoreError('for good')),
+      },
+      'mutation-verdict:behavior:sdk-store-access-refusal-ends-the-pass-for-every-flow',
+    ).toEqual({ outage: 'aborted', refused: 'aborted', permanent: 'completed' })
+  })
+
+  it('a StoreAccessRefusedError constructed by task code is an ordinary task failure, billed to the task', async () => {
+    // Authority comes from the store boundary that enrolled the error, never from its class.
+    expect(
+      await passOver('sdk-constructed-access-refused', {}, () => {
+        throw new StoreAccessRefusedError('made by task code')
+      }),
+    ).toEqual({ observed: { value: { kind: 'retry-scheduled' } }, failCalls: 1 })
   })
 
   it('a PermanentStoreError constructed by task code is an ordinary task failure, billed to the task', async () => {

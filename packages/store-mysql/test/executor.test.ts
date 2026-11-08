@@ -629,7 +629,7 @@ describe('MysqlExecutor error typing, by the state and the number the server sen
     for (const [errno, sqlState] of Object.entries(refusals)) {
       observed[errno] = await typed({ errno: Number(errno), sqlState })
     }
-    expect(observed).toEqual(
+    expect(observed, 'mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal').toEqual(
       Object.fromEntries(Object.keys(refusals).map((errno) => [errno, 'StoreAccessRefusedError'])),
     )
     // The numbers beside them keep the type their state gives: a KILL of another account's

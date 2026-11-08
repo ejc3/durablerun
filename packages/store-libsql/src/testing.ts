@@ -75,9 +75,13 @@ export async function holdLibsqlWriteLock(url: string, during: () => Promise<voi
  * own, so a server that only answers a status is enough to learn it. `url` is one the
  * client opens over HTTP with no TLS, and `webSocketUrl` one it opens as a WebSocket.
  * `requests` counts what reached the server, so a case can tell an answer of this server
- * from a connection nothing took.
+ * from a connection nothing took. `body` is the text sent with the status to an HTTP
+ * request, which the client quotes in its message.
  */
-export async function openServerAnswering(status: number): Promise<{
+export async function openServerAnswering(
+  status: number,
+  body = '',
+): Promise<{
   url: string
   webSocketUrl: string
   requests: () => number
@@ -87,7 +91,7 @@ export async function openServerAnswering(status: number): Promise<{
   const server: Server = createServer((_request, response) => {
     requests += 1
     response.statusCode = status
-    response.end()
+    response.end(body)
   })
   server.on('upgrade', (_request, socket) => {
     requests += 1

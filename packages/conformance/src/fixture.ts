@@ -290,15 +290,15 @@ export interface LockWaitSurface {
 }
 
 /**
- * What the executor error surface's refused-credential case needs from a dialect (§3.2):
- * the dialect's real executor, opened with a credential its store refuses. A server opens
- * the fixture's own database under a password that is not the account's. libSQL has no
- * server in a test and a database file has no credential, so its fixture opens the real
- * client against a loopback HTTP server that answers the status a hosted libSQL server
- * refuses a token with.
+ * What the executor error surface's refused-access case needs from a dialect whose store
+ * takes a credential (§3.2): the dialect's real executor on the fixture's own migrated
+ * database, opened twice. Once under a credential the store does not accept, a password
+ * that is not the account's. And once under a credential the store accepts, which may read
+ * the fixture's tables and may write none of them.
  */
-export interface RefusedCredentialSurface {
-  readonly raw: SqlExecutor
+export interface RefusedAccessSurface {
+  readonly wrongCredential: SqlExecutor
+  readonly mayOnlyRead: SqlExecutor
   close(): Promise<void>
 }
 
@@ -390,8 +390,13 @@ export interface StoreFixture {
   turn(): Promise<void>
   /** The surface of the lock-wait case, which the case closes. */
   lockWait(): Promise<LockWaitSurface>
-  /** The surface of the refused-credential case, which the case closes. */
-  refusedCredential(): Promise<RefusedCredentialSurface>
+  /**
+   * The surface of the refused-access case, which the case closes, or null for a dialect
+   * whose store takes no credential. A libSQL fixture is a database file, which takes none:
+   * what a libSQL server answers a token it refuses is held by the libSQL store's own cases,
+   * which run its real client against a loopback server.
+   */
+  refusedAccess(): Promise<RefusedAccessSurface | null>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

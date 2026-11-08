@@ -7,7 +7,9 @@ import {
   PortRefusalError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
+  STORE_FAILURE_TYPES,
   type SchedulerStore,
+  type StoreFailureKind,
   StoreUnavailableError,
   parseTaskValueJson,
   systemClock,
@@ -213,6 +215,39 @@ describe('hosted-alpha Web Request router', () => {
           ),
         ),
       ).toEqual({ status: 500, body: { error: 'internal_error' } })
+    })
+
+    it('answers every kind of store failure core names: 503 for an outage and for a refused credential, 500 for the rest', async () => {
+      // A kind core adds has no entry here, which fails the typecheck until one is written.
+      const answers: Record<StoreFailureKind, number> = {
+        unavailable: 503,
+        // The store refused the deployment's credential, or what it may do. It answered 503
+        // while it was typed an outage, and a forbidden statement answered 500 on the two
+        // servers and 503 on libSQL. It is one answer on every dialect now.
+        'access-refused': 503,
+        permanent: 500,
+        'schema-mismatch': 500,
+        'schema-not-initialized': 500,
+      }
+      const observed: Record<string, unknown> = {}
+      for (const kind of Object.keys(answers) as StoreFailureKind[]) {
+        const Failure = STORE_FAILURE_TYPES[kind]
+        observed[kind] = await enqueueOver(`hosted-store-failure-${kind}`, new Failure(kind))
+      }
+      expect(
+        observed,
+        'mutation-verdict:behavior:hosted-answers-503-for-a-refused-credential',
+      ).toEqual(
+        Object.fromEntries(
+          Object.entries(answers).map(([kind, status]) => [
+            kind,
+            {
+              status,
+              body: { error: status === 503 ? 'service_unavailable' : 'internal_error' },
+            },
+          ]),
+        ),
+      )
     })
 
     it('answers 503 for a store outage, which a retry can cure', async () => {

@@ -490,24 +490,32 @@ describe('the CLI on every selected dialect', () => {
         try {
           for (const spec of STORE_COMMANDS) {
             const line = commandLine(spec, refusing, 'a-task-of-no-store')
-            for (const extra of [[], ['--reveal']]) {
+            // A command that takes --reveal is run with it too.
+            const reveals = Object.hasOwn(spec.flags, 'reveal') ? [['--reveal']] : []
+            for (const extra of [[], ...reveals]) {
               const run = await runCli([...line, ...extra], refusing.env)
               const answer = JSON.parse(run.stdout) as {
                 exit?: string
                 error?: { kind?: string; name?: string; message?: string }
               }
-              expect({
-                verb: spec.verb,
-                exit: run.exit,
-                named: answer.exit,
-                kind: answer.error?.kind,
-                error: answer.error?.name,
-                // The store's own message prints only with --reveal.
-                message: answer.error?.message !== undefined,
-                printed: `${run.stdout}${run.stderr}`.includes(refusing.credential),
-              }).toEqual({
+              expect(
+                {
+                  verb: spec.verb,
+                  exit: run.exit,
+                  // The command table declares the exit for the command.
+                  declared: spec.exits.includes('unauthorized'),
+                  named: answer.exit,
+                  kind: answer.error?.kind,
+                  error: answer.error?.name,
+                  // The store's own message prints only with --reveal.
+                  message: answer.error?.message !== undefined,
+                  printed: `${run.stdout}${run.stderr}`.includes(refusing.credential),
+                },
+                'mutation-verdict:behavior:cli-refused-credential-exits-4',
+              ).toEqual({
                 verb: spec.verb,
                 exit: exitCode('unauthorized'),
+                declared: true,
                 named: 'unauthorized',
                 kind: 'store-access-refused',
                 error: 'StoreAccessRefusedError',
@@ -515,21 +523,21 @@ describe('the CLI on every selected dialect', () => {
                 printed: false,
               })
             }
-            // In text the refusal prints on stderr, with its kind.
+            // In text the refusal prints with its kind: on stderr, or on stdout for a command
+            // whose report prints there however it ends, as selftest's does.
             const text = await runCli(
               line.filter((argument) => argument !== '--json'),
               refusing.env,
             )
+            const printed = `${text.stdout}${text.stderr}`
             expect({
               verb: spec.verb,
               exit: text.exit,
-              stdout: text.stdout,
-              kind: text.stderr.split('\n').includes('  kind: store-access-refused'),
-              printed: text.stderr.includes(refusing.credential),
+              kind: printed.split('\n').includes('  kind: store-access-refused'),
+              printed: printed.includes(refusing.credential),
             }).toEqual({
               verb: spec.verb,
               exit: exitCode('unauthorized'),
-              stdout: '',
               kind: true,
               printed: false,
             })
@@ -538,6 +546,49 @@ describe('the CLI on every selected dialect', () => {
           await refusing.close()
         }
       }, 120_000)
+
+      // A database file takes no credential, so libSQL has none that may only read.
+      if (dialect !== 'libsql') {
+        it('a credential that may only read is answered a read, and exits 4 with the kind store-access-refused for a write, which changes nothing', async () => {
+          const db = await openCliDb(dialect, 'reader-credential')
+          try {
+            await seedTasks(db)
+            if (db.openAsAReader === null) throw new Error(`${dialect} offers no reader`)
+            const reader = await db.openAsAReader()
+            try {
+              const before = await db.dump()
+              const read = await runCli(['stats', '--queue', QUEUE, '--json'], reader.env)
+              const write = await runCli(
+                ['enqueue', 'report', '--key', 'a-key-of-a-reader', ...writeFlags(db), '--json'],
+                reader.env,
+              )
+              const answer = JSON.parse(write.stdout) as {
+                exit?: string
+                error?: { kind?: string; name?: string }
+              }
+              expect({
+                read: read.exit,
+                write: write.exit,
+                named: answer.exit,
+                kind: answer.error?.kind,
+                error: answer.error?.name,
+                unchanged: (await db.dump()) === before,
+              }).toEqual({
+                read: 0,
+                write: exitCode('unauthorized'),
+                named: 'unauthorized',
+                kind: 'store-access-refused',
+                error: 'StoreAccessRefusedError',
+                unchanged: true,
+              })
+            } finally {
+              await reader.close()
+            }
+          } finally {
+            await db.close()
+          }
+        }, 120_000)
+      }
 
       it("migrate prints the store's own note before the version it names", async () => {
         const db = await openCliDb(dialect, 'notes', CURRENT_SCHEMA_VERSION - 1)

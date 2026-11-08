@@ -2,7 +2,6 @@ import { StoreUnavailableError } from '@durablerun/core'
 import { type Connection, createConnection } from 'mysql2/promise'
 import { describe, expect, it } from 'vitest'
 import { MysqlExecutor, classifyError, createOwnedMysqlPool } from '../src/executor.js'
-import { MysqlSchedulerStore } from '../src/store.js'
 import { openMysqlTestDb } from '../src/testing.js'
 
 /**
@@ -120,39 +119,24 @@ describe('what a real MySQL server answers an account it refuses', () => {
     }
   })
 
-  it('types a write an access refusal for an account that may connect and may only read, and answers its read', async () => {
+  it('types a write an access refusal for an account that may connect and may only read, by its number, and answers its read', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'reader-account' })
-    const control = createOwnedMysqlPool({ uri: serverUrl(), connectionLimit: 1 })
-    const account = `dr_cred_${db.databaseName.slice(-16)}`
-    const url = new URL(serverUrl())
-    url.username = account
-    url.password = 'may-only-read'
-    url.pathname = `/${db.databaseName}`
-    let reader: MysqlExecutor | undefined
     try {
-      await control.query(`CREATE USER '${account}'@'%' IDENTIFIED BY 'may-only-read'`)
-      await control.query(`GRANT SELECT ON ${db.databaseName}.* TO '${account}'@'%'`)
-      reader = MysqlExecutor.open(url.href)
-      const spawned: unknown = await new MysqlSchedulerStore(reader, db.ids)
-        .spawn('reader-queue', 'a-task', '{}')
-        .then(
-          () => 'accepted',
-          (error: unknown) => (error as Error).name,
-        )
-      expect({
-        read: await answered(reader, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),
-        write: await answered(reader, 'UPDATE tasks SET attempts = attempts + 1', 'write'),
-        // A caller of the port meets the same type as a caller of the executor.
-        spawned,
-      }).toEqual({
-        read: 'answered',
-        write: { name: 'StoreAccessRefusedError', errno: 1142, state: '42000' },
-        spawned: 'StoreAccessRefusedError',
-      })
+      const reader = await db.openAsAnAccountThatMayOnlyRead()
+      try {
+        expect({
+          read: await answered(reader.raw, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),
+          write: await answered(reader.raw, 'UPDATE tasks SET attempts = attempts + 1', 'write'),
+          anotherDatabase: await answered(reader.raw, 'SELECT COUNT(*) FROM mysql.user', 'read'),
+        }).toEqual({
+          read: 'answered',
+          write: { name: 'StoreAccessRefusedError', errno: 1142, state: '42000' },
+          anotherDatabase: { name: 'StoreAccessRefusedError', errno: 1142, state: '42000' },
+        })
+      } finally {
+        await reader.close()
+      }
     } finally {
-      await reader?.close()
-      await control.query(`DROP USER IF EXISTS '${account}'@'%'`)
-      await control.end()
       await db.close()
     }
   })

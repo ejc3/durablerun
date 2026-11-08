@@ -3,17 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Buggify, SqlExecutor } from '@durablerun/core'
 import {
-  LibsqlExecutor,
   LibsqlSchedulerStore,
   LibsqlStoreAdmin,
   operatorReads,
   retention,
 } from '@durablerun/store-libsql'
-import {
-  holdLibsqlWriteLock,
-  openServerAnswering,
-  openTestDb,
-} from '@durablerun/store-libsql/testing'
+import { holdLibsqlWriteLock, openTestDb } from '@durablerun/store-libsql/testing'
 import {
   type PersistedNumericTable,
   type StorageCorruption,
@@ -203,18 +198,8 @@ export async function makeLibsqlFixture(
         },
       }
     },
-    refusedCredential: async () => {
-      // A hosted libSQL server answers a token it refuses with HTTP 401.
-      const server = await openServerAnswering(401)
-      const refused = LibsqlExecutor.open(server.url, 'a-token-the-server-refuses')
-      return {
-        raw: refused,
-        close: async () => {
-          refused.close()
-          await server.close()
-        },
-      }
-    },
+    // A database file takes no credential, so it has none to refuse.
+    refusedAccess: async () => null,
     close: async () => raw.close(),
   }
 }

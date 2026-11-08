@@ -812,7 +812,10 @@ describe('PgExecutor error classification', () => {
         () => 'answered',
         (error: unknown) => error,
       )
-    expect(atConnect).toMatchObject({
+    expect(
+      atConnect,
+      'mutation-verdict:behavior:postgres-refused-credential-class-is-an-access-refusal',
+    ).toMatchObject({
       name: 'StoreAccessRefusedError',
       message: 'batch(connect) was refused access (SQLSTATE 28P01): password authentication failed',
       cause: refusedAtConnect,
@@ -830,7 +833,10 @@ describe('PgExecutor error classification', () => {
         () => 'answered',
         (error: unknown) => error,
       )
-    expect(atAStatement).toMatchObject({
+    expect(
+      atAStatement,
+      'mutation-verdict:behavior:postgres-missing-privilege-is-an-access-refusal',
+    ).toMatchObject({
       name: 'StoreAccessRefusedError',
       message:
         'batch(write) was refused access (SQLSTATE 42501): permission denied for table tasks',

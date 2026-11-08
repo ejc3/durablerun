@@ -128,6 +128,18 @@ export interface CliDb {
   dump(): Promise<string>
   /** Record a schema version as a newer build that migrated would, after seeding. */
   recordNewer(): Promise<void>
+  /**
+   * The environment of a credential the store accepts, which may read this database's
+   * tables and may write none, with the close that drops it, which comes before the
+   * database's. Null on libSQL, whose database file takes no credential.
+   */
+  readonly openAsAReader: (() => Promise<ReaderCredential>) | null
+  close(): Promise<void>
+}
+
+/** A credential that may only read, as the CLI is handed it. */
+export interface ReaderCredential {
+  readonly env: Readonly<Record<string, string>>
   close(): Promise<void>
 }
 
@@ -206,6 +218,7 @@ export async function openCliDb(
       retentionWith: (other) => retention(raw, other),
       dump: () => dumpOf(dialect, raw),
       recordNewer: () => recordNewer(dialect, raw),
+      openAsAReader: null,
       close: async () => {
         raw.close()
         rmSync(dir, { recursive: true, force: true })
@@ -231,6 +244,13 @@ export async function openCliDb(
         retentionWith: (other) => postgresRetention(db.raw, other),
         dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
+        openAsAReader: async () => {
+          const reader = await db.openAsARoleThatMayOnlyRead()
+          const url = new URL(base.href)
+          url.username = reader.role
+          url.password = reader.password
+          return { env: { DURABLERUN_STORE_URL: url.href }, close: reader.close }
+        },
         close: db.close,
       }
     } catch (error) {
@@ -255,6 +275,13 @@ export async function openCliDb(
       retentionWith: (other) => mysqlRetention(db.raw, other),
       dump: () => dumpOf(dialect, db.raw),
       recordNewer: () => recordNewer('mysql', db.raw),
+      openAsAReader: async () => {
+        const reader = await db.openAsAnAccountThatMayOnlyRead()
+        const url = new URL(base.href)
+        url.username = reader.account
+        url.password = reader.password
+        return { env: { DURABLERUN_STORE_URL: url.href }, close: reader.close }
+      },
       close: db.close,
     }
   } catch (error) {

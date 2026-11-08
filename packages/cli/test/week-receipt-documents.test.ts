@@ -1,4 +1,4 @@
-import { QUEUE_TABLES } from '@durablerun/core'
+import { QUEUE_TABLES, STORE_FAILURE_TYPES, type StoreFailureKind } from '@durablerun/core'
 import { describe, expect, it } from 'vitest'
 import {
   WEEK_DIGEST_UNIT_ROWS,
@@ -11,6 +11,8 @@ import {
   sha256,
 } from '../../../apps/dogfood/src/week-receipt.js'
 import { DIGEST_UNIT_ROWS } from '../../conformance/src/retention-soak.js'
+import { exitCode } from '../src/exit.js'
+import { STORE_FAILURE_ANSWERS } from '../src/main.js'
 import {
   COMPLETED_KEY,
   type CliDb,
@@ -197,6 +199,76 @@ describe('the week receipt reads what the CLI prints', () => {
         const sizes = await printed(db, ['sizes', '--queue', QUEUE])
         expect(readSizes(sizes, 'another-queue')).toBeNull()
         expect(readStats(sizes, QUEUE)).toBeNull()
+      }),
+    120_000,
+  )
+
+  /**
+   * The reader keeps its own list of the kinds a store failure prints under, so it is held
+   * to the CLI here: for every kind of store failure core names, the purge is failed that
+   * way, and the reader is handed what the CLI printed. A kind the CLI renames, or one core
+   * adds, fails this case until the reader is looked at again.
+   */
+  it(
+    'reads what the CLI prints when a purge meets each kind of store failure: a run that took nothing for an outage, a refused credential and a permanent answer, and no run for a schema error',
+    () =>
+      onDb('week-receipt-store-failures', async (db) => {
+        await seedTasks(db)
+        await db.admin.setFakeNowEpochMs(null)
+        // A kind core adds has no entry here, which fails the typecheck until one is written.
+        const reads: Record<StoreFailureKind, 'a run that took nothing' | 'no run of a purge'> = {
+          unavailable: 'a run that took nothing',
+          'access-refused': 'a run that took nothing',
+          permanent: 'a run that took nothing',
+          // The schema's version refuses the command: the purge did not run.
+          'schema-mismatch': 'no run of a purge',
+          'schema-not-initialized': 'no run of a purge',
+        }
+        const tookNothing = {
+          execute: false,
+          finished: false,
+          more: false,
+          completedSeconds: 0,
+          failedSeconds: null,
+          taken: [],
+          outcomeNotKnown: [],
+          underATestClock: false,
+        }
+        const purgeLine = ['purge', ...PURGE_WINDOWS, '--execute', ...writeFlags(db), '--json']
+        const observed: Record<string, unknown> = {}
+        const expected: Record<string, unknown> = {}
+        for (const kind of Object.keys(STORE_FAILURE_TYPES) as StoreFailureKind[]) {
+          const Failure = STORE_FAILURE_TYPES[kind]
+          // The purge's first read of what it may take fails as this kind of failure.
+          const run = await runCli(
+            purgeLine,
+            db.env,
+            openerWrapping((real) => ({
+              batch: (label, statements, control) =>
+                label === 'purge-candidates'
+                  ? Promise.reject(new Failure(`batch(${label}) met ${kind}`))
+                  : real.batch(label, statements, control),
+            })),
+          )
+          const document = JSON.parse(run.stdout) as { error?: { kind?: unknown } }
+          const read = readPurge(document, QUEUE)
+          observed[kind] = {
+            exit: run.exit,
+            printedKind: document.error?.kind,
+            members: Object.keys(document).sort(),
+            read: read === null ? 'no run of a purge' : read,
+          }
+          expected[kind] = {
+            exit: exitCode(STORE_FAILURE_ANSWERS[kind].exit),
+            printedKind: STORE_FAILURE_ANSWERS[kind].kind,
+            members: ['command', 'dialect', 'error', 'exit'],
+            read: reads[kind] === 'a run that took nothing' ? tookNothing : reads[kind],
+          }
+        }
+        expect(
+          observed,
+          'mutation-verdict:behavior:week-receipt-reads-a-purge-a-refused-credential-stopped',
+        ).toEqual(expected)
       }),
     120_000,
   )

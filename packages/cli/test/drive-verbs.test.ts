@@ -2,9 +2,11 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  PermanentStoreError,
   PortRefusalError,
   RETRY_GUARD,
   type RetryGuardConjunct,
+  StoreAccessRefusedError,
   StoreUnavailableError,
 } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
@@ -676,6 +678,17 @@ describe('enqueue on libSQL', () => {
             'an-outage',
             readingFactsAs(() => Promise.reject(new StoreUnavailableError(`lost ${SENTINEL}`))),
           ),
+          // The store refuses the credential at that read, or answers it with a permanent error.
+          refusedCredential: await repeated(
+            'a-refused-credential',
+            readingFactsAs(() =>
+              Promise.reject(new StoreAccessRefusedError(`refused ${SENTINEL}`)),
+            ),
+          ),
+          permanent: await repeated(
+            'a-permanent-answer',
+            readingFactsAs(() => Promise.reject(new PermanentStoreError(`for good ${SENTINEL}`))),
+          ),
           // A stored row the store's decoders refuse.
           refusedRow: await repeated(
             'a-refused-row',
@@ -697,6 +710,14 @@ describe('enqueue on libSQL', () => {
         'mutation-verdict:behavior:cli-enqueue-answers-a-repeat-it-cannot-read-back',
       ).toEqual({
         outage: { sameTask: true, said: [0, false, null, 'unknown', 'store-unavailable', false] },
+        refusedCredential: {
+          sameTask: true,
+          said: [0, false, null, 'unknown', 'store-access-refused', false],
+        },
+        permanent: {
+          sameTask: true,
+          said: [0, false, null, 'unknown', 'permanent-store-error', false],
+        },
         refusedRow: { sameTask: true, said: [0, false, null, 'unknown', 'unreadable', false] },
         gone: { sameTask: true, said: [0, false, null, 'unknown', 'not-found', false] },
         pastANumber: {

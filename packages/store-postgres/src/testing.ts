@@ -56,6 +56,17 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
   /** An executor on this database under a password that is not the account's. Its caller closes it. */
   openUnderAWrongPassword(): PgExecutor
+  /**
+   * An executor on this database as a role of the fixture's own that may connect, may read
+   * every table the schema holds now, and may write none. Its close drops the role, and
+   * comes before the fixture's.
+   */
+  openAsARoleThatMayOnlyRead(): Promise<{
+    raw: PgExecutor
+    role: string
+    password: string
+    close(): Promise<void>
+  }>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_POSTGRES_URL
@@ -122,6 +133,40 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     })
   }
 
+  const openAsARoleThatMayOnlyRead = async () => {
+    // The schema's name holds only the lowercase identifier alphabet, and so does the role's.
+    const role = `dr_cred_${schemaName.slice(-20)}`
+    const dropRole = async (): Promise<void> => {
+      // The role's privileges go first: a role that still holds one cannot be dropped.
+      await control.query(`DROP OWNED BY ${role}`).catch(() => undefined)
+      await control.query(`DROP ROLE IF EXISTS ${role}`)
+    }
+    try {
+      await control.query(`CREATE ROLE ${role} LOGIN PASSWORD 'may-only-read'`)
+      await control.query(`GRANT USAGE ON SCHEMA ${schemaName} TO ${role}`)
+      await control.query(`GRANT SELECT ON ALL TABLES IN SCHEMA ${schemaName} TO ${role}`)
+    } catch (error) {
+      await dropRole().catch(() => undefined)
+      throw error
+    }
+    const as = new URL(connectionString)
+    as.username = role
+    as.password = 'may-only-read'
+    const reader = PgExecutor.open({
+      connectionString: as.href,
+      options: `-c search_path=${schemaName}`,
+    })
+    return {
+      raw: reader,
+      role,
+      password: as.password,
+      close: async () => {
+        await reader.close()
+        await dropRole()
+      },
+    }
+  }
+
   try {
     await control.query(`CREATE SCHEMA ${schemaName}`)
     raw = PgExecutor.open({
@@ -139,6 +184,7 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
       schemaName,
       holdTaskRowLock,
       openUnderAWrongPassword,
+      openAsARoleThatMayOnlyRead,
       close: cleanup,
     }
   } catch (error) {

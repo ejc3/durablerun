@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { PgExecutor, createOwnedPostgresPool } from '../src/executor.js'
-import { PostgresSchedulerStore } from '../src/store.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
 /**
@@ -95,44 +94,24 @@ describe('what a real PostgreSQL server answers a role it refuses', () => {
     }
   })
 
-  it('types a write an access refusal for a role that may connect and may only read, and answers its read', async () => {
+  it('types a write an access refusal for a role that may connect and may only read, by SQLSTATE 42501, and answers its read', async () => {
     const db = await openPostgresTestDb({ idNamespace: 'reader-role' })
-    const control = createOwnedPostgresPool({ connectionString: serverUrl() })
-    const role = `dr_cred_${db.schemaName.slice(-20)}`
-    const url = new URL(serverUrl())
-    url.username = role
-    url.password = 'may-only-read'
-    let reader: PgExecutor | undefined
     try {
-      await control.query(`CREATE ROLE ${role} LOGIN PASSWORD 'may-only-read'`)
-      await control.query(`GRANT USAGE ON SCHEMA ${db.schemaName} TO ${role}`)
-      await control.query(`GRANT SELECT ON ALL TABLES IN SCHEMA ${db.schemaName} TO ${role}`)
-      reader = PgExecutor.open({
-        connectionString: url.href,
-        options: `-c search_path=${db.schemaName}`,
-      })
-      const spawned: unknown = await new PostgresSchedulerStore(reader, db.ids)
-        .spawn('reader-queue', 'a-task', '{}')
-        .then(
-          () => 'accepted',
-          (error: unknown) => (error as Error).name,
-        )
-      expect({
-        read: await answered(reader, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),
-        write: await answered(reader, 'UPDATE tasks SET attempts = attempts + 1', 'write'),
-        // A caller of the port meets the same type as a caller of the executor.
-        spawned,
-      }).toEqual({
-        read: 'answered',
-        write: { name: 'StoreAccessRefusedError', state: '42501' },
-        spawned: 'StoreAccessRefusedError',
-      })
+      const reader = await db.openAsARoleThatMayOnlyRead()
+      try {
+        expect({
+          read: await answered(reader.raw, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),
+          write: await answered(reader.raw, 'UPDATE tasks SET attempts = attempts + 1', 'write'),
+          create: await answered(reader.raw, 'CREATE TABLE made_by_a_reader (id BIGINT)', 'write'),
+        }).toEqual({
+          read: 'answered',
+          write: { name: 'StoreAccessRefusedError', state: '42501' },
+          create: { name: 'StoreAccessRefusedError', state: '42501' },
+        })
+      } finally {
+        await reader.close()
+      }
     } finally {
-      await reader?.close()
-      // The role's privileges go first: a role that still holds one cannot be dropped.
-      await control.query(`DROP OWNED BY ${role}`).catch(() => undefined)
-      await control.query(`DROP ROLE IF EXISTS ${role}`)
-      await control.end()
       await db.close()
     }
   })

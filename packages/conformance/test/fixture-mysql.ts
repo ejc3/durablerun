@@ -152,9 +152,17 @@ export async function makeMysqlFixture(
       shortenInside: [{ sql: 'SET SESSION innodb_lock_wait_timeout = 1', args: [] }],
       close: async () => {},
     }),
-    refusedCredential: async () => {
+    refusedAccess: async () => {
+      const reader = await opened.openAsAnAccountThatMayOnlyRead()
       const refused = opened.openUnderAWrongPassword()
-      return { raw: refused, close: () => refused.close() }
+      return {
+        wrongCredential: refused,
+        mayOnlyRead: reader.raw,
+        close: async () => {
+          await refused.close()
+          await reader.close()
+        },
+      }
     },
     close: opened.close,
   }

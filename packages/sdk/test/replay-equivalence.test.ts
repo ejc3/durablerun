@@ -4,6 +4,7 @@ import {
   FatalTaskError,
   type IdSource,
   PermanentStoreError,
+  StoreAccessRefusedError,
   SAGA_ROLLBACK_PREFIX,
   SAGA_STARTED_PREFIX,
   SAGA_TRIES_PREFIX,
@@ -708,17 +709,19 @@ interface Watch {
 const INJECTED_OUTAGE = 'injected outage'
 
 /**
- * The kinds of store fault a run can inject. A permanent answer of the store must end a pass
- * exactly as an outage does, so every sampled fault point is run once with each kind. The
- * sample is `faultPoints`: the odd calls from the third, and the last call. It is not every
- * call.
+ * The kinds of store fault a run can inject. A permanent answer of the store, and a store's
+ * refusal of its credential, must each end a pass exactly as an outage does, so every
+ * sampled fault point is run once with each kind. The sample is `faultPoints`: the odd calls
+ * from the third, and the last call. It is not every call.
  */
-const FAULT_KINDS = ['outage', 'permanent'] as const
+const FAULT_KINDS = ['outage', 'permanent', 'access-refused'] as const
 type FaultKind = (typeof FAULT_KINDS)[number]
-const injectedFault = (kind: FaultKind): Error =>
-  kind === 'permanent'
-    ? new PermanentStoreError('injected permanent answer')
-    : new StoreUnavailableError('injected outage')
+const INJECTED_FAULTS: Readonly<Record<FaultKind, () => Error>> = {
+  outage: () => new StoreUnavailableError('injected outage'),
+  permanent: () => new PermanentStoreError('injected permanent answer'),
+  'access-refused': () => new StoreAccessRefusedError('injected refusal of the credential'),
+}
+const injectedFault = (kind: FaultKind): Error => INJECTED_FAULTS[kind]()
 /** The outage's run keeps the seed it has always had, and the other kind's run names its kind. */
 const faultSeed = (seed: string, kind: FaultKind): string =>
   kind === 'outage' ? seed : `${seed}-${kind}`
@@ -726,7 +729,7 @@ const faultSeed = (seed: string, kind: FaultKind): string =>
 /**
  * Which kinds of fault each store method has met, over every run of this file. A sweep is
  * only evidence about a method for the kinds of fault that landed on it, and the last case
- * of the file holds the sweeps to that: every method they failed met both kinds.
+ * of the file holds the sweeps to that: every method they failed met every kind.
  */
 const faultsMet = new Map<string, Set<string>>()
 /** The fault that landed last, so a sweep can hold each run to the kind it asked for. */
@@ -1099,7 +1102,7 @@ const FLOW_PROGRAMS: Record<string, { ops: ProgramOp[]; gap: KnownGap }> = {
  * that the results they awaited decide. A first pass answers those awaits in the order they
  * settle, and a replay answers them from memos, so a replay that did not follow the first pass
  * would number the two calls the other way and hand each flow the other's result (DESIGN.md
- * section 3.2). Each program below is run with an outage at EVERY store call, under both kinds
+ * section 3.2). Each program below is run with an outage at EVERY store call, under every kind
  * of fault, and a task that completes must complete with exactly its `answers`: what each flow
  * observed, flow after flow. Each flow's values are its own (flow 0 carries value 0, flow 1
  * value 1), so a swap shows in the answers. Every run must also complete: none is refused.
@@ -2697,11 +2700,11 @@ describe('saga replay equivalence (generated programs x fault points across the 
 })
 
 describe('the fault sweeps of this file, taken together (a fault that never lands proves nothing)', () => {
-  it('failed every store method they failed at all with an outage and with a permanent answer', () => {
+  it('failed every store method they failed at all with an outage, with a permanent answer and with a refused credential', () => {
     // This case reads what the cases above did, so it is the last one, and a run that
     // filters them out fails it: a floor met by nothing is not met.
     const lacking = [...faultsMet]
-      .filter(([, kinds]) => kinds.size < 2)
+      .filter(([, kinds]) => kinds.size < FAULT_KINDS.length)
       .map(([method, kinds]) => `${method} met only ${[...kinds].sort().join(', ')}`)
       .sort()
     expect({ methodsFailed: faultsMet.size >= 12, lacking }).toEqual({

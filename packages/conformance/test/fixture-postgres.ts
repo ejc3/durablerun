@@ -124,9 +124,17 @@ export async function makePostgresFixture(
       shortenInside: [{ sql: "SET LOCAL lock_timeout = '100ms'", args: [] }],
       close: async () => {},
     }),
-    refusedCredential: async () => {
+    refusedAccess: async () => {
+      const reader = await opened.openAsARoleThatMayOnlyRead()
       const refused = opened.openUnderAWrongPassword()
-      return { raw: refused, close: () => refused.close() }
+      return {
+        wrongCredential: refused,
+        mayOnlyRead: reader.raw,
+        close: async () => {
+          await refused.close()
+          await reader.close()
+        },
+      }
     },
     close: opened.close,
   }

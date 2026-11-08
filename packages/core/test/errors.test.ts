@@ -281,10 +281,7 @@ describe('storeFailureKind', () => {
       const Type = STORE_FAILURE_TYPES[kind]
       Object.defineProperty(Type, Symbol.hasInstance, { configurable: true, value: () => true })
       try {
-        expect(
-          storeFailureKind(new Error('ordinary')),
-          'mutation-verdict:construction:store-failure-kind-ordinary-has-instance',
-        ).toBeUndefined()
+        expect(storeFailureKind(new Error('ordinary'))).toBeUndefined()
       } finally {
         Reflect.deleteProperty(Type, Symbol.hasInstance)
       }

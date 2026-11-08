@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LibsqlExecutor } from '../src/executor.js'
+import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
 import { openServerAnswering } from '../src/testing.js'
 
 /**
@@ -36,7 +37,10 @@ describe('what the real libSQL client throws when a server answers a status', ()
   }
 
   it('types a 401 and a 403 an access refusal, from the status the client carries as a number', async () => {
-    expect({ unauthorized: await answered(401), forbidden: await answered(403) }).toEqual({
+    expect(
+      { unauthorized: await answered(401), forbidden: await answered(403) },
+      'mutation-verdict:behavior:libsql-401-is-an-access-refusal',
+    ).toEqual({
       unauthorized: {
         name: 'StoreAccessRefusedError',
         code: 'SERVER_ERROR',
@@ -64,6 +68,34 @@ describe('what the real libSQL client throws when a server answers a status', ()
         ]),
       ),
     )
+  })
+
+  // The executor reads two wordings of the client's message, a schema fault's and a missing
+  // version table's. A server's own text beside a status must reach neither reading: a
+  // refused credential read as a database that was never initialized would have `migrate`
+  // send its bootstrap.
+  it('types a 401 an access refusal whatever text the server sends beside it, the wording of a missing version table included', async () => {
+    const server = await openServerAnswering(401, 'no such table: meta')
+    const executor = LibsqlExecutor.open(server.url, 'a-token-the-server-refuses')
+    try {
+      const thrown: unknown = await executor
+        .batch('migrate:version', [{ sql: SCHEMA_VERSION_READ_SQL, args: [] }], 'read')
+        .then(
+          () => 'answered',
+          (error: unknown) => error,
+        )
+      expect(
+        {
+          name: (thrown as Error).name,
+          // The control: the text did reach the client's message.
+          quoted: String((thrown as Error).cause).endsWith('no such table: meta'),
+        },
+        'mutation-verdict:behavior:libsql-refused-status-is-read-before-message-text',
+      ).toEqual({ name: 'StoreAccessRefusedError', quoted: true })
+    } finally {
+      executor.close()
+      await server.close()
+    }
   })
 
   // The client reports a WebSocket upgrade the server refused under one code whatever the

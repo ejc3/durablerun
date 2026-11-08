@@ -43,6 +43,10 @@ async function attemptsOf(raw: SqlExecutor, taskId: string): Promise<number> {
   return Number(read?.rows[0]?.attempts)
 }
 
+/** A read of how many tasks there are, and a write to every one: plain SQL all three dialects read alike. */
+const countTasks: SqlStatement = { sql: 'SELECT COUNT(*) AS tasks FROM tasks', args: [] }
+const bumpEveryTask: SqlStatement = { sql: 'UPDATE tasks SET attempts = attempts + 1', args: [] }
+
 /** One more attempt on a task's row: a write every dialect reads alike, and one a read can see. */
 const bump = (taskId: string): SqlStatement => ({
   sql: 'UPDATE tasks SET attempts = attempts + 1 WHERE task_id = ?',
@@ -218,40 +222,62 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
     })
 
     /**
-     * A store that refuses the credential it was opened with says so, apart from an outage
-     * and apart from a permanent answer to a statement (DESIGN.md §3.2). A caller that
-     * waits out an outage would wait for good here, and the statement is one the store
-     * takes under another credential. A read and a write are refused alike, because the
-     * store refuses the credential before it reads either.
+     * A store that refuses the credential it was opened with, or refuses what that
+     * credential may do, says so, apart from an outage and apart from a permanent answer to
+     * a statement (DESIGN.md §3.2). A caller that waits out an outage would wait for good
+     * here, and the statement is one the store takes under another credential. A wrong
+     * credential is refused before the store reads a statement, so a read and a write are
+     * refused alike. A credential that may only read is answered its read and refused its
+     * write, through the executor and through the port, and the write changes nothing.
+     *
+     * A dialect whose store takes no credential has nothing to refuse, and its fixture
+     * offers no surface. libSQL's is one: its fixture is a database file.
      */
-    it('types the refusal of the credential a store was opened with apart from an outage and from a permanent answer, for a read and for a write', () =>
-      withFixture(
-        makeFixture,
-        'executor-errors-credential',
-        async (f) => {
-          const refused = await f.refusedCredential()
-          try {
-            for (const mode of ['read', 'write'] as const) {
-              const label = `executor-errors:under-a-refused-credential-${mode}`
-              const refusal: unknown = await refused.raw
-                .batch(label, [{ sql: 'SELECT 1 AS answered', args: [] }], mode)
-                .then(
-                  () => 'accepted',
-                  (error: unknown) => error,
-                )
-              expect(refusal instanceof Error ? refusal.name : refusal, `a ${mode} batch`).toBe(
-                'StoreAccessRefusedError',
-              )
-              // The message says which batch, and the cause is the driver's own error.
-              expect(refusal).toMatchObject({ message: expect.stringContaining(label) })
-              expect((refusal as Error).cause).toBeInstanceOf(Error)
-            }
-          } finally {
-            await refused.close()
+    it('types a wrong credential, and a write under a credential that may only read, apart from an outage and from a permanent answer', () =>
+      withFixture(makeFixture, 'executor-errors-refused-access', async (f) => {
+        const access = await f.refusedAccess()
+        if (access === null) return
+        try {
+          const refusalOf = (raw: SqlExecutor, label: string, mode: 'read' | 'write') =>
+            raw.batch(label, [mode === 'read' ? countTasks : bumpEveryTask], mode).then(
+              () => 'accepted',
+              (error: unknown) => error,
+            )
+          await twoTasks(f)
+          const before = await taskRows(f)
+          for (const mode of ['read', 'write'] as const) {
+            const label = `executor-errors:under-a-wrong-credential-${mode}`
+            const refusal = await refusalOf(access.wrongCredential, label, mode)
+            expect(
+              refusal instanceof Error ? refusal.name : refusal,
+              `a ${mode} batch under a wrong credential`,
+            ).toBe('StoreAccessRefusedError')
+            // The message says which batch, and the cause is the driver's own error.
+            expect(refusal).toMatchObject({ message: expect.stringContaining(label) })
+            expect((refusal as Error).cause).toBeInstanceOf(Error)
           }
-        },
-        { migrate: false },
-      ))
+          // The control: the credential that may only read is one the store accepts.
+          expect(
+            await refusalOf(access.mayOnlyRead, 'executor-errors:read-as-a-reader', 'read'),
+          ).toBe('accepted')
+          const label = 'executor-errors:write-as-a-reader'
+          const refusal = await refusalOf(access.mayOnlyRead, label, 'write')
+          expect(
+            refusal instanceof Error ? refusal.name : refusal,
+            'a write batch under a credential that may only read',
+          ).toBe('StoreAccessRefusedError')
+          expect(refusal).toMatchObject({ message: expect.stringContaining(label) })
+          expect((refusal as Error).cause).toBeInstanceOf(Error)
+          // A caller of the port meets the same type as a caller of the executor.
+          expect(
+            await refusalName(f.storeOver(access.mayOnlyRead).spawn(Q, 'refused', '{}')),
+            'a call of the port under a credential that may only read',
+          ).toBe('StoreAccessRefusedError')
+          expect(await taskRows(f)).toEqual(before)
+        } finally {
+          await access.close()
+        }
+      }))
 
     /**
      * Two write batches that update the same two rows in opposite orders, started together
