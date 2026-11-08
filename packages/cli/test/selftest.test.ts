@@ -461,15 +461,18 @@ describe('what selftest says of a database whose answer cannot be read', () => {
         const opener = openerWrapping(answering(label, stateBent(index)))
         const run = await runCli(line(db), db.env, opener)
         const at = (report(run.stdout).steps ?? []).find((step) => step.result !== 'ok')
-        expect({
-          label,
-          index,
-          exit: run.exit,
-          call: at?.call,
-          result: at?.result,
-          printsTheState: `${run.stdout}${run.stderr}`.includes(BOGUS),
-          printsItHidden: at?.found?.includes(hidden),
-        }).toEqual({
+        expect(
+          {
+            label,
+            index,
+            exit: run.exit,
+            call: at?.call,
+            result: at?.result,
+            printsTheState: `${run.stdout}${run.stderr}`.includes(BOGUS),
+            printsItHidden: at?.found?.includes(hidden),
+          },
+          'mutation-verdict:behavior:cli-selftest-prints-a-stored-state-as-any-command-does',
+        ).toEqual({
           label,
           index,
           exit: exitCode('failed'),
@@ -545,7 +548,10 @@ describe('what selftest says of a database whose answer cannot be read', () => {
       internal,
       'mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer',
     ).toEqual([])
-    expect(printedTheText).toEqual([])
+    expect(
+      printedTheText,
+      'mutation-verdict:behavior:cli-selftest-prints-no-text-a-database-answered',
+    ).toEqual([])
     expect(
       printedOk,
       'mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under',

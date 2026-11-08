@@ -361,9 +361,9 @@ jobs:
               return repaired.replace(table, table + entries)
           if digest == 'd92ef6f06c840199a9b596620f0d89a4cec25739e956601708b777e621f5f975':
               # The self-test command, the week receipt's checker and the workflow of the week
-              # register forty-four mutations: fifteen caught by cases of `selftest` and of the
+              # register forty-six mutations: seventeen caught by cases of `selftest` and of the
               # opener, twenty-two by cases of the week receipt's checker, and seven by cases that
-              # read the week's workflow. Their cases carry thirty-five verdict markers, because
+              # read the week's workflow. Their cases carry thirty-seven verdict markers, because
               # nine of the mutations are caught under the marker of another. Each marker is newer
               # than the base registry, so each is exempted there. No base entry is re-aimed.
               repaired = exempt(previous, candidate, (
@@ -374,6 +374,8 @@ jobs:
                   "mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under",
                   "mutation-verdict:behavior:cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
                   "mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent",
+                  "mutation-verdict:behavior:cli-selftest-prints-a-stored-state-as-any-command-does",
+                  "mutation-verdict:behavior:cli-selftest-prints-no-text-a-database-answered",
                   "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
                   "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
                   "mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds",

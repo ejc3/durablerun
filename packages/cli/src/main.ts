@@ -1478,7 +1478,7 @@ const selftest: Handler = async ({ invocation, store, reveal, ids }) => {
     }
   }
   const runId = ids.uuidv7()
-  for (const step of selftestSteps(store, { queue, runId })) await run(step)
+  for (const step of selftestSteps(store, { queue, runId, reveal })) await run(step)
   const { stopped, answeredOtherwise } = ended
   const unexpected = answeredOtherwise !== null
   const passed = stopped === null && !unexpected
