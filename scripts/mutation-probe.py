@@ -22294,6 +22294,76 @@ VERDICTS["purge-walk-keeps-a-unit-whose-second-look-is-lost"] = ExpectedVerdict(
     "mutation-verdict:behavior:purge-walk-keeps-a-unit-whose-second-look-is-lost",
 )
 
+# The self-test of the operator CLI (DESIGN.md §3.11, BUILD.md exit test line 44): what it
+# declares against the command table, what it refuses having written nothing, and that each
+# check of an answer fails for a store that answers otherwise.
+MUTATION_SPECS.extend(
+    (
+        (
+            "cli-selftest-declares-or-names-every-label",
+            "packages/cli/src/commands.ts",
+            "      EVENT_PAYLOAD,\n      RETRY_TASK,\n      CANCEL_TASK,\n      PURGE_CANDIDATES,\n",
+            "      EVENT_PAYLOAD,\n      CANCEL_TASK,\n      PURGE_CANDIDATES,\n",
+            "selftest neither sends the batch of a revival nor names it as one it does not send, and its report reads as if every batch were covered",
+        ),
+        (
+            "cli-selftest-refuses-a-queue-that-holds-rows",
+            "packages/cli/src/main.ts",
+            "  if (holdsARow) {\n",
+            "  if (holdsARow && queue === '') {\n",
+            "selftest writes its tasks and sweeps in a queue that holds a deployment's rows",
+        ),
+        (
+            "cli-selftest-refuses-a-schema-that-is-not-the-builds",
+            "packages/cli/src/main.ts",
+            "the build's: migrate the branch or the snapshot first`,\n  )\n  if (refused !== null) return refused\n",
+            "the build's: migrate the branch or the snapshot first`,\n  )\n  if (refused !== null && queue === '') return refused\n",
+            "selftest sends the build's batches to a database at an older schema version, and writes there",
+        ),
+        (
+            "cli-selftest-checks-what-each-call-answered",
+            "packages/cli/src/selftest.ts",
+            "      return differs('the state', await stateOf(a), 'cancelled')\n",
+            "      return null\n",
+            "selftest takes a cancellation that cancelled nothing for one that did",
+        ),
+        (
+            "cli-selftest-exits-11-for-an-answer-that-is-not-the-engines",
+            "packages/cli/src/main.ts",
+            "    exit: stopped !== null ? stopped.exit : unexpected ? 'failed' : 'done',\n",
+            "    exit: stopped !== null ? stopped.exit : unexpected ? 'done' : 'done',\n",
+            "selftest exits 0 when a call answered what the engine does not, so a script that reads the exit takes the database for sound",
+        ),
+    )
+)
+VERDICTS["cli-selftest-declares-or-names-every-label"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest sends declares every batch label a store command declares, or names it with the reason it is not sent",
+    "mutation-verdict:behavior:cli-selftest-declares-or-names-every-label",
+)
+VERDICTS["cli-selftest-refuses-a-queue-that-holds-rows"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest refuses, having written nothing refuses a queue that holds a row with exit 2, prints the counts, and sends only reads",
+    "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
+)
+VERDICTS["cli-selftest-refuses-a-schema-that-is-not-the-builds"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest refuses, having written nothing refuses a database below the build's schema version with exit 5, at a version its reads accept, and changes nothing",
+    "mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds",
+)
+VERDICTS["cli-selftest-checks-what-each-call-answered"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/selftest.test.ts",
+    "what selftest says of a store that answers otherwise exits 11 at the step that checks a call when that call answers of another queue, says what it answered, and runs no step after it, for every call it checks",
+    "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",
+)
+VERDICTS["cli-selftest-exits-11-for-an-answer-that-is-not-the-engines"] = VERDICTS[
+    "cli-selftest-checks-what-each-call-answered"
+]
+
 MUTATIONS = [
     Mutation(
         *spec,
@@ -26238,7 +26308,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1482:
+        if len(MUTATIONS) != 1487:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

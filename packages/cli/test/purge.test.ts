@@ -151,12 +151,14 @@ const faultAt = (site: FaultSite, fault: Parameters<typeof faulting>[2]): StoreO
   openerWrapping((real) => faulting(real, site, fault))
 
 describe('purge on libSQL', () => {
-  it('is the one command that calls the retention port, and it requires its store, its queue and two windows, and takes no --yes', () => {
+  it('calls the retention port, as selftest alone does beside it, and it requires its store, its queue and two windows, and takes no --yes', () => {
     expect(
       VERBS.filter((verb) =>
         COMMANDS[verb].ports.some((port) => port.call.startsWith('retention.')),
       ),
-    ).toEqual(['purge'])
+      // `selftest` sends each call once, to a queue of its own, and its purge is of a unit
+      // the barrier keeps: selftest.test.ts holds that it deletes no row.
+    ).toEqual(['purge', 'selftest'])
     const { flags, ports, writes, opensStore } = COMMANDS.purge
     expect({
       writes,

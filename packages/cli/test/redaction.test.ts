@@ -14,6 +14,7 @@ import {
   BIN,
   COMPLETED_KEY,
   type CliDb,
+  OWN_QUEUE,
   PURGE_EVERY_STATE,
   PURGE_WINDOWS,
   QUEUE,
@@ -200,6 +201,16 @@ const CASES: Readonly<Record<Verb, SentinelCase>> = {
     },
     shows: false,
   },
+  // `selftest` prints its own names, counts and the engine's states. The first line runs on
+  // a queue of its own, where every later run of it is refused, and the second is refused on
+  // the seeded queue, whose rows hold the sentinel and of which it prints only counts.
+  selftest: {
+    lines: (db) => [
+      ['selftest', '--queue', OWN_QUEUE, '--target', db.target],
+      ['selftest', ...writeFlags(db)],
+    ],
+    shows: false,
+  },
   // `tick` opens no store. Each line is refused before anything is sent, and no refusal
   // quotes what it was given.
   tick: {
@@ -356,6 +367,10 @@ const CREDENTIAL_LINES: Readonly<Record<Verb, (target: string) => string[][]>> =
       ['purge', ...windows, '--queue', QUEUE, '--target', 'elsewhere', '--execute'],
     ]
   },
+  selftest: (target) => [
+    ['selftest', '--queue', QUEUE, '--target', target],
+    ['selftest', '--queue', QUEUE, '--target', 'elsewhere'],
+  ],
   // `tick` reads nothing of the store URL, and names no deployment here, so it sends nothing.
   tick: () => [['tick', '--url', 'https://deployment.example']],
 }

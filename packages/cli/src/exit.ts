@@ -15,7 +15,7 @@ export const EXITS = Object.freeze([
     code: 2,
     name: 'usage',
     meaning:
-      'usage, confirmation-required, target-mismatch, origin-mismatch or fake-clock; nothing was changed, and no request went to a deployment',
+      'usage, confirmation-required, target-mismatch, origin-mismatch, fake-clock or queue-not-empty; nothing was changed, and no request went to a deployment',
   },
   { code: 3, name: 'refused', meaning: 'the engine refused the call, and says why' },
   {
@@ -28,7 +28,7 @@ export const EXITS = Object.freeze([
     code: 5,
     name: 'schema',
     meaning:
-      "the database's schema version is outside the store's readable window, the database is not initialized, or purge was asked of a database that is not at the build's version",
+      "the database's schema version is outside the store's readable window, the database is not initialized, or purge or selftest was asked of a database that is not at the build's version",
   },
   {
     code: 6,
@@ -53,6 +53,12 @@ export const EXITS = Object.freeze([
     name: 'unreadable',
     meaning:
       "a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row",
+  },
+  {
+    code: 11,
+    name: 'failed',
+    meaning:
+      'selftest made a call whose answer is not the one the engine gives; its report names the call',
   },
 ] as const)
 

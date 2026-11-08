@@ -26,6 +26,7 @@ export const VERBS = [
   'retry',
   'sweep',
   'purge',
+  'selftest',
   'tick',
 ] as const
 export type Verb = (typeof VERBS)[number]
@@ -75,10 +76,11 @@ export interface PortUse {
  * What running a command again does after its answer was lost. `read` prints the state it
  * finds as of that read, and `resumes` carries on from wherever the first run stopped.
  * `settles` is a write that a repeat does not double: the repeat reaches the state one
- * successful run leaves, and prints the state it finds as of that read. `no-store` opens
- * no store, and what a repeat does is the deployment's to say.
+ * successful run leaves, and prints the state it finds as of that read. `fresh-queue`
+ * refuses a queue that holds rows, so the repeat is a run on another queue, judged by its
+ * own report. `no-store` opens no store, and what a repeat does is the deployment's to say.
  */
-export type RepeatSafety = 'no-store' | 'read' | 'resumes' | 'settles'
+export type RepeatSafety = 'no-store' | 'read' | 'resumes' | 'settles' | 'fresh-queue'
 
 /**
  * A fault injected at the executor, as the CLI sees it, at one batch a command sends: the
@@ -165,6 +167,7 @@ const YES_FLAG = {
 } as const satisfies FlagSpec
 
 const SCHEMA_VERSION: PortUse = { call: 'admin.schemaVersion', labels: ['migrate:version'] }
+const DATABASE_NOW: PortUse = { call: 'admin.nowEpochMs', labels: ['admin:now'] }
 const TASK_RESULT: PortUse = { call: 'scheduler.getTaskResult', labels: ['task-result'] }
 const CHECKPOINTS: PortUse = { call: 'scheduler.getCheckpoints', labels: ['get-checkpoints'] }
 const TASK_ID_BY_KEY: PortUse = { call: 'operator.taskIdByKey', labels: ['task-id-by-key'] }
@@ -195,6 +198,30 @@ const PURGE_CANDIDATES: PortUse = {
 }
 const PURGE_UNIT: PortUse = { call: 'retention.purgeUnit', labels: ['purge-unit'] }
 const PURGE_ADMISSION: PortUse = { call: 'retention.purgeAdmission', labels: ['purge-admission'] }
+/**
+ * The sweep `selftest` makes: of a queue whose one move owed is a cancellation, since no
+ * command can claim a run, and the other two transitions of a sweep follow a claim.
+ */
+const SWEEP_OF_A_DEADLINE: PortUse = {
+  call: 'scheduler.sweep',
+  labels: ['sweep:scan', 'sweep:cancel'],
+}
+
+/**
+ * The batch labels of the table that `selftest` does not send, each with why. Every other
+ * label any command declares is one `selftest` declares, which a test holds, so a command
+ * that joins the table with a new batch joins `selftest` or is named here.
+ */
+export const NOT_SENT_BY_SELFTEST: Readonly<Record<string, string>> = Object.freeze({
+  'migrate:bootstrap':
+    'migrate sends it only to a database that was never initialized, and selftest runs at the schema version of the build',
+  'migrate:v<N>':
+    'migrate sends it only to a database below the schema version of the build, and selftest runs at that version',
+  'sweep:lost-launch':
+    'a sweep sends it for a run that was claimed and never started, and no command can claim a run',
+  'sweep:claim-timeout':
+    'a sweep sends it for a started run whose lease lapsed, and no command can claim a run',
+})
 
 /** Both crashes exit 6, and a batch delivered twice ends as a run without a fault does. */
 const READ_FAULTS = {
@@ -293,7 +320,7 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     opensStore: true,
     writes: false,
     repeat: 'read',
-    ports: [SCHEMA_VERSION, { call: 'admin.nowEpochMs', labels: ['admin:now'] }],
+    ports: [SCHEMA_VERSION, DATABASE_NOW],
     exits: STORE_EXITS,
     faults: READ_FAULTS,
   },
@@ -597,6 +624,44 @@ export const COMMANDS: Readonly<Record<Verb, CommandSpec>> = Object.freeze({
     // conditions are read for a dry run, and after a purge the port answered kept.
     ports: [SCHEMA_VERSION, QUEUE_STATUS, PURGE_CANDIDATES, PURGE_UNIT, PURGE_ADMISSION],
     exits: DRIVE_EXITS,
+    faults: DRIVE_FAULTS,
+  },
+  selftest: {
+    verb: 'selftest',
+    summary:
+      'send the batches the commands send to a queue of its own, and say what each call answered and which batches it does not send: for a branch or a snapshot of a database, before a migration or a first purge',
+    positionals: [],
+    flags: DRIVE_FLAGS,
+    opensStore: true,
+    writes: true,
+    repeat: 'fresh-queue',
+    // Every call any other command makes but the migration, in the order selftest makes them.
+    ports: [
+      SCHEMA_VERSION,
+      TABLE_ROWS,
+      DATABASE_NOW,
+      SPAWN,
+      TASK_ID_BY_KEY,
+      TASK_FACTS,
+      TASK_RESULT,
+      CHECKPOINTS,
+      TASK_ADMISSION,
+      STUCK_RUNS,
+      AGED_TASKS,
+      QUEUE_STATUS,
+      NEXT_WAKE,
+      SWEEP_OF_A_DEADLINE,
+      EVENT_STATE,
+      EVENT_WAITERS,
+      EMIT_EVENT,
+      EVENT_PAYLOAD,
+      RETRY_TASK,
+      CANCEL_TASK,
+      PURGE_CANDIDATES,
+      PURGE_UNIT,
+      PURGE_ADMISSION,
+    ],
+    exits: [...DRIVE_EXITS, 'failed'],
     faults: DRIVE_FAULTS,
   },
   tick: {

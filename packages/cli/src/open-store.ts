@@ -67,7 +67,7 @@ export type CliOperator = Pick<
 /**
  * The retention calls a command may make, which is every one the port has: the listing of
  * what a purge may take, the purge of one unit, and the read of what the barrier says of
- * one. `purge` is the one command that calls them.
+ * one. `purge` calls them, and `selftest` sends each once.
  */
 export type CliRetention = Pick<Retention, 'purgeCandidates' | 'purgeUnit' | 'purgeAdmission'>
 

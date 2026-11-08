@@ -5654,14 +5654,15 @@ and no other command reads the clock: engine time is database time.
 **The command table.** `src/commands.ts` holds one entry for each command: its arguments
 and flags, whether it opens a store and whether it writes, what running it again does
 after its answer was lost (`read` prints the state it finds as of that read, `resumes`
-carries on from where the first run stopped, and `settles` reaches the state one successful
-run leaves and prints what it finds there), each port call it makes with every batch
+carries on from where the first run stopped, `settles` reaches the state one successful
+run leaves and prints what it finds there, and `fresh-queue` is refused on the queue it
+wrote to and runs on another), each port call it makes with every batch
 label that call can send, the exit codes it gives, and the exit a fault at each of its
 batches ends in. Parsing, usage, `help --json`, and the CLI's fault surface all read that
 table. A command may name one argument that a flag stands in for, and it then takes one of
 the two and never both: `inspect` and `explain` each take a task id or `--key`. The commands are
 `help`, `doctor`, `migrate`, `result`, `checkpoints`, `inspect`, `explain`, `stuck`, `stats`,
-`sizes`, `enqueue`, `emit`, `cancel`, `retry`, `sweep`, `purge` and `tick`.
+`sizes`, `enqueue`, `emit`, `cancel`, `retry`, `sweep`, `purge`, `selftest` and `tick`.
 
 **Transport.** Every command but `help` and `tick` opens a store directly, from
 `DURABLERUN_STORE_URL`, with `DURABLERUN_STORE_TOKEN` for a libSQL server that needs
@@ -6589,8 +6590,9 @@ cases from the command table, for every flag of every command.
 
 **The purge verb.** `purge --queue Q --target T --completed-after D --cancelled-after D
 [--failed-after D] [--limit N] [--execute]` is the one command by which an
-operator deletes durable state, and the one command that calls the retention port (section
-3.12). It is that port's calls and nothing else: it runs core's one walk over the port
+operator deletes durable state. It calls the retention port (section 3.12), as `selftest`
+alone does beside it, which sends each of the port's calls once to a queue of its own and
+deletes nothing. `purge` is that port's calls and nothing else: it runs core's one walk over the port
 (`purgeWalk`, section 3.12), which the simulated week and the tests run too.
 `purgeCandidates` lists the ended tasks that are a window old, `purgeUnit` deletes one unit
 in one batch whose compare-and-set holds the whole barrier at the instant of deletion, and
@@ -6733,6 +6735,61 @@ repeats purges nothing and keeps the same units for the same reasons, and a repe
 keeps no unit fails the test, because it compares nothing. What the walk does with the
 port's answers is held in core, over a port held in memory (section 3.12).
 
+**The self-test.** `selftest --queue Q --target T` sends the batches the commands send, to
+a queue of its own, and says what each call answered. It is for a branch or a snapshot of a
+database, before the database itself is migrated or purged for the first time: a database
+that refuses a batch, or answers one otherwise than the engine does, is found there and not
+during an incident. It writes two tasks and one event and deletes nothing. It spawns a task
+under a key and spawns it again, which must find the first. It spawns a second task whose
+cancellation deadline passes as it is spawned. It reads the first task by its key, its
+snapshot, its outcome, its checkpoints and what the guards say of it, then what the driver
+owes the queue, the queue's live tasks by age, its gauges and its next wake. It sweeps,
+which must cancel the second task and leave the first. It reads an event of its own, the
+waits on it, emits it and reads the payload back. It asks for a revival of the first task,
+which the guard must refuse, cancels that task, lists what a purge may take, which must be
+nothing, sends the purge of the task it cancelled a moment ago, which the barrier must
+refuse, reads what the barrier says, which must be that the age alone does not hold, and
+counts the queue's rows. `src/selftest.ts` holds the steps, each with the call of the
+command table it is for.
+
+Every check reads the state a call left where that and the call's own answer can differ, so
+a store that delivers a batch twice still passes. Five calls answer of this queue what they
+answer of an empty one, because what would tell the two apart is a run a worker claimed or a
+unit a window old, and `selftest` makes neither: the read of checkpoints, the read of an
+event's waits, the revival, the listing of what a purge may take and the purge. Of those it
+shows that the database takes the batch and answers nothing, and no more. A test routes
+each call in turn to another queue, and requires the run to fail for every call but those
+five, by name.
+
+It declares every batch label the other commands declare but four, and the command table
+names those four with the reason (`NOT_SENT_BY_SELFTEST`): `migrate:bootstrap` and
+`migrate:v<N>`, which a migration sends only to a database below the build's version, and
+`sweep:lost-launch` and `sweep:claim-timeout`, which a sweep sends for a run a worker
+claimed. No command can claim a run: the ports the CLI opens hold no claim. A test walks
+the table and fails when a command declares a label that `selftest` neither declares nor
+names, so a command that joins the table with a new batch joins `selftest` too. The report
+prints each step with its call, its labels and its result, then each label with its result,
+then the labels not sent with their reasons.
+
+It refuses, having written nothing, a database that is not at the build's schema version
+(exit 5), because the batches it sends are that version's, and a queue that holds any row
+(exit 2, `queue-not-empty`, with the counts), because its last check counts the queue's
+rows. It is not refused under a test clock. The queue is its own while it runs too: a
+worker that claims one of its tasks between two calls, or a task another caller enqueues
+there, shows as an answer that is not the expected one. It stops at the first call the
+store fails, or that answers otherwise. The report prints on stdout whatever the exit, with the calls it
+reached and `not-run` for the rest. A call the store failed exits as the failure does, and a
+call that answered otherwise exits 11, with what it answered under `found`: a count, a
+flag, an id or a state of the engine's own, and never a stored text. What it leaves is two
+cancelled tasks and the event it emitted, and on PostgreSQL the row that locks that event's
+name. A purge takes the tasks once they are a window old, and no purge takes an event a
+caller emitted. A run that stopped before its
+cancellation leaves its first task pending, which no worker runs, because no handler is
+registered under its name: `stuck --older-than` lists it and `cancel` ends it. So a run
+after a lost answer names another queue: on the queue it wrote to it is refused. The fault surface holds that at
+every batch it sends: the same line is refused there and changes nothing once a row was
+written, and on another queue it passes and leaves the rows a run without a fault leaves.
+
 **The schema window for a write.** A drive verb is held to the window a read is held to. It
 exits 5 outside it and prints the recorded version and the versions the build reads. On
 libSQL that window starts at version 5, and a verb may write there because its twin passes
@@ -6811,7 +6868,8 @@ any other may quote the key. The payload an event already
 holds prints as its length and sha256 and never as text. `tick` prints neither URL as it
 was given and never the token. `purge` prints a unit's task id, its task name, its state,
 the instant it ended and the rows that went, and of the idempotency key the task was
-spawned under only the sha256, with `--reveal` or without.
+spawned under only the sha256, with `--reveal` or without. `selftest` prints the names it
+made, ids, counts and states of the engine's own, and the counts of a queue it refuses.
 
 **Output.** Human text by default, one `name: value` line for each field. With `--json`
 one JSON document on stdout, with every object's keys in code point order (each key is an
@@ -6824,7 +6882,8 @@ stdout, whatever the command exits with, so the exit code alone tells a script h
 The snapshot of `inspect`, the answer of `explain` and the reports of `stuck` and `stats`
 are marked so. Each prints there when it exits 10, and the report of `stuck` when it exits
 9. The report of a `purge` that its store failed partway through is marked so too: the units
-that went print there, and the exit is the failure's. Every other answer that does not exit
+that went print there, and the exit is the failure's. So is the report of `selftest`, which
+prints there with the calls it reached when it exits 11 or as a failure does. Every other answer that does not exit
 0 is a refusal and prints on stderr. That holds when the refusal names a fact about the
 store. On a database recorded at a schema version outside the window, every read exits 5 and
 prints the recorded version on stderr. `migrate` without `--yes` exits 2 and prints the
@@ -6843,15 +6902,16 @@ same table, which a test holds equal to this one.
 | --- | --- | --- |
 | 0 | done | the command did what it says |
 | 1 | internal | an error the CLI does not expect, a defect; its message prints only with --reveal, and never from the bin's last catch |
-| 2 | usage | usage, confirmation-required, target-mismatch, origin-mismatch or fake-clock; nothing was changed, and no request went to a deployment |
+| 2 | usage | usage, confirmation-required, target-mismatch, origin-mismatch, fake-clock or queue-not-empty; nothing was changed, and no request went to a deployment |
 | 3 | refused | the engine refused the call, and says why |
 | 4 | unauthorized | the deployment tick called refused the token it was sent; a wrong store credential exits 6 |
-| 5 | schema | the database's schema version is outside the store's readable window, the database is not initialized, or purge was asked of a database that is not at the build's version |
+| 5 | schema | the database's schema version is outside the store's readable window, the database is not initialized, or purge or selftest was asked of a database that is not at the build's version |
 | 6 | unavailable | the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a wrong store credential exits 6 too |
 | 7 | permanent | the store answered with a permanent error, or the deployment answered tick with what the command takes for no outage: a status no tick route gives, a 500 of a hosted route itself, or a 200 that is no JSON object or is too long to read |
 | 8 | not-found | no such task in the queue |
 | 9 | found | stuck --fail-if-any listed at least one row |
 | 10 | unreadable | a stored row the store's decoders refuse, a stored integer outside its bounds, or a stored state that is not the engine's own; what refused a row prints only with --reveal, because it can quote the row |
+| 11 | failed | selftest made a call whose answer is not the one the engine gives; its report names the call |
 
 Exit 6 is safe to repeat for every command. For a read that holds because a read changes
 nothing. For `migrate` it holds because each version's write is fenced by the version before
@@ -6862,7 +6922,9 @@ command again reaches the state one successful run leaves and prints the state i
 of that read: `enqueue` finds its task under the key, a repeated `emit` is told the event
 exists, a repeated `cancel` reports the task cancelled, a repeated `retry` reports the live
 run it finds, and a sweep takes what is still owed. For `purge` it holds because a unit goes
-whole in one batch or not at all, so a repeat purges what is left. For `tick` it holds
+whole in one batch or not at all, so a repeat purges what is left. For `selftest` the
+repeat names another queue: every row it writes is in the queue it was given, so a run that
+stopped partway changes nothing a run on another queue reads. For `tick` it holds
 because a tick is one bounded pass, and a second does what the next cron tick would. Safe to
 repeat is not sure to succeed. A wrong credential exits 6 today on every store: both server
 executors type an authentication failure as an outage (a test measures it on PostgreSQL and
@@ -6891,7 +6953,8 @@ and of a live one, which makes it read the guard, and `sweep` of a queue with a 
 passed, a launch lost and a lease lapsed. `purge` runs as a dry run and with `--execute`,
 over units that are years old by the database's own clock and one the barrier keeps, so a
 fault meets the listing, the purge of a unit, and the read of the barrier that follows a
-purge the port answered kept. A drive verb mints ids, and its repeat is another
+purge the port answered kept. `selftest` runs on a queue no seed writes to, beside a queue
+that holds the seeded tasks. A drive verb mints ids, and its repeat is another
 process, so the repeat's ids go on from where the first run's stopped and the two states
 are compared with the ids each run minted read as one placeholder. The command
 table declares exit 6 for
@@ -6901,7 +6964,8 @@ answer `migrate` recovers, where it declares 0 for crash-after by label:
 Every batch label and every per-label exit the table declares must be sent from some
 starting state, so a label that is stale or never met fails. After each case, running the
 same command again reaches the state one successful run leaves, and a read prints what
-that run printed. A read also leaves every table as it found it, and `migrate` leaves a
+that run printed. For `selftest` the repeat is as its paragraph above says: refused on the
+same queue once a row was written, and passing on another. A read also leaves every table as it found it, and `migrate` leaves a
 recorded version between the one it started from and the build's; across several
 versions that can be neither the state it started from nor the one it would finish at.
 

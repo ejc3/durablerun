@@ -408,6 +408,28 @@ export function withoutMinted(dump: string, minted: readonly string[]): string {
     .join('\n')
 }
 
+/**
+ * A dump's rows as `<table> <row>` lines, those that name one queue apart from the rest. A
+ * row names its queue as the value of a column, so it holds the name in quotes.
+ */
+export function rowsByQueue(
+  dump: string,
+  queue: string,
+): { readonly ofTheQueue: string[]; readonly elsewhere: string[] } {
+  const named = JSON.stringify(queue)
+  const ofTheQueue: string[] = []
+  const elsewhere: string[] = []
+  for (const line of dump.split('\n')) {
+    const at = line.indexOf(' ')
+    const table = line.slice(0, at)
+    if (table === 'objects') continue
+    for (const row of JSON.parse(line.slice(at + 1)) as string[]) {
+      ;(row.includes(named) ? ofTheQueue : elsewhere).push(`${table} ${row}`)
+    }
+  }
+  return { ofTheQueue, elsewhere }
+}
+
 /** A store opener that records every batch every executor it makes is sent. */
 export function recordingOpener(): { opener: StoreOpener; sent(): RecordedBatch[] } {
   const recorders: RecordingExecutor[] = []
@@ -480,6 +502,9 @@ export function faulting(real: SqlExecutor, site: FaultSite, fault: CliFault): S
 export const SENTINEL = 'sentinel-6d1c9e0a'
 
 export const QUEUE = 'q'
+
+/** A queue no seed writes to, for a command that runs on a queue of its own. */
+export const OWN_QUEUE = 'own-queue'
 
 /** The idempotency key of the completed task `seedTasks` writes, which holds the sentinel. */
 export const COMPLETED_KEY = `key-${SENTINEL}`
