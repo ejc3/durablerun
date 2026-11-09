@@ -7932,7 +7932,7 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the consumers, two are the SDK's ends of a pass, one is the checker's kind, and six are
     the workflow's pin. The registry's own copy of the MySQL numbers is held to the
     executor's list by the registry's self-test.
-  - The fold of the one review (`postmortems/pr5.6-store-credential-error-review.md`). It
+  - The fold of the first review (`postmortems/pr5.6-store-credential-error-review.md`). It
     found nine things, none HIGH, three MEDIUM and six LOW, and all count. A libSQL 401 or
     403 under a JSON body with a `message` member is an access refusal, through a `fetch` of
     the executor's. The two PostgreSQL refusals above are the same on main and are held by
@@ -7940,6 +7940,18 @@ these three things; nothing else in the system does I/O, time, or randomness.
     main's history. The server fixtures drop every reader at their close. DESIGN.md names
     the MySQL login refusals outside the list, and the README says which refused tokens
     were measured.
+  - The fold of the second review, which read the fix for the libSQL finding and nothing
+    else. It found nine more things, none HIGH, one MEDIUM and eight LOW, and all count,
+    which makes 18 for the pull request. The executor's `fetch` had rewritten every 401 and
+    403, read its body and copied its reason phrase. So an odd reason phrase or a body cut
+    short was an outage, a body that never ends was no answer, and a page of 300 kB was the
+    error's message. The `fetch` now rewrites one answer, a 401 or a 403 whose content type
+    is exactly `application/json`, hands it on with the body unread under
+    `application/octet-stream`, and hands every other answer on as it came. The message of
+    such a refusal is the status line and no longer the server's `message` text. The
+    executor takes the runtime's `fetch` once, when its module loads. One case compares a
+    client the executor opens with a client made without the `fetch` over 294 generated
+    answers.
 - **PR5.6b the PostgreSQL refusals with no access code**: TODO. Deferred from PR5.6, and
   outside the exit test of the live week milestone. PostgreSQL refusals that carry no access
   SQLSTATE: a login the client declines to send (no password against a SCRAM server) and a
