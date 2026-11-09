@@ -426,22 +426,25 @@ describe('the numbers MySQL files apart from what their names say', () => {
     const reasonsFor = (filed: Filed) =>
       NOT_A_REFUSAL_OF_THE_STORES_ACCOUNT.filter(([names]) => names.test(filed.name))
     const typedOtherwise = saysRefused.filter((filed) => typed(filed) !== 'StoreAccessRefusedError')
-    expect({
-      typedAnAccessRefusal: saysRefused
-        .filter((filed) => typed(filed) === 'StoreAccessRefusedError')
-        .map(line),
-      typedOtherwiseWithNoOneReason: typedOtherwise
-        .filter((filed) => reasonsFor(filed).length !== 1)
-        .map(line),
-      reasonsThatExplainNothing: NOT_A_REFUSAL_OF_THE_STORES_ACCOUNT.filter(
-        ([names]) => !typedOtherwise.some((filed) => names.test(filed.name)),
-      ).map(([names]) => String(names)),
-      // No number is typed an access refusal but one whose name says so.
-      typedAnAccessRefusalUnderAnotherName: (await filedByTheServer())
-        .filter((filed) => !SAYS_THE_ACCOUNT_WAS_REFUSED.test(filed.name))
-        .filter((filed) => typed(filed) === 'StoreAccessRefusedError')
-        .map(line),
-    }).toEqual({
+    expect(
+      {
+        typedAnAccessRefusal: saysRefused
+          .filter((filed) => typed(filed) === 'StoreAccessRefusedError')
+          .map(line),
+        typedOtherwiseWithNoOneReason: typedOtherwise
+          .filter((filed) => reasonsFor(filed).length !== 1)
+          .map(line),
+        reasonsThatExplainNothing: NOT_A_REFUSAL_OF_THE_STORES_ACCOUNT.filter(
+          ([names]) => !typedOtherwise.some((filed) => names.test(filed.name)),
+        ).map(([names]) => String(names)),
+        // No number is typed an access refusal but one whose name says so.
+        typedAnAccessRefusalUnderAnotherName: (await filedByTheServer())
+          .filter((filed) => !SAYS_THE_ACCOUNT_WAS_REFUSED.test(filed.name))
+          .filter((filed) => typed(filed) === 'StoreAccessRefusedError')
+          .map(line),
+      },
+      'mutation-verdict:behavior:mysql-error-list-holds-the-account-refusals',
+    ).toEqual({
       typedAnAccessRefusal: [
         '1044 ER_DBACCESS_DENIED_ERROR (42000)',
         '1045 ER_ACCESS_DENIED_ERROR (28000)',

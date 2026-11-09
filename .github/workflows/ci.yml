@@ -393,12 +393,14 @@ jobs:
               # their lines: an outage and a permanent answer as controls of a pass, the type check
               # captured at load, which core's one function now makes, how a contest books a
               # permanent answer, the exit of an outage, and a read that follows an answered write.
-              # Each is the mutant it was. This tree also registers forty-one mutations the base
-              # predates: fifteen for the type, its table and what each consumer does with it, one
-              # for each of the twenty-three MySQL error numbers typed an access refusal, and three
-              # for the commit the week's workflow runs. Their cases carry sixteen verdict
-              # markers, because the twenty-three share one marker and three others are caught
-              # under the marker of another. Each marker is exempted there.
+              # Each is the mutant it was. This tree also registers fifty mutations the base
+              # predates: fifteen for the type, its table and what each consumer does with it, four
+              # for the answer the libSQL executor keeps a refused status under, one for each of
+              # the twenty-three MySQL error numbers typed an access refusal, two for the list
+              # those numbers are held to, and six for the commit the week's workflow runs. Their
+              # cases carry twenty-three verdict markers, because the twenty-three numbers share
+              # one marker and five others are caught under the marker of another. Each marker is
+              # exempted there.
               repaired = previous
               for name in (
                   'task-control-store-outage-auth',
@@ -415,9 +417,16 @@ jobs:
                   "mutation-verdict:behavior:contest-books-a-refused-credential-as-an-outage",
                   "mutation-verdict:behavior:hosted-answers-503-for-a-refused-credential",
                   "mutation-verdict:behavior:libsql-401-is-an-access-refusal",
+                  "mutation-verdict:behavior:libsql-other-status-is-handed-on-as-it-came",
+                  "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-and-not-thrown",
+                  "mutation-verdict:behavior:libsql-refused-status-is-kept-under-every-body",
                   "mutation-verdict:behavior:libsql-refused-status-is-read-before-message-text",
                   "mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal",
+                  "mutation-verdict:behavior:mysql-error-list-holds-the-account-refusals",
+                  "mutation-verdict:behavior:operable-week-workflow-fetches-the-whole-of-main",
+                  "mutation-verdict:behavior:operable-week-workflow-holds-the-pinned-commit-to-main",
                   "mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out",
+                  "mutation-verdict:behavior:operable-week-workflow-refuses-a-commit-that-tracks-a-report-name",
                   "mutation-verdict:behavior:operable-week-workflow-requires-a-full-commit-id",
                   "mutation-verdict:behavior:operable-week-workflow-runs-the-pinned-commit",
                   "mutation-verdict:behavior:postgres-missing-privilege-is-an-access-refusal",

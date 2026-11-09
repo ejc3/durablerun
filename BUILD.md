@@ -7919,16 +7919,19 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The week's workflow fetches the one commit `DURABLERUN_WEEK_COMMIT` names by its full
     id, checks it out and reads the id back, and a value that is not a full id stops the job
     before any step that opens the store. It then fetches main and stops when the commit is
-    not in main's history, or tracks a file named `week-*`. Its steps stay main's. The README's section on a
-    week says which commit prints the documents of a week, that the workflow is turned off
-    at the end sample, and what a purge that exits 4 means.
+    not in main's history, or tracks a file named `week-*`. Its steps stay main's. The
+    README's section on a week says which commit prints the documents of a week, that the
+    workflow is turned off at the end sample, and what a purge that exits 4 means.
   - The week receipt's checker gained the one kind and did not move. One case hands it the
     document the CLI prints for a purge under every kind of core's definition.
-  - The registry holds 1569 mutations where main held 1528: 41 new and seven aimed again at
-    the lines that replaced theirs. Of the new ones, 23 are the MySQL numbers, three are the
-    libSQL statuses and their order before any reading of text, two are the PostgreSQL
-    codes, two are core's definition, five are the consumers, two are the SDK's ends of a
-    pass, one is the checker's kind, and three are the workflow's pin.
+  - The registry holds 1578 mutations where main held 1528: 50 new and seven aimed again at
+    the lines that replaced theirs. Of the new ones, 23 are the MySQL numbers, two are the
+    list those numbers are held to from both sides, three are the libSQL statuses and their
+    order before any reading of text, four are the answer the libSQL executor keeps a
+    refused status under, two are the PostgreSQL codes, two are core's definition, five are
+    the consumers, two are the SDK's ends of a pass, one is the checker's kind, and six are
+    the workflow's pin. The registry's own copy of the MySQL numbers is held to the
+    executor's list by the registry's self-test.
 - **PR5.6b the PostgreSQL refusals with no access code**: TODO. Deferred from PR5.6, and
   outside the exit test of the live week milestone. PostgreSQL refusals that carry no access
   SQLSTATE: a login the client declines to send (no password against a SCRAM server) and a

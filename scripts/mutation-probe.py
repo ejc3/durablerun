@@ -17244,6 +17244,34 @@ MUTATION_SPECS.extend(
             "  // MUTATION: the reader does not know the kind of a refused credential\n",
             "a week in which the store once refused the credential of a purge is refused as malformed, though a later run of that day finished",
         ),
+        (
+            "libsql-refused-status-is-kept-under-every-body",
+            "packages/store-libsql/src/executor.ts",
+            "        fetch: fetchKeepingARefusedStatus,\n",
+            "        // MUTATION: the client sends with its own fetch\n",
+            "a 401 a gateway answers with a JSON body that has a message member reaches the executor with no status, so a refused token is an outage again, or a fresh database when the body has the wording of a missing version table",
+        ),
+        (
+            "libsql-refused-answer-is-plain-text",
+            "packages/store-libsql/src/executor.ts",
+            "    headers: { 'content-type': 'text/plain' },\n",
+            "    headers: answer.headers, // MUTATION: the refused answer keeps its own content type\n",
+            "a refused answer is handed to the client under the content type the server sent, so the client reads a JSON body and drops the status of one that has a message member",
+        ),
+        (
+            "libsql-refused-answer-is-handed-on-and-not-thrown",
+            "packages/store-libsql/src/executor.ts",
+            "  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer\n",
+            "  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer\n  if (answer.status > 0) throw new Error(`the server answered ${answer.status}`) // MUTATION: a refused answer is thrown and not handed on\n",
+            "the executor's fetch throws for a 401, and the client reports a thrown fetch with no status, so a refused token is an outage again",
+        ),
+        (
+            "libsql-other-status-is-handed-on-as-it-came",
+            "packages/store-libsql/src/executor.ts",
+            "  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer\n",
+            "  if (answer.ok) return answer // MUTATION: every answer that is no success is handed on as plain text\n",
+            "a 400 whose JSON body carries a code is handed to the client as plain text, so the client no longer reads the code and a refused write is an outage that is retried",
+        ),
     )
 )
 # MySQL keeps the numbers that say the account was refused in one list, and each number is a
@@ -17288,6 +17316,24 @@ VERDICTS.update(
             "packages/store-libsql/test/error-typing.test.ts",
             "what the real libSQL client throws when a server answers a status types a 401 an access refusal whatever text the server sends beside it, the wording of a missing version table included",
             "mutation-verdict:behavior:libsql-refused-status-is-read-before-message-text",
+        ),
+        "libsql-refused-status-is-kept-under-every-body": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status types a 401 and a 403 an access refusal under every body and content type a server sends beside it, for the version read and for another read",
+            "mutation-verdict:behavior:libsql-refused-status-is-kept-under-every-body",
+        ),
+        "libsql-refused-answer-is-handed-on-and-not-thrown": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status hands a 401 and a 403 on as an answer with the same status and body, as plain text, and throws nothing",
+            "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-and-not-thrown",
+        ),
+        "libsql-other-status-is-handed-on-as-it-came": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status hands an answer of any other status to the client as it came, so the client still reads the code a server sends in a JSON body",
+            "mutation-verdict:behavior:libsql-other-status-is-handed-on-as-it-came",
         ),
         "postgres-refused-credential-class-is-an-access-refusal": ExpectedVerdict(
             "behavior",
@@ -17355,6 +17401,41 @@ for _errno in MYSQL_ACCESS_REFUSED_ERRNOS:
         "MysqlExecutor error typing, by the state and the number the server sends types every number that says the account was refused an access refusal, whatever state MySQL files it under",
         "mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal",
     )
+VERDICTS["libsql-refused-answer-is-plain-text"] = VERDICTS[
+    "libsql-refused-status-is-kept-under-every-body"
+]
+
+# The list is held from both sides to the server's own list of names, which the case on a
+# real server reads: a number whose name says the account was refused may not leave it, and
+# a number whose name does not say so may not enter it. 6038 is one of three numbers the
+# driver's table of names does not have.
+MUTATION_SPECS.extend(
+    (
+        (
+            "mysql-error-list-holds-the-account-refusals",
+            "packages/store-mysql/src/executor.ts",
+            "  6038, // ER_SPECIFIC_ACCESS_DENIED: the statement needs a privilege the account lacks\n",
+            "  // MUTATION: a refused statement leaves the list the server's own names are held to\n",
+            "a refusal leaves the executor's list and only a case on a fake connection, fed the numbers its author listed, would say so",
+        ),
+        (
+            "mysql-error-list-takes-no-number-whose-name-says-no-refusal",
+            "packages/store-mysql/src/executor.ts",
+            "const ACCESS_REFUSED_ERRNOS = new Set([\n",
+            "const ACCESS_REFUSED_ERRNOS = new Set([\n  1040, // MUTATION: a server with no connection to spare is an access refusal\n",
+            "a server that has no connection to spare is answered as a refused credential, so the CLI exits 4 and a job stops at a failure that a later try cures",
+        ),
+    )
+)
+VERDICTS["mysql-error-list-holds-the-account-refusals"] = ExpectedVerdict(
+    "behavior",
+    "packages/store-mysql/test/error-typing.test.ts",
+    "the numbers MySQL files apart from what their names say types every number whose name says the account was refused an access refusal, or says why not",
+    "mutation-verdict:behavior:mysql-error-list-holds-the-account-refusals",
+)
+VERDICTS["mysql-error-list-takes-no-number-whose-name-says-no-refusal"] = VERDICTS[
+    "mysql-error-list-holds-the-account-refusals"
+]
 
 # MySQL files a broken CHECK constraint under its general state, as it files a value of the
 # wrong type, so both are typed by number, and the case that holds the one holds the other.
@@ -23038,6 +23119,27 @@ MUTATION_SPECS.extend(
             "          if [ \"$(git rev-parse HEAD)\" = \"\" ]; then\n",
             "a checkout that left another commit than the pinned one goes on to open the store with that commit's CLI",
         ),
+        (
+            "operable-week-workflow-holds-the-pinned-commit-to-main",
+            ".github/workflows/operable-week.yml",
+            "          if ! git merge-base --is-ancestor \"$DURABLERUN_WEEK_COMMIT\" origin/main; then\n",
+            "          if false; then\n",
+            "a commit of a branch that was never merged, or of a fork, is taken as the pin, and its CLI opens the store with the week's token",
+        ),
+        (
+            "operable-week-workflow-fetches-the-whole-of-main",
+            ".github/workflows/operable-week.yml",
+            "          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'\n",
+            "          git fetch --no-tags --depth=1 origin '+refs/heads/main:refs/remotes/origin/main'\n",
+            "main is fetched one commit deep, so a pinned commit behind main's newest is not found in its history and the job stops every run of the week",
+        ),
+        (
+            "operable-week-workflow-refuses-a-commit-that-tracks-a-report-name",
+            ".github/workflows/operable-week.yml",
+            "          if [ -n \"$tracked\" ]; then\n",
+            "          if false; then\n",
+            "a file the pinned commit tracks under the name week-* is kept beside the reports as if the job had written it",
+        ),
     )
 )
 VERDICTS["operable-week-workflow-runs-the-pinned-commit"] = ExpectedVerdict(
@@ -23057,6 +23159,24 @@ VERDICTS["operable-week-workflow-reads-back-the-commit-it-checked-out"] = Expect
     "packages/cli/test/operable-week-workflow.test.ts",
     "the workflow of the operable week runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store",
     "mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out",
+)
+VERDICTS["operable-week-workflow-holds-the-pinned-commit-to-main"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week holds the pinned commit to the history of main, under a real git and a repository on this disk: a commit main holds is checked out, a commit of a branch that was never merged stops the step though the fetch by its id hands it over, and so does a commit that tracks a file the job would keep as a report",
+    "mutation-verdict:behavior:operable-week-workflow-holds-the-pinned-commit-to-main",
+)
+VERDICTS["operable-week-workflow-fetches-the-whole-of-main"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week holds the pinned commit to the history of main, under a real git and a repository on this disk: a commit main holds is checked out, a commit of a branch that was never merged stops the step though the fetch by its id hands it over, and so does a commit that tracks a file the job would keep as a report",
+    "mutation-verdict:behavior:operable-week-workflow-fetches-the-whole-of-main",
+)
+VERDICTS["operable-week-workflow-refuses-a-commit-that-tracks-a-report-name"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week holds the pinned commit to the history of main, under a real git and a repository on this disk: a commit main holds is checked out, a commit of a branch that was never merged stops the step though the fetch by its id hands it over, and so does a commit that tracks a file the job would keep as a report",
+    "mutation-verdict:behavior:operable-week-workflow-refuses-a-commit-that-tracks-a-report-name",
 )
 MUTATION_SPECS.extend(
     (
@@ -27198,7 +27318,28 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1569:
+        # The registry keeps its own copy of the numbers MySQL's executor types an access
+        # refusal, one mutation for each. The copy is held to the executor's list here, so
+        # a number added to the executor has a mutation or fails this check. Every line of
+        # the list must be one number and its comment, so a line of another shape fails too.
+        mysql_access_lines = (
+            (ROOT / "packages/store-mysql/src/executor.ts")
+            .read_text()
+            .split("const ACCESS_REFUSED_ERRNOS = new Set([\n", 1)[-1]
+            .split("])\n", 1)[0]
+            .splitlines()
+        )
+        mysql_access_numbers = [
+            re.fullmatch(r"  (\d+), // \S.*", line) for line in mysql_access_lines
+        ]
+        if None in mysql_access_numbers or (
+            tuple(int(number.group(1)) for number in mysql_access_numbers if number)
+            != MYSQL_ACCESS_REFUSED_ERRNOS
+        ):
+            failures.append(
+                "the registry's MySQL access numbers differ from the executor's list"
+            )
+        if len(MUTATIONS) != 1578:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
