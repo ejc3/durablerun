@@ -623,7 +623,13 @@ One invocation executes one claimed run to its next suspension point:
   a missing privilege (1142 on a table, 1044 on a database, 1227 for a
   statement), and HY000 for an account that is locked (3118), blocked, or past
   its password (1820, 1862). That list is held to the server's own list too
-  (§3.4). libSQL: its client reports every HTTP answer that is no success
+  (§3.4). Four refusals of a MySQL login are left out of it and stay an
+  outage, because a new credential cures none of them: 3159 says the server
+  takes only an encrypted connection, 1251 and 1524 say the client and the
+  server share no way to log in, and an error the driver raises itself when
+  it cannot load the plugin an account asks for has no number. 3530 is left
+  out too: it answers `SET ROLE`, which the store never sends. libSQL: its
+  client reports every HTTP answer that is no success
   under one code, `SERVER_ERROR`, and keeps the status as a number on the
   error's cause. 401 and 403 are an access refusal, read from that number and
   never from the message. The client keeps that number for every answer but
