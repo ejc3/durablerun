@@ -256,45 +256,54 @@ describe('what the real libSQL client throws when a server answers a status', ()
     )
   })
 
-  // The executor's `fetch` hands a refused answer on and makes no error of its own: the
-  // client makes the error from the answer. The client's library can also ask a server which
-  // protocol versions it speaks through the same `fetch`, taking an answer that is no
-  // success to mean "not this version", and a `fetch` that threw would end such a client.
-  // The client pinned here sends no such request, so the `fetch` is called by itself.
-  it('hands a 401 and a 403 on as an answer with the same status and body, as plain text, and throws nothing', async () => {
+  // The executor's `fetch` rewrites one answer, a 401 or a 403 whose content type is exactly
+  // `application/json`: it hands it on with the same status and the bytes of the body, under
+  // a content type whose body the client drops unread. The same answer under another content
+  // type comes back as it was sent. The client makes the error from the answer, and the
+  // `fetch` makes none of its own. The client's library can also ask a server which protocol
+  // versions it speaks through the same `fetch`, taking an answer that is no success to mean
+  // "not this version", and a `fetch` that threw would end such a client. The client pinned
+  // here sends no such request, so the `fetch` is called by itself.
+  it('hands a 401 and a 403 under application/json on with the same status and the bytes of the body, under a content type whose body the client does not read, and hands one under another content type on as it came', async () => {
     const body = '{"message":"Unauthorized"}'
-    const observed: Record<number, unknown> = {}
-    for (const status of [401, 403]) {
-      const server = await openServerAnswering(status, body, 'application/json')
-      try {
-        const answer: unknown = await fetchKeepingARefusedStatus(
-          `http://127.0.0.1:${new URL(server.webSocketUrl).port}/v3`,
-        ).catch((error: unknown) => error)
-        observed[status] =
-          answer instanceof Response
-            ? {
-                status: answer.status,
-                ok: answer.ok,
-                contentType: answer.headers.get('content-type'),
-                body: await answer.text(),
-              }
-            : `threw ${String(answer)}`
-      } finally {
-        await server.close()
+    const observed: Record<string, unknown> = {}
+    const expected: Record<string, unknown> = {}
+    for (const status of REFUSED_STATUSES) {
+      for (const [sentUnder, handedOnUnder] of [
+        ['application/json', 'application/octet-stream'],
+        ['application/json; charset=utf-8', 'application/json; charset=utf-8'],
+        ['text/html', 'text/html'],
+      ]) {
+        const server = await openServerAnswering(status, body, sentUnder)
+        try {
+          const answer: unknown = await fetchKeepingARefusedStatus(
+            `http://127.0.0.1:${new URL(server.webSocketUrl).port}/v3`,
+          ).catch((error: unknown) => error)
+          const named = `${status} under ${sentUnder}`
+          observed[named] =
+            answer instanceof Response
+              ? {
+                  status: answer.status,
+                  ok: answer.ok,
+                  contentType: answer.headers.get('content-type'),
+                  body: await answer.text(),
+                }
+              : `threw ${String(answer)}`
+          expected[named] = { status, ok: false, contentType: handedOnUnder, body }
+        } finally {
+          await server.close()
+        }
       }
     }
     expect(
       observed,
       'mutation-verdict:behavior:libsql-refused-answer-is-handed-on-and-not-thrown',
-    ).toEqual({
-      401: { status: 401, ok: false, contentType: 'text/plain', body },
-      403: { status: 403, ok: false, contentType: 'text/plain', body },
-    })
+    ).toEqual(expected)
   })
 
-  // The executor's `fetch` hands on as plain text only the two statuses it types. Under any
-  // other status the client still reads a JSON body itself, and so still carries the code a
-  // server sends there, which says for one what became of a stream.
+  // The executor's `fetch` rewrites an answer of the two statuses it types and of no other.
+  // Under any other status the client still reads a JSON body itself, and so still carries
+  // the code a server sends there, which says for one what became of a stream.
   it('hands an answer of any other status to the client as it came, so the client still reads the code a server sends in a JSON body', async () => {
     const observed: Record<number, unknown> = {}
     for (const status of [400, 500]) {
@@ -388,17 +397,14 @@ describe('what the real libSQL client throws when a server answers a status', ()
 
   /**
    * Answers that differ from a plain one in something other than the status, the content
-   * type and the body: the reason phrase, and how the body ends. `whole` says the body
-   * arrives whole. A body that does not is cut short, or never ends.
+   * type and the body: the reason phrase, and how the body ends, cut short or never.
    */
   type TransportShape = {
     shape: string
-    whole: boolean
     send: (socket: Socket, status: number, contentType?: string) => void
   }
   const BODY_CUT_SHORT: TransportShape = {
     shape: 'a body cut short, ten bytes of a hundred and the connection closed',
-    whole: false,
     send: (socket, status, contentType) => {
       socket.end(
         Buffer.concat([
@@ -410,7 +416,6 @@ describe('what the real libSQL client throws when a server answers a status', ()
   }
   const BODY_NEVER_ENDS: TransportShape = {
     shape: 'a chunked body of one chunk on a connection the server holds open',
-    whole: false,
     send: (socket, status, contentType) => {
       socket.write(
         Buffer.concat([
@@ -438,7 +443,6 @@ describe('what the real libSQL client throws when a server answers a status', ()
     ...ODD_REASON_PHRASES.map(
       (reason): TransportShape => ({
         shape: `the reason phrase ${JSON.stringify(reason)}`,
-        whole: true,
         send: (socket, status, contentType) =>
           sendWhole(socket, status, reason, contentType, WHOLE_BODY),
       }),
@@ -557,22 +561,35 @@ describe('what the real libSQL client throws when a server answers a status', ()
     })
   })
 
-  it('keeps the message of a refused 403 under 1,000 characters when the server sends a page of 300 kB with it', async () => {
-    const page = `<html>${'x'.repeat(300_000)}</html>`
-    const [seen] = await readsOverRawServer(
-      (socket) => sendWhole(socket, 403, 'Forbidden', 'text/html; charset=UTF-8', page),
-      ['the executor'],
-    )
-    const read = typeof seen === 'object' ? seen : { name: seen ?? 'no read' }
-    expect({ name: read.name, messageUnder1000: (read.message ?? '').length < 1_000 }).toEqual({
-      name: 'StoreAccessRefusedError',
-      messageUnder1000: true,
-    })
+  it('keeps the message of a refused 403 under 1,000 characters when the server sends 300 kB with it, as a page and as JSON under application/json', async () => {
+    const text = 'x'.repeat(300_000)
+    const observed: Record<string, unknown> = {}
+    const expected: Record<string, unknown> = {}
+    for (const [named, contentType, body] of [
+      ['a page', 'text/html; charset=UTF-8', `<html>${text}</html>`],
+      ['JSON with an error member', 'application/json', JSON.stringify({ error: text })],
+      ['JSON with a message member', 'application/json', JSON.stringify({ message: text })],
+    ] as const) {
+      const [seen] = await readsOverRawServer(
+        (socket) => sendWhole(socket, 403, 'Forbidden', contentType, body),
+        ['the executor'],
+      )
+      const read = typeof seen === 'object' ? seen : { name: seen ?? 'no read' }
+      observed[named] = {
+        name: read.name,
+        messageUnder1000: (read.message ?? '').length < 1_000,
+      }
+      expected[named] = { name: 'StoreAccessRefusedError', messageUnder1000: true }
+    }
+    expect(
+      observed,
+      'mutation-verdict:behavior:libsql-refused-answer-is-handed-on-for-the-client-to-drop',
+    ).toEqual(expected)
   })
 
-  // The executor's `fetch` builds its answer before the body has arrived, so a body that is
-  // cut short or never ends fails or waits where it did with no `fetch` of the executor's,
-  // in the client's own read. Called by itself, as the case of a whole body below.
+  // The executor's `fetch` builds its answer before the body has arrived and reads none of
+  // it, so a body that is cut short or never ends does not make it throw or wait. The client
+  // then drops that body unread. Called by itself, as the case of a whole body above.
   it('hands a 401 under application/json on with its body unread, so a body that is cut short or never ends does not make the fetch throw or wait', async () => {
     const observed: Record<string, unknown> = {}
     const expected: Record<string, unknown> = {}
@@ -588,7 +605,7 @@ describe('what the real libSQL client throws when a server answers a status', ()
           answer instanceof Response
             ? { status: answer.status, contentType: answer.headers.get('content-type') }
             : answer
-        expected[shape] = { status: 401, contentType: 'text/plain' }
+        expected[shape] = { status: 401, contentType: 'application/octet-stream' }
       } finally {
         await server.close()
       }
@@ -639,7 +656,7 @@ describe('what the real libSQL client throws when a server answers a status', ()
    * generated: every status of the table above, with every body and content type of the
    * table of bodies, and with every transport shape under every content type of that table.
    */
-  it('types every answer as a client with no fetch of the executor does, except a 401 and a 403 under the content type application/json, which are an access refusal where the body is whole', async () => {
+  it('types every answer as a client with no fetch of the executor does, except a 401 and a 403 under the content type application/json, which are an access refusal however the body ends', async () => {
     // The one condition, written once: the answers whose status the client loses, which are
     // the answers the executor's `fetch` is for.
     const statusIsLost = (status: number, contentType: string | undefined) =>
@@ -650,11 +667,11 @@ describe('what the real libSQL client throws when a server answers a status', ()
     const compared: { answer: string; executor: unknown; expected: unknown }[] = []
     let excepted = 0
     const compare = (
-      answer: { named: string; status: number; contentType: string | undefined; whole: boolean },
+      answer: { named: string; status: number; contentType: string | undefined },
       [executor, bare]: readonly (string | { name: string; status?: unknown })[],
     ) => {
       if (executor === undefined || bare === undefined) throw new Error('a read is missing')
-      const isExcepted = statusIsLost(answer.status, answer.contentType) && answer.whole
+      const isExcepted = statusIsLost(answer.status, answer.contentType)
       if (isExcepted) excepted += 1
       compared.push(
         isExcepted
@@ -674,7 +691,7 @@ describe('what the real libSQL client throws when a server answers a status', ()
         const reads = openers.map((opener) => readOver(opener, server.url))
         try {
           compare(
-            { named: `${status}, ${shape}`, status, contentType, whole: true },
+            { named: `${status}, ${shape}`, status, contentType },
             await Promise.all(reads.map(({ settled }) => settled)),
           )
         } finally {
@@ -685,13 +702,12 @@ describe('what the real libSQL client throws when a server answers a status', ()
     }
     // The answers of one transport shape are read at once, so the reads that never get an
     // answer wait out one limit together.
-    for (const { shape, whole, send } of TRANSPORT_SHAPES) {
+    for (const { shape, send } of TRANSPORT_SHAPES) {
       const answers = statuses.flatMap((status) =>
         contentTypes.map((contentType) => ({
           named: `${status}, ${shape}, under ${contentType ?? 'no content type'}`,
           status,
           contentType,
-          whole,
         })),
       )
       const reads = await Promise.all(
@@ -704,10 +720,10 @@ describe('what the real libSQL client throws when a server answers a status', ()
 
     // A generator that draws nothing fails here: 7 statuses, with 12 bodies and with 6
     // transport shapes under 5 content types. The excepted answers are the 2 refused statuses
-    // under the 8 bodies and the 4 whole transport shapes of the one content type.
+    // under the 8 bodies and the 6 transport shapes of the one content type.
     expect({ compared: compared.length, excepted }).toEqual({
       compared: 7 * (12 + 6 * 5),
-      excepted: 2 * (8 + 4),
+      excepted: 2 * (8 + 6),
     })
     expect(
       Object.fromEntries(compared.map(({ answer, executor }) => [answer, executor])),
