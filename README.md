@@ -254,8 +254,11 @@ selftest before the week, and the lookups and the dry run after it, from a
 checkout of the commit the variable names.
 
 **A refused token.** A command the store refuses the token for exits 4, with
-the kind `store-access-refused`: the token has expired, was revoked, or is not
-the database's. The job stops at that command and does not run it again, and
+the kind `store-access-refused`: the token is missing, or is one the server
+does not accept. Those are the two refusals measured against a hosted server,
+which answered 401 to each. What a server answers a token that has expired or
+was revoked was not measured, and a status other than 401 or 403 does not
+exit 4. The job stops at that command and does not run it again, and
 a later run fails the same way until the secret `DURABLERUN_WEEK_STORE_TOKEN`
 holds a token the store accepts. Replace the secret, then start the day's run
 by hand, as above, before the 25 hours are up. An hourly enqueue that was
