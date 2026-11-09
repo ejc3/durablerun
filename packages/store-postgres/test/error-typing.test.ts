@@ -115,4 +115,30 @@ describe('what a real PostgreSQL server answers a role it refuses', () => {
       await db.close()
     }
   })
+
+  // The servers these cases run on are shared, and a reader is a role that may log in. A
+  // case that fails before it closes its reader must not leave the role on the server.
+  it('drops, at the close of the fixture, a reader that its case never closed', async () => {
+    const db = await openPostgresTestDb({ idNamespace: 'reader-left-open' })
+    const control = createOwnedPostgresPool({ connectionString: serverUrl() })
+    const rolesNamed = async (role: string): Promise<number> =>
+      (await control.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [role])).rows.length
+    let reader: Awaited<ReturnType<typeof db.openAsAReader>> | undefined
+    try {
+      reader = await db.openAsAReader()
+      const before = await rolesNamed(reader.username)
+      await db.close()
+      expect({ before, after: await rolesNamed(reader.username) }).toEqual({ before: 1, after: 0 })
+    } finally {
+      await db.close()
+      if (reader !== undefined) {
+        // What the fixture's close is held to above. These lines leave nothing behind where
+        // it did not, and change nothing where it did.
+        await reader.raw.close().catch(() => undefined)
+        await control.query(`DROP OWNED BY ${reader.username}`).catch(() => undefined)
+        await control.query(`DROP ROLE IF EXISTS ${reader.username}`)
+      }
+      await control.end()
+    }
+  })
 })

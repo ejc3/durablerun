@@ -140,6 +140,36 @@ describe('what a real MySQL server answers an account it refuses', () => {
       await db.close()
     }
   })
+
+  // The servers these cases run on are shared, and a reader is an account that may log in.
+  // A case that fails before it closes its reader must not leave the account on the server.
+  it('drops, at the close of the fixture, a reader that its case never closed', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'reader-left-open' })
+    const control = createOwnedMysqlPool({ uri: serverUrl(), connectionLimit: 1 })
+    const accountsNamed = async (account: string): Promise<number> => {
+      const [rows] = await control.query('SELECT 1 FROM mysql.user WHERE user = ?', [account])
+      return (rows as unknown[]).length
+    }
+    let reader: Awaited<ReturnType<typeof db.openAsAReader>> | undefined
+    try {
+      reader = await db.openAsAReader()
+      const before = await accountsNamed(reader.username)
+      await db.close()
+      expect({ before, after: await accountsNamed(reader.username) }).toEqual({
+        before: 1,
+        after: 0,
+      })
+    } finally {
+      await db.close()
+      if (reader !== undefined) {
+        // What the fixture's close is held to above. These lines leave nothing behind where
+        // it did not, and change nothing where it did.
+        await reader.raw.close().catch(() => undefined)
+        await control.query(`DROP USER IF EXISTS '${reader.username}'@'%'`)
+      }
+      await control.end()
+    }
+  })
 })
 
 describe('what a real MySQL server answers a refused statement', () => {
