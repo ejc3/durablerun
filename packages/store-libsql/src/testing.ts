@@ -76,11 +76,13 @@ export async function holdLibsqlWriteLock(url: string, during: () => Promise<voi
  * client opens over HTTP with no TLS, and `webSocketUrl` one it opens as a WebSocket.
  * `requests` counts what reached the server, so a case can tell an answer of this server
  * from a connection nothing took. `body` is the text sent with the status to an HTTP
- * request, which the client quotes in its message.
+ * request, and `contentType` the content type it is sent under, or none. What the client
+ * keeps of an answer depends on both.
  */
 export async function openServerAnswering(
   status: number,
   body = '',
+  contentType?: string,
 ): Promise<{
   url: string
   webSocketUrl: string
@@ -91,6 +93,7 @@ export async function openServerAnswering(
   const server: Server = createServer((_request, response) => {
     requests += 1
     response.statusCode = status
+    if (contentType !== undefined) response.setHeader('content-type', contentType)
     response.end(body)
   })
   server.on('upgrade', (_request, socket) => {
