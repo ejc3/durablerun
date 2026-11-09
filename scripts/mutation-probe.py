@@ -23026,6 +23026,44 @@ MUTATION_SPECS.extend(
 VERDICTS["operable-week-workflow-a-failed-guard-stops-the-job"] = VERDICTS[
     "operable-week-workflow-requires-the-pinned-database"
 ]
+# The commit whose CLI the week runs: the variable that pins it, the full id it must be, and
+# the read of the commit that was checked out.
+MUTATION_SPECS.extend(
+    (
+        (
+            "operable-week-workflow-runs-the-pinned-commit",
+            ".github/workflows/operable-week.yml",
+            "          DURABLERUN_WEEK_COMMIT: ${{ vars.DURABLERUN_WEEK_COMMIT }}\n",
+            "          DURABLERUN_WEEK_COMMIT: ${{ github.sha }}\n",
+            "a scheduled run checks out the newest commit of the default branch, so a pull request merged during the week changes the CLI that prints the receipt's reports",
+        ),
+        (
+            "operable-week-workflow-requires-a-full-commit-id",
+            ".github/workflows/operable-week.yml",
+            "          if [[ ! \"${DURABLERUN_WEEK_COMMIT:-}\" =~ ^[0-9a-f]{40}$ ]]; then\n",
+            "          if [[ ! \"${DURABLERUN_WEEK_COMMIT:-}\" =~ ^[0-9a-f]{7,40}$ ]]; then\n",
+            "a short id is taken as the pin, and a short id names another commit once a later one shares its first digits",
+        ),
+        (
+            "operable-week-workflow-reads-back-the-commit-it-checked-out",
+            ".github/workflows/operable-week.yml",
+            "          if [ \"$(git rev-parse HEAD)\" != \"$DURABLERUN_WEEK_COMMIT\" ]; then\n",
+            "          if [ \"$(git rev-parse HEAD)\" = \"\" ]; then\n",
+            "a checkout that left another commit than the pinned one goes on to open the store with that commit's CLI",
+        ),
+    )
+)
+for _name in (
+    "operable-week-workflow-runs-the-pinned-commit",
+    "operable-week-workflow-requires-a-full-commit-id",
+    "operable-week-workflow-reads-back-the-commit-it-checked-out",
+):
+    VERDICTS[_name] = ExpectedVerdict(
+        "behavior",
+        "packages/cli/test/operable-week-workflow.test.ts",
+        "the workflow of the operable week runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store",
+        f"mutation-verdict:behavior:{_name}",
+    )
 MUTATION_SPECS.extend(
     (
         (
@@ -27166,7 +27204,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1567:
+        if len(MUTATIONS) != 1570:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

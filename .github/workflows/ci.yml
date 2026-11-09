@@ -393,11 +393,12 @@ jobs:
               # their lines: an outage and a permanent answer as controls of a pass, the type check
               # captured at load, which core's one function now makes, how a contest books a
               # permanent answer, the exit of an outage, and a read that follows an answered write.
-              # Each is the mutant it was. This tree also registers thirty-nine mutations the base
-              # predates: sixteen for the type, its table and what each consumer does with it, and
-              # one for each of the twenty-three MySQL error numbers typed an access refusal. Their
-              # cases carry fourteen verdict markers, because the twenty-three share one marker and
-              # three others are caught under the marker of another. Each marker is exempted there.
+              # Each is the mutant it was. This tree also registers forty-two mutations the base
+              # predates: sixteen for the type, its table and what each consumer does with it, one
+              # for each of the twenty-three MySQL error numbers typed an access refusal, and three
+              # for the commit the week's workflow runs. Their cases carry seventeen verdict
+              # markers, because the twenty-three share one marker and three others are caught
+              # under the marker of another. Each marker is exempted there.
               repaired = previous
               for name in (
                   'task-control-store-outage-auth',
@@ -416,6 +417,9 @@ jobs:
                   "mutation-verdict:behavior:libsql-401-is-an-access-refusal",
                   "mutation-verdict:behavior:libsql-refused-status-is-read-before-message-text",
                   "mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal",
+                  "mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out",
+                  "mutation-verdict:behavior:operable-week-workflow-requires-a-full-commit-id",
+                  "mutation-verdict:behavior:operable-week-workflow-runs-the-pinned-commit",
                   "mutation-verdict:behavior:postgres-missing-privilege-is-an-access-refusal",
                   "mutation-verdict:behavior:postgres-refused-credential-class-is-an-access-refusal",
                   "mutation-verdict:behavior:sdk-store-access-refusal-aborts-the-pass",
