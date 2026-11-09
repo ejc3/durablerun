@@ -676,12 +676,15 @@ One invocation executes one claimed run to its next suspension point:
   activated. The reason is that naming an error more precisely must not change
   who pays for it. Before the types existed these failures were outages and were
   paid from the infrastructure budget. A statement the credential may not send
-  was a permanent store error on PostgreSQL and MySQL and an outage on libSQL,
-  and a pass ended `aborted` for either, so the new type changes no pass's
-  ending. It changes one thing inside a pass, on the two servers, to what
-  libSQL did: an access refusal ends the pass for every flow of the task, as
-  an outage does, where a permanent answer reaches the task (see "After an
-  infrastructure error" below). Thrown into task code as an ordinary
+  was a permanent store error on PostgreSQL and MySQL and an outage on libSQL.
+  A pass whose task let the error through ended `aborted` for either, and it
+  ends `aborted` under the new type. The type changes one thing, on the two
+  servers, to what libSQL did: an access refusal ends the pass for every flow
+  of the task, as an outage does, where a permanent answer reaches the task
+  (see "After an infrastructure error" below). So a task that catches the
+  refusal of such a statement and returns was completed on the two servers,
+  and is not completed now: its pass ends `aborted` and the run is retried.
+  Thrown into task code as an ordinary
   error, the same failure would be recorded through `fail` as the task's own
   and paid from the attempts the caller asked for. `SchemaMismatchError` at a
   context store call IS billed that way in this build, and is left alone here.
