@@ -15,6 +15,7 @@ export type TaskThrowableSnapshot = Readonly<{
 }>
 
 const {
+  FunctionHasInstance: hasInstance,
   JSONStringify: stringifyJson,
   ObjectFreeze: freeze,
   ObjectGetOwnPropertyDescriptor: getOwnPropertyDescriptor,
@@ -22,11 +23,6 @@ const {
   ObjectHasOwn: hasOwn,
   StringFrom: stringifyPrimitive,
 } = TASK_INTRINSICS
-const ordinaryHasInstance = Function.prototype[Symbol.hasInstance]
-const hasInstance = ordinaryHasInstance.call.bind(ordinaryHasInstance) as (
-  errorType: object,
-  value: unknown,
-) => boolean
 const AUTHENTIC_FATAL_FAILURES = new WeakMap<object, TaskThrowableSnapshot>()
 const getAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.get.bind(AUTHENTIC_FATAL_FAILURES)
 const setAuthenticFatalFailure = AUTHENTIC_FATAL_FAILURES.set.bind(AUTHENTIC_FATAL_FAILURES)
