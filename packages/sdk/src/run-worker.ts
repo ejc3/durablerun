@@ -100,11 +100,9 @@ function infrastructureOutcome(
       return { kind: 'lease-lost' }
     case 'run-cancelled':
       return { kind: 'cancelled' }
+    // An outage, and a refused credential, which is this control too: the lease recovers the
+    // run once the store answers, and none of the task's attempts is spent on it.
     case 'store-unavailable':
-    // A refused credential ends the pass exactly as an outage does: the lease recovers the
-    // run once a credential the store accepts is in place, and none of the task's attempts
-    // is spent on it.
-    case 'store-access-refused':
     // A permanent answer of the store ends the pass exactly as an outage does. It is not
     // the task's failure, so it may not spend the task's attempts, and no transition exists
     // yet that ends a run for it (DESIGN.md §3.2).

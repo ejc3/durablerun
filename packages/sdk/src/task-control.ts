@@ -29,7 +29,6 @@ export type InfrastructureControlSnapshot =
   | { readonly kind: 'lease-lost' }
   | { readonly kind: 'run-cancelled' }
   | { readonly kind: 'store-unavailable' }
-  | { readonly kind: 'store-access-refused' }
   | { readonly kind: 'store-permanent' }
 
 export type TaskControlSnapshot =
@@ -76,7 +75,6 @@ const ROLLBACK_PHASE = freeze({ kind: 'rollback-phase' } as const)
 const LEASE_LOST = freeze({ kind: 'lease-lost' } as const)
 const RUN_CANCELLED = freeze({ kind: 'run-cancelled' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
-const STORE_ACCESS_REFUSED = freeze({ kind: 'store-access-refused' } as const)
 const STORE_PERMANENT = freeze({ kind: 'store-permanent' } as const)
 
 /**
@@ -91,7 +89,7 @@ const STORE_FAILURE_CONTROLS: Readonly<
   Record<StoreFailureKind, InfrastructureControlSnapshot | undefined>
 > = freeze({
   unavailable: STORE_UNAVAILABLE,
-  'access-refused': STORE_ACCESS_REFUSED,
+  'access-refused': STORE_UNAVAILABLE,
   permanent: STORE_PERMANENT,
   'schema-mismatch': undefined,
   'schema-not-initialized': undefined,

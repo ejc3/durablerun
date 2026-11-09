@@ -17191,22 +17191,15 @@ MUTATION_SPECS.extend(
         (
             "sdk-store-access-refusal-aborts-the-pass",
             "packages/sdk/src/task-control.ts",
-            "  'access-refused': STORE_ACCESS_REFUSED,\n",
+            "  'access-refused': STORE_UNAVAILABLE,\n",
             "  'access-refused': undefined, // MUTATION: a refused credential is no control of the pass\n",
             "a store's refusal of its credential at a context store call reaches task code as an ordinary error and is billed to the task's own attempts",
         ),
         (
-            "sdk-store-access-refusal-at-a-transition-write-aborts-the-pass",
-            "packages/sdk/src/run-worker.ts",
-            "    case 'store-access-refused':\n",
-            "    // MUTATION: a refused credential has no outcome of the pass\n",
-            "a pass whose completion write the store refused for its credential answers its caller with a control snapshot in place of an outcome, so the driver cannot tell that the pass was aborted",
-        ),
-        (
             "sdk-store-access-refusal-ends-the-pass-for-every-flow",
-            "packages/sdk/src/context.ts",
-            "      if (control !== undefined && control.kind !== 'store-permanent') {\n",
-            "      if (control !== undefined && control.kind !== 'store-permanent' && control.kind !== 'store-access-refused') {\n",
+            "packages/sdk/src/task-control.ts",
+            "  'access-refused': STORE_UNAVAILABLE,\n",
+            "  'access-refused': STORE_PERMANENT, // MUTATION: a refused credential is the control of a permanent answer\n",
             "a task that catches a refusal of the store's credential and returns is completed on that pass with the refusal in its result, where the same task is aborted and retried when the failure is an outage",
         ),
         (
@@ -17313,12 +17306,6 @@ VERDICTS.update(
             "packages/sdk/test/run-worker.test.ts",
             "runClaimedRun a store's refusal of its credential at a context store call aborts the pass and is never billed to the task",
             "mutation-verdict:behavior:sdk-store-access-refusal-aborts-the-pass",
-        ),
-        "sdk-store-access-refusal-at-a-transition-write-aborts-the-pass": ExpectedVerdict(
-            "behavior",
-            "packages/sdk/test/run-worker.test.ts",
-            "runClaimedRun a store's refusal of its credential at a transition write aborts the pass exactly as an outage does",
-            "mutation-verdict:behavior:sdk-store-access-refusal-at-a-transition-write-aborts-the-pass",
         ),
         "sdk-store-access-refusal-ends-the-pass-for-every-flow": ExpectedVerdict(
             "behavior",
@@ -27211,7 +27198,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
                     TREE_CONDITIONS_WITHOUT_A_MUTATION.get(tree_rule_file, {}),
                 )
             )
-        if len(MUTATIONS) != 1570:
+        if len(MUTATIONS) != 1569:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18

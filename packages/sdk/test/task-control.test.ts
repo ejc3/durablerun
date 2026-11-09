@@ -351,7 +351,7 @@ describe('task control scope', () => {
     // A kind core adds has no entry here, which fails the typecheck until one is written.
     const controls: Record<StoreFailureKind, string | undefined> = {
       unavailable: 'store-unavailable',
-      'access-refused': 'store-access-refused',
+      'access-refused': 'store-unavailable',
       permanent: 'store-permanent',
       'schema-mismatch': undefined,
       'schema-not-initialized': undefined,

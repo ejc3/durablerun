@@ -1640,7 +1640,6 @@ describe('runClaimedRun', () => {
         complete: () =>
           Promise.reject(new StoreAccessRefusedError('batch(complete) was refused access')),
       }),
-      'mutation-verdict:behavior:sdk-store-access-refusal-at-a-transition-write-aborts-the-pass',
     ).toEqual({ observed: { value: { kind: 'aborted' } }, failCalls: 0 })
   })
 
