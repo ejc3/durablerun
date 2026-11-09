@@ -222,18 +222,6 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
     })
 
     /**
-     * A store that refuses the credential it was opened with, or refuses what that
-     * credential may do, says so, apart from an outage and apart from a permanent answer to
-     * a statement (DESIGN.md §3.2). A caller that waits out an outage would wait for good
-     * here, and the statement is one the store takes under another credential. A wrong
-     * credential is refused before the store reads a statement, so a read and a write are
-     * refused alike. A credential that may only read is answered its read and refused its
-     * write, through the executor and through the port, and the write changes nothing.
-     *
-     * A dialect whose store takes no credential has nothing to refuse, and its fixture
-     * offers no surface. libSQL's is one: its fixture is a database file.
-     */
-    /**
      * What a batch sent through `raw` meets: the word `accepted`, or the error it throws.
      */
     const answerOf = (raw: SqlExecutor, label: string, mode: 'read' | 'write') =>
@@ -251,6 +239,14 @@ export function executorErrorConformance(dialect: string, makeFixture: StoreFixt
       expect((refusal as Error).cause, what).toBeInstanceOf(Error)
     }
 
+    /**
+     * A store that refuses the credential it was opened with, or refuses what that
+     * credential may do, says so, apart from an outage and apart from a permanent answer to
+     * a statement (DESIGN.md §3.2). A caller that waits out an outage would wait for good
+     * here, and the statement is one the store takes under another credential. A wrong
+     * credential is refused before the store reads a statement, so a read and a write are
+     * refused alike. Every dialect's fixture offers at least one such refusal.
+     */
     it('types a credential the store refuses apart from an outage and from a permanent answer, for a read, for a write and for a call of the port', () =>
       withFixture(makeFixture, 'executor-errors-refused-credential', async (f) => {
         const surface = await f.refusedCredential()
