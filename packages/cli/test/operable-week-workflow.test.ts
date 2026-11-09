@@ -91,10 +91,13 @@ process.stderr.write('a-line-on-stderr\\n')
 process.exit(verb === process.env.STUB_FAIL ? 6 : 0)
 `
 
-interface StepRun {
+interface ScriptRun {
   readonly status: number | null
   readonly stdout: string
   readonly stderr: string
+}
+
+interface StepRun extends ScriptRun {
   /** The command lines the step sent, each as the arguments after \`pnpm --silent cli\`. */
   readonly sent: string[][]
   /** The files the step left, by name. */
@@ -112,7 +115,7 @@ const SHELL = ['--noprofile', '--norc', '-eo', 'pipefail']
 function runScript(
   script: string | undefined,
   options: { cwd: string; env: Readonly<Record<string, string>> },
-): { status: number | null; stdout: string; stderr: string } {
+): ScriptRun {
   const file = join(mkdtempSync(join(tmpdir(), 'durablerun-operable-week-step-')), 'step.sh')
   try {
     writeFileSync(file, script ?? '')
@@ -123,36 +126,36 @@ function runScript(
   }
 }
 
-/** Run a step's script as GitHub does, with the stand-in first on the PATH, in a directory of its own. */
-function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
+/**
+ * Run a step's script as GitHub does, in a directory of its own, with a stand-in for one
+ * command first on the PATH: the run, every argument list the stand-in was sent, and the
+ * files the script left.
+ */
+function runWithStandIn(
+  step: Step,
+  command: string,
+  standIn: string,
+  env: Readonly<Record<string, string>>,
+): { run: ScriptRun; sent: string[][]; files: Record<string, string> } {
   const dir = mkdtempSync(join(tmpdir(), 'durablerun-operable-week-'))
   try {
     const bin = join(dir, 'bin')
     const work = join(dir, 'work')
     spawnSync('mkdir', ['-p', bin, work])
-    writeFileSync(join(bin, 'pnpm'), STUB)
-    chmodSync(join(bin, 'pnpm'), 0o755)
+    writeFileSync(join(bin, command), standIn)
+    chmodSync(join(bin, command), 0o755)
     const log = join(dir, 'sent.log')
+    writeFileSync(log, '')
     const run = runScript(step.run, {
       cwd: work,
       env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, ...env },
     })
-    const sent = (() => {
-      try {
-        return readFileSync(log, 'utf8')
-          .split('\n')
-          .filter((line) => line !== '')
-          .map((line) => JSON.parse(line) as string[])
-      } catch {
-        return []
-      }
-    })()
-    for (const argv of sent) expect(argv.slice(0, 2)).toEqual(['--silent', 'cli'])
     return {
-      status: run.status,
-      stdout: run.stdout,
-      stderr: run.stderr,
-      sent: sent.map((argv) => argv.slice(2)),
+      run,
+      sent: readFileSync(log, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => JSON.parse(line) as string[]),
       files: Object.fromEntries(
         readdirSync(work).map((name) => [name, readFileSync(join(work, name), 'utf8')]),
       ),
@@ -160,6 +163,13 @@ function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+/** Run a step's script with the stand-in for `pnpm`, which every step calls as the CLI. */
+function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
+  const { run, sent, files } = runWithStandIn(step, 'pnpm', STUB, env)
+  for (const argv of sent) expect(argv.slice(0, 2)).toEqual(['--silent', 'cli'])
+  return { ...run, sent: sent.map((argv) => argv.slice(2)), files }
 }
 
 /**
@@ -173,34 +183,13 @@ fs.appendFileSync(process.env.STUB_LOG, JSON.stringify(argv) + '\\n')
 if (argv[0] === 'rev-parse') process.stdout.write(process.env.STUB_HEAD + '\\n')
 `
 
-/** Run the checkout step's script as GitHub does, with the stand-in for `git`: its exit, and what it sent `git`. */
+/** Run the checkout step's script with the stand-in for `git`: its exit, and what it sent `git`. */
 function runCheckout(
   step: Step,
   env: Readonly<Record<string, string>>,
 ): { status: number | null; git: string[][] } {
-  const dir = mkdtempSync(join(tmpdir(), 'durablerun-operable-week-checkout-'))
-  try {
-    const bin = join(dir, 'bin')
-    const work = join(dir, 'work')
-    spawnSync('mkdir', ['-p', bin, work])
-    writeFileSync(join(bin, 'git'), GIT_STUB)
-    chmodSync(join(bin, 'git'), 0o755)
-    const log = join(dir, 'git.log')
-    writeFileSync(log, '')
-    const run = runScript(step.run, {
-      cwd: work,
-      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, ...env },
-    })
-    return {
-      status: run.status,
-      git: readFileSync(log, 'utf8')
-        .split('\n')
-        .filter((line) => line !== '')
-        .map((line) => JSON.parse(line) as string[]),
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
+  const { run, sent } = runWithStandIn(step, 'git', GIT_STUB, env)
+  return { status: run.status, git: sent }
 }
 
 /** A full commit id: 40 lowercase hexadecimal digits. */
