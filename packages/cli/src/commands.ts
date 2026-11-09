@@ -242,7 +242,14 @@ const DRIVE_FAULTS = READ_FAULTS
  * The exits of every command that opens a store. A store can refuse the credential it is
  * given at any batch, so each of them can exit `unauthorized`.
  */
-const STORE_EXITS = ['done', 'usage', 'unauthorized', 'schema', 'unavailable', 'permanent'] as const
+export const STORE_EXITS = [
+  'done',
+  'usage',
+  'unauthorized',
+  'schema',
+  'unavailable',
+  'permanent',
+] as const
 
 /** The exits of a write to a queue. A port refuses a name it cannot take. */
 const DRIVE_EXITS = [...STORE_EXITS, 'refused'] as const

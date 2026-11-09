@@ -17233,8 +17233,8 @@ MUTATION_SPECS.extend(
         (
             "cli-store-commands-declare-exit-4",
             "packages/cli/src/commands.ts",
-            "const STORE_EXITS = ['done', 'usage', 'unauthorized', 'schema', 'unavailable', 'permanent'] as const\n",
-            "const STORE_EXITS = ['done', 'usage', 'schema', 'unavailable', 'permanent'] as const // MUTATION: no store command declares exit 4\n",
+            "  'usage',\n  'unauthorized',\n  'schema',\n",
+            "  'usage',\n  'schema', // MUTATION: no store command declares exit 4\n",
             "help lists exit 4 for tick alone, so an agent that reads a command's exits does not learn that a store command can end on a refused credential",
         ),
         (

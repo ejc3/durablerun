@@ -19,6 +19,7 @@ import {
   type CommandSpec,
   type Invocation,
   NOT_SENT_BY_SELFTEST,
+  type STORE_EXITS,
   STUCK_DEFAULT_LIMIT,
   SWEEP_DEFAULT_LIMIT,
   TICK_DEFAULT_TIMEOUT_SECONDS,
@@ -268,7 +269,8 @@ function emit(
 /**
  * What the CLI prints and exits with for each kind of store failure, keyed by core's one
  * definition of the kinds, so a kind added there fails the typecheck here until it has an
- * answer. `kind` is what the answer's error names, and `exit` the exit code's name.
+ * answer. `kind` is what the answer's error names, and `exit` the exit code's name, which
+ * is one every command that opens a store declares.
  * `notReadAfterAWrite` says what a read that follows an answered write does with the
  * failure: the write stands, so an outage, a refused credential and a permanent answer are
  * each reported as a read that did not happen, under `kind`, and a schema error is thrown.
@@ -285,18 +287,18 @@ export const STORE_FAILURE_ANSWERS = {
   'schema-not-initialized': { kind: 'schema', exit: 'schema', notReadAfterAWrite: false },
 } as const satisfies Record<
   StoreFailureKind,
-  { readonly kind: string; readonly exit: ExitName; readonly notReadAfterAWrite: boolean }
+  {
+    readonly kind: string
+    readonly exit: (typeof STORE_EXITS)[number]
+    readonly notReadAfterAWrite: boolean
+  }
 >
 
 /** The kinds a store failure prints under when a read that follows an answered write meets it. */
-type StoreFailureNotRead = {
-  [Kind in StoreFailureKind]: (typeof STORE_FAILURE_ANSWERS)[Kind] extends {
-    readonly notReadAfterAWrite: true
-    readonly kind: infer Printed
-  }
-    ? Printed
-    : never
-}[StoreFailureKind]
+type StoreFailureNotRead = Extract<
+  (typeof STORE_FAILURE_ANSWERS)[StoreFailureKind],
+  { readonly notReadAfterAWrite: true }
+>['kind']
 
 /**
  * What a failure the handler did not answer itself exits with. A store's own message can
