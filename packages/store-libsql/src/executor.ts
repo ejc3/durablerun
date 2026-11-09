@@ -65,11 +65,18 @@ const STATUS_LOSING_CONTENT_TYPE = 'application/json'
 const UNREAD_CONTENT_TYPE = 'application/octet-stream'
 
 /**
+ * The runtime's `fetch`, taken once when this module loads, as the client's library takes
+ * the one it sends with by default. A process that puts another `fetch` in the global's
+ * place later sends its libSQL requests as it did.
+ */
+const runtimeFetch = fetch
+
+/**
  * The `fetch` a client this executor opens sends its requests with. It rewrites one answer:
  * an answer of one of the statuses above whose content type is exactly `application/json`.
  * It hands that answer on with the same status and the stream of the body unread, under a
  * content type whose body the client does not read. Every other answer it hands on as it
- * came, the object the runtime's `fetch` returned.
+ * came, the object the runtime's `fetch` above returned.
  *
  * The client reads the body of an answer that is no success under three content types. Under
  * exactly `application/json` it parses the body, and a body with a `message` member becomes
@@ -94,7 +101,7 @@ const UNREAD_CONTENT_TYPE = 'application/octet-stream'
  * later client that does. Exported for the tests that call it by itself.
  */
 export const fetchKeepingARefusedStatus: typeof fetch = async (...request) => {
-  const answer = await fetch(...request)
+  const answer = await runtimeFetch(...request)
   if (
     !ACCESS_REFUSED_HTTP_STATUSES.has(answer.status) ||
     answer.headers.get('content-type') !== STATUS_LOSING_CONTENT_TYPE

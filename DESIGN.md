@@ -651,7 +651,10 @@ One invocation executes one claimed run to its next suspension point:
   on an error of the wrong type. The `fetch` reads no body and copies no
   reason phrase. It awaits the runtime's `fetch` and builds one answer from a
   status it has checked, one fixed header and the stream, so it fails only
-  where the runtime's `fetch` fails. A refused answer under `application/json`
+  where the runtime's `fetch` fails. It takes that `fetch` once, when the
+  executor's module loads, as the client's library takes its own, so a
+  process that replaces the global one later sends its libSQL requests as it
+  did. A refused answer under `application/json`
   whose body is cut short or never ends is an access refusal too, where the
   client by itself gives an outage or waits. A case that compares a client the
   executor opened with a client that has no `fetch` of the executor's holds
@@ -4127,6 +4130,8 @@ not depend on careful reading:
   and a byte past ASCII among them, and when its body is cut short. A 403
   whose body never ends is the access refusal without a wait. And a 403 sent
   with 300 kB, as a page or as JSON, has a message under 1,000 characters.
+  A request still goes out through the `fetch` the runtime had when the
+  module loaded, after a process has put another in the global's place.
   One case holds the class of these, and it is the mechanism that holds the
   `fetch` to the one answer it is for. It generates answers: every status of
   the cases above with every entry of the table of bodies, and with each
