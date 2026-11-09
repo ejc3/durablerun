@@ -31,6 +31,205 @@ targets passed. Later closeout commits only correct the redistribution and
 milestone records and do not change the checker, scripts, model, or configs
 validated by that run.
 
+## Current milestone — the live week: the deployed alpha, operated for seven days
+
+The operable alpha, the milestone below, built an operator's commands and held
+them to a week inside a harness. This milestone is that week on the deployed
+alpha. It is receipt M1, which the milestone below kept outside its exit test
+and which is the last line of this one. For at least 168 hours the hosted
+example runs `periodic-digest` once an hour on the release alpha.1, over the
+deployed database after the CLI migrated it. A purge each day keeps the queue's
+row counts at or below the bound. An operator who holds the CLI and the store
+URL finds, names and clears one cause that a second person sealed. `pnpm
+week-receipt` accepts the receipt of the week, and the receipt is committed.
+
+**Status: CURRENT (named 2026-11-08, at main `e313586`).** On that day the
+maintainer delegated what the close of the operable alpha left open, with the
+word to do the right thing: the naming of this milestone, the decisions the
+milestone below still held, a read of the last folds that no review had
+followed, and the difference between `specs/Scheduler.tla` and the code. The
+Decisions paragraph below records what was decided under that delegation, and
+the maintainer may reverse any of it. Lines 45 and 46 are not met. Line 47 is
+not met and has not started: it waits on what the Held paragraph below names,
+and on PR5.6.
+
+**Exit test:**
+
+45. PR5.6: a store that refuses a credential says so. Today, on every dialect,
+    a rejected password or token reaches a caller as a StoreUnavailableError
+    and the CLI exits 6. DESIGN.md's table calls exit 6 safe to repeat, with
+    retries capped because a wrong store credential exits 6 too, so a caller
+    that follows the table repeats a command that fails the same way until its
+    cap. A statement the credential may not send is a PermanentStoreError on
+    PostgreSQL and MySQL, exit 7, and an outage on libSQL. The week's workflow
+    runs unattended and its token can expire. After PR5.6 both refusals reach
+    a caller as one error type of core, which is neither an outage nor a
+    permanent answer to a statement, on the three dialects. An executor decides
+    it from a value the driver's error carries, a SQLSTATE, an error number or
+    on libSQL the HTTP status of the server's answer, and never from message
+    text. Core holds one definition of the kinds of failure an executor raises.
+    The SDK's control of a pass, the hosted handler and the CLI each switch on
+    it, so a kind with no arm fails typecheck. A worker pass spends none of a
+    task's attempts on the new kind, and the hosted handler answers it 503, as
+    it answers an outage. Every command of the CLI that opens a store exits 4
+    for it, but for a read that follows an answered write: the command table
+    declares 0 there, and the command reports the refusal as not read, as it
+    reports an outage. The week receipt's checker reads every kind of store
+    failure the CLI prints for a purge, and a case over core's definition holds
+    that, where today the checker holds two kinds written by hand. DESIGN.md's
+    table, its paragraph on exit 6, its paragraph on the week receipt and the
+    README's section on operating a deployment say all of it, with what is not
+    typed: a `ws:` or `wss:` URL, whose driver carries the status only in a
+    message, and the answer of a hosted server to a write under a token that
+    may only read, which is not known. A hosted libSQL server, measured on
+    2026-11-08, answers 401 to a token whose signature it does not accept and
+    to no token, and 400 to a token that is no token at all, which stays an
+    outage. The cases: one conformance case opens the store with a refused
+    credential on each dialect, through a member of the fixture, and sees the
+    type. On PostgreSQL and MySQL that member is a wrong password, and a
+    second case there uses a role that may connect and may not write. On
+    libSQL, where a file takes no credential, the member is the driver against
+    a loopback server that answers 401 and 403. A case of the SDK hands a pass
+    the type and sees no attempt spent. A generated case over every command
+    that opens a store sees exit 4. Red: on main the cases of a wrong password
+    see an outage and exit 6, and the cases of a role that may not write see a
+    permanent answer and exit 7.
+46. PR5.9: a timeout handed to a pass is not lost. PR5.7's read of the code
+    against the model found the defect on 2026-11-08. A pass that is handed a
+    timeout wake can end by another flow's sleep before the await's answer is
+    saved, and the suspension clears the wake. On main, a task that joins
+    `ctx.sleepFor(100)` and `ctx.awaitEvent('go', { timeoutSeconds: 30 })` under
+    one `Promise.all`, the sleep first, and whose first pass registers the
+    await, has the await answered by an event emitted 110 seconds after it
+    timed out, and with no such event it times out at 160 seconds. With the
+    await first it times out at 30. Which suspension the first pass takes is a
+    race between two calls of the store, so the case fixes it, and a pass
+    whose first suspension is the sleep registers the await only at the next
+    pass and loses nothing. After PR5.9 the answer a wake carries is durable
+    before the pass that was handed it suspends, completes, fails or
+    reschedules, and an await that was registered answers its timeout at its
+    deadline whatever another flow of its pass does. The SDK's generated
+    surface makes this shape of task, and holds every pass it runs to the rule:
+    a pass that is handed a wake and ends without its answer saved fails it.
+    Red: the case of the two orders with the first pass fixed, seen failing on
+    main.
+47. The week. Receipt M1 of the milestone below holds every step, and these
+    things are settled for it. The daily purge runs under `--completed-after 1d
+    --cancelled-after 1d` with no failed window, so the week keeps every failed
+    task and the receipt's dry run lists them. The two windows are repository
+    variables, and the checker reads the completed window only to size its
+    bound, so it accepts a week purged under other windows. A daily purge that
+    reached the store prints the windows it ran under, and PR5.8 adds a case
+    that reads them from the committed receipt: `completedSeconds` 86400,
+    `cancelledSeconds` 86400 and `failedSeconds` null in every such report. A
+    purge the store failed before any unit prints no window, and the dry run
+    after the end sample has its failed window of an hour, so the case leaves
+    both out. The receipt is committed under `receipts/`. The same case runs
+    line 44's checker on it, in CI from then on, and the pull request's
+    description holds what the checker printed. No document of the receipt
+    names the database it was taken from, since a report prints the scheme of
+    the store URL alone, and the receipt's `attestation` holds who attests and
+    the instant of the seal. That the week ran on the deployed alpha is the
+    maintainer's word in the pull request that adds the receipt. Today the
+    week's workflow runs the CLI of main's newest commit, so a change to a
+    member of a report, merged while the week runs, would refuse the days
+    before it. PR5.6 gives the workflow a repository variable that pins the
+    commit it runs, and the selftest before the week, the lookups and the dry
+    run after it are printed by that commit too, so main may change while the
+    week runs. The workflow is turned off at the end sample, before the
+    lookups are taken, because a purge after that sample deletes units whose
+    lookups the receipt needs, and PR5.6 puts that step in the README's
+    section on a week. Red: the doctored receipts of line 44, each refused for
+    its own cause, and in PR5.8 the case of the windows, seen failing on a
+    copy of the receipt whose purge ran under another window.
+
+**Outside the exit test:** two pull requests that the week does not need and
+does not wait for. AGENTS.md sends work with no milestone evidence to the
+options backlog. Both are here because of the delegation, and neither is on
+the path to line 47. PR5.5b answers the reads of last folds. By their own
+postmortems each of the twelve pull requests of the milestone below merged
+with a last fold that no review followed. The delegation named the last
+three, PR5.2d, PR5.4 and PR5.5. One review read each of them on 2026-11-08 and
+found 40 things, two of them MEDIUM, both in PR5.2d's fold, so the folds of
+the eight before them that changed code or a model are read the same way.
+PR5.0's fold is not read: it changed only the record of a plan, which the
+pull requests that built each line rewrote. PR5.5b fixes what the reads
+find, adds the postmortem that records every read, and corrects the entries
+below and the postmortems that still say nobody read those folds. Until it
+merges they still say so. PR5.7 is an option of
+the backlog below whose trigger, the maintainer's word, came. It brings
+`specs/Scheduler.tla` to what the code does to a run's wake fields when the
+run suspends, chains or completes. Its read of the code is what found the
+defect of line 46.
+
+**Decisions (2026-11-08, under the delegation; the maintainer may reverse
+each):**
+
+- Direct-store access is accepted for the alpha, as built. A database
+  credential is full admin, so the CLI redacts by default, requires `--target`
+  on every write that opens a store and loads no `.env`. Hosted operator routes
+  with a credential of their own stay a non-goal, with the trigger the
+  milestone below gives them.
+- A store's refusal of a credential is typed apart from an outage. Line 45 is
+  that decision, built.
+- The week's retention: completed and cancelled tasks are purged a day after
+  they end, and failed tasks are kept. The producer's redelivery horizon is the
+  hour of its period, since the workflow enqueues only the key of the current
+  hour, and a day is longer. The 3,600 second floor and the checkpoint cap of
+  200,000 stand as built.
+- The week's queue is driven by a second deployment of the example, with
+  `DURABLERUN_QUEUE` set to `digest`. The deployed alpha's own deployment and
+  its queue stay as they are. The milestone below left open whether to move
+  the alpha's queue instead.
+- The week's workflow runs the CLI of a commit that a repository variable
+  pins, so main may change while the week runs, and the workflow is turned off
+  at the end sample. Line 47 says why, and PR5.6 builds the pin.
+- The decisions the plan made, which the Held paragraph of the milestone below
+  lists as ones the maintainer may reverse, stand as built, and `purge` takes
+  `--execute` as its one confirmation.
+- The words of exit test lines 34, 37, 38, 42 and 43, which PR5.5 corrected to
+  what was built, stand.
+- The next alpha release comes after the week, as the milestone that follows
+  this one. The week measures the release alpha.1 on a database the CLI
+  migrated, and a release cut during it would put a second change beside that
+  one.
+- The week receipt's checker stays in apps/dogfood/src. Its option names the
+  next pull request that changes it as the trigger of a move, and PR5.6 adds
+  one kind of store failure to it and does not move it. The move waits on the
+  maintainer's request.
+
+**Held for the maintainer:** what only the maintainer has. A credential of the
+deployed database, and a branch or a snapshot of that database for the
+`selftest`: as the alpha is deployed, its host does not give the store URL or
+the token back, so both come from the maintainer's own login to the database's
+provider. The second deployment's place: a project on the host, of the plan
+the example's README asks for, under the maintainer's account, with the five
+runtime variables that README lists. The word to make each change to what is
+running: the migration of the deployed database, the second deployment, and
+the settings the first comment of .github/workflows/operable-week.yml lists,
+two secrets and four variables today, which turn on the week's hourly write
+and daily delete and two of which are line 47's windows. No command of this
+milestone that changes the deployed database, its host or the repository's
+settings runs before that word. A second person for the sealed injection, who
+may be the maintainer when an agent is the operator. And a calendar week.
+
+**Order:** PR5.9 comes first, because it closes a hole that loses a timeout,
+and AGENTS.md ranks such a hole before everything else. PR5.6 is next: it is
+line 45, and the week waits for it, because it carries the pinned commit and
+the exit a refused token gives the week's workflow. PR5.7 follows PR5.9,
+since the model's note says what the fix makes true, and PR5.5b merges when
+its reads are answered. One pull request is in flight at a time. The week
+starts when PR5.6 has merged and the maintainer has given the credential and
+the word, and PR5.8 adds its receipt at least 168 hours later.
+
+**Non-goals:** the next alpha release, which follows this milestone; a week on
+PostgreSQL or MySQL, since the deployed alpha is on libSQL; a second queue
+beside `digest`; and what the non-goals of the milestone below name, each with
+the trigger given there, but for the live week itself, which this milestone
+takes up. The second deployment is the one redeploy those non-goals allow,
+the example app's task registration. Whether the week's workflow is turned on
+again after the receipt is decided when the receipt is in.
+
 ## Completed milestone — an operable alpha: run it, inspect it, drive it, keep it small
 
 From one terminal command, `pnpm cli <verb>`, an operator or an agent that holds
@@ -78,9 +277,10 @@ on libSQL and PostgreSQL, and no job ran them on MySQL, where they passed on
 2026-11-08 before the change. The job's list is written by hand, so a case of
 `enrollment.test.ts` now finds every test file that runs once for each
 selected dialect, by what it imports, and requires the list to hold it. No
-milestone is
-current: the maintainer has named none. The maintainer's live week on the
-deployed alpha is receipt M1, outside the numbered lines. It is NOT MET, as its
+milestone was current when this one completed. The live week, the milestone
+above, was named on 2026-11-08. The maintainer's live week on the
+deployed alpha is receipt M1, outside the numbered lines of this milestone and
+line 47 of the one above. It is NOT MET, as its
 paragraph below says, and M1 is recorded met only when its receipt exists and
 line 44's checker accepts it.
 
@@ -999,7 +1199,8 @@ line 44's checker accepts it.
     and runs its steps against a stand-in for the CLI, under the shell GitHub
     runs a step with, which stops at the first command that fails.
 
-**Receipt M1 (the maintainer's, outside the exit test):** a week of at least 168
+**Receipt M1 (the maintainer's, outside this exit test, and line 47 of the
+milestone above):** a week of at least 168
 hours on the deployed alpha. Before the week, a branch or snapshot of the
 production database is migrated with `pnpm cli migrate --target <branch-host>
 --yes`, `pnpm cli selftest --queue <a queue of its own> --target <branch-host>
@@ -1034,8 +1235,10 @@ failed unit the week kept, and an `inspect --key` report for each period no
 purge report names. `pnpm week-receipt <receipt.json>`, line 44's checker, accepts
 the receipt. The README's section "Operating a deployment" holds the steps.
 NOT MET on 2026-11-08, the day the milestone completed: no week receipt exists.
-It waits on the maintainer's supplies, a calendar week among them, and on the
-decisions held for the maintainer below.
+It waited then on the maintainer's supplies, a calendar week among them, and
+on the decisions held for the maintainer below. The Decisions and Held
+paragraphs of the milestone above say what was decided on 2026-11-08 and what
+is still held.
 
 **Order:** PR5.0, this record, and then PR5.3a come first, and together they
 give a read-only tool for the deployed alpha and the harness that says whether
@@ -1148,7 +1351,8 @@ difference between a model and the code that PR5.5 found and did not change.
   redeploy beyond the example app's one task registration. A release is the
   maintainer's. Trigger: the maintainer decides to cut one, or line 32's
   harness fails at a schema version, after which retention on the deployed
-  database needs an alpha.2 release, as the paragraph below says.
+  database needs an alpha.2 release, as the paragraph below says. The
+  milestone above orders the next alpha release after its week.
 - Queue discovery. A command that reads or writes a queue takes its name from
   `--queue`. Trigger: the first operator who holds a store URL and cannot name
   the queue a task is in.
@@ -1170,7 +1374,9 @@ difference between a model and the code that PR5.5 found and did not change.
   beside its cases. PR5.4 did not move it: exit test line 44 names
   apps/dogfood/src/receipt.ts as the checker's home, so the move rewords the
   exit test, which is the maintainer's to decide. Trigger: a request from the
-  maintainer, or the next pull request that changes the checker.
+  maintainer, or the next pull request that changes the checker. PR5.6 is that
+  pull request, by one kind of store failure, and the Decisions paragraph of
+  the milestone above declines the move for it.
 - Markers for the counts that DESIGN.md sections 3.11 and 3.12 state. The
   design-counts test holds twelve counts to the code, and neither section
   states one of the twelve, so no marker was missing. The sections state other
@@ -1209,7 +1415,8 @@ difference between a model and the code that PR5.5 found and did not change.
   NULL, and a regression case holds it, "a consumed event wake is cleared by
   reschedule". The difference is older than this milestone, and PR5.5
   changed nothing for it. Trigger: the next change to a suspension or to
-  `specs/Scheduler.tla`, or the maintainer's word.
+  `specs/Scheduler.tla`, or the maintainer's word. The word came on
+  2026-11-08, and PR5.7 of the milestone above is the change.
 
 **Held for the maintainer:** each of these is a supply or a decision that only
 the maintainer has, and no PR of this milestone made it. Supply: a Turso
@@ -1269,7 +1476,10 @@ holds. When the milestone completed, on 2026-11-08, the supplies, the migration
 of the deployed database and the retention numbers above were still the
 maintainer's, and so were naming the next milestone, cutting a release, and
 whether the week receipt's checker moves beside its cases, which the options
-backlog above records. Still held are the decisions that follow. Whether
+backlog above records. The decisions that follow were still held then. The
+Decisions paragraph of the milestone above records how each was decided on
+2026-11-08, with the retention numbers, the name of the next milestone, the
+place of a release and the place of the checker. Whether
 direct-store access is acceptable: a database credential is full admin and
 bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write that opens a store and loads no `.env`, and the
@@ -7630,6 +7840,32 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - The registry holds 1528 mutations where main held 1482: seventeen caught by cases
     of `selftest` and of the opener, twenty-two by cases of the week receipt's checker,
     and seven by cases of the week's workflow.
+
+- **PR5.5b the reads of last folds**: TODO. Outside the exit test of the live week
+  milestone. Each of the twelve pull requests of the operable alpha merged with a last fold
+  that no review followed. One review reads each of those folds but PR5.0's, the last
+  three on 2026-11-08. This pull request fixes what the reads find, adds the postmortem
+  that records them, and corrects the sentences that say nobody read those folds.
+- **PR5.6 a store's refusal of a credential, typed**: TODO. Exit test line 45 of the live
+  week milestone. Core gains one error type for a store that refuses the credential it was
+  given or what that credential may do, and one definition of the kinds of failure an
+  executor raises. The three executors decide the type from a value the driver's error
+  carries, a worker pass treats it as an outage, the hosted handler answers it 503, the
+  CLI exits 4 for it, and the week receipt's checker reads the kind. It also gives the
+  week's workflow a repository variable that pins the commit it runs, and puts in the
+  README that the workflow is turned off at the end sample. DESIGN.md's exit table, its
+  paragraph on exit 6 and its paragraph on the week receipt change with it.
+- **PR5.7 the model's wake fields**: TODO. Outside the exit test of the live week
+  milestone. `specs/Scheduler.tla` says a suspension, a chain and a completion leave a
+  run's wake fields as they were, and the code clears them. The model is brought to the
+  code under TLC, with its comments and its ledger.
+- **PR5.9 a timeout handed to a pass is not lost**: TODO. Exit test line 46 of the live
+  week milestone. The answer a wake carries is saved before the pass that was handed it
+  can end, with a red case of the two statement orders and the rule held over every pass
+  the SDK's generated surface runs.
+- **PR5.8 the week's receipt**: TODO. Exit test line 47 of the live week milestone. It adds
+  the receipt of the maintainer's week under `receipts/`, with a case that runs the checker
+  on it and reads the windows of its daily purges, and records receipt M1 met.
 
 ## Phase C — cloudification (first cloud touch; any time after Phase 2)
 
