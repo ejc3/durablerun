@@ -632,16 +632,30 @@ One invocation executes one claimed run to its next suspension point:
   client reports every HTTP answer that is no success
   under one code, `SERVER_ERROR`, and keeps the status as a number on the
   error's cause. 401 and 403 are an access refusal, read from that number and
-  never from the message. The client keeps that number for every answer but
-  one shape: under the content type `application/json` it reads the body, and
-  a body with a `message` member, or one it cannot read, becomes an error with
-  no status. A gateway in front of a server answers a token it refuses in that
-  shape. So a client the executor opens sends its requests through a `fetch`
-  of the executor's, which hands a 401 or a 403 on as plain text with the same
-  status and the same body, a shape whose status the client always keeps, and
-  hands every other answer on as it came. The status is still read in one
-  place, on the error's cause. The `fetch` throws nothing of its own: it hands
-  an answer on, and the client makes the error. The client's library can also
+  never from the message. The client reads the body of such an answer under
+  three content types, each compared as a whole string. Under exactly
+  `application/json` it parses the body, and a body with a `message` member,
+  or one it cannot parse, becomes an error with no status. A gateway in front
+  of a server answers a token it refuses in that shape. Under `text/plain`,
+  and where no content type is given, it reads the body as text, quotes the
+  text in its message and keeps the status. Under every other content type it
+  drops the body unread and keeps the status. So a client the executor opens
+  sends its requests through a `fetch` of the executor's, which rewrites one
+  answer: a 401 or a 403 whose content type is exactly `application/json`. It
+  hands that answer on with the same status and the stream of the body unread,
+  under `application/octet-stream`, a content type whose body the client
+  drops. Every other answer it hands on as it came. The status is still read
+  in one place, on the error's cause. The message of a rewritten answer is the
+  client's `Server returned HTTP status` with the status. It no longer holds
+  the text of the server's `message` member, which the client showed before
+  on an error of the wrong type. The `fetch` reads no body and copies no
+  reason phrase. It awaits the runtime's `fetch` and builds one answer from a
+  status it has checked, one fixed header and the stream, so it fails only
+  where the runtime's `fetch` fails. A refused answer under `application/json`
+  whose body is cut short or never ends is an access refusal too, where the
+  client by itself gives an outage or waits. A case that compares a client the
+  executor opened with a client that has no `fetch` of the executor's holds
+  the `fetch` to that one answer (§3.4). The client's library can also
   ask a server which protocol versions it speaks through the same `fetch`, and
   it takes an answer that is no success to mean "not this version". The client
   at the version this repository pins opens HTTP at one fixed version and
@@ -4100,12 +4114,35 @@ not depend on careful reading:
   the wording of a missing version table or of a schema fault or the code of a
   broken constraint as its message, null, cut short, and empty. Each is the
   access refusal with its status, for the version read and for another read.
-  Three more cases hold what the executor's `fetch` leaves alone. A statement
+  More cases hold what the executor's `fetch` leaves alone. A statement
   error a server answers with status 200 in the wording of a missing version
   table is still a database that was never initialized. An answer of any
   other status reaches the client as it came, so the client still reads the
-  code a server sends in a JSON body. And the `fetch`, called by itself,
-  hands a 401 and a 403 on with the status and the body and throws nothing.
+  code a server sends in a JSON body. The `fetch`, called by itself, hands a
+  401 and a 403 under `application/json` on with the status and the bytes of
+  the body under `application/octet-stream`, hands one under another content
+  type on as it came, and neither throws nor waits when the body is cut short
+  or never ends. Against a server that writes raw bytes, a 401 is the access
+  refusal whatever reason phrase comes with the status, a control character
+  and a byte past ASCII among them, and when its body is cut short. A 403
+  whose body never ends is the access refusal without a wait. And a 403 sent
+  with 300 kB, as a page or as JSON, has a message under 1,000 characters.
+  One case holds the class of these, and it is the mechanism that holds the
+  `fetch` to the one answer it is for. It generates answers: every status of
+  the cases above with every entry of the table of bodies, and with each
+  transport shape (four reason phrases, a body cut short, a body that never
+  ends) under every content type of the table. For each it compares a client
+  the executor opened with a client that has no `fetch` of the executor's.
+  The two must give the same type, status and message, except for a 401 and
+  a 403 under exactly `application/json`, which must be the access refusal
+  with the status. That exception is one condition written once in the case,
+  and the case asserts how many answers it compared and how many it excepted,
+  so a generator that draws nothing fails. When the client is upgraded, the
+  case over the table of bodies fails if the new client loses the status
+  under another content type the table draws, and this case fails if a change
+  made to the `fetch` for it reaches an answer outside the one condition.
+  What neither sees is a shape no generator draws: a `fetch` that read the
+  body under `text/xml` alone would pass both.
   One case holds that a failed batch is reported once and its executor serves
   the next call (§3.2). Twelve write batches in a row fail INSIDE, the first
   statement a write and the second a broken primary key, which is more than
