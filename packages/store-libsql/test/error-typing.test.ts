@@ -1,6 +1,6 @@
 import { type Server, createServer } from 'node:http'
 import { describe, expect, it } from 'vitest'
-import { LibsqlExecutor } from '../src/executor.js'
+import { LibsqlExecutor, fetchKeepingARefusedStatus } from '../src/executor.js'
 import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
 import { openServerAnswering } from '../src/testing.js'
 
@@ -181,17 +181,11 @@ describe('what the real libSQL client throws when a server answers a status', ()
 
   /**
    * A loopback server that stands for a libSQL server over HTTP far enough for one batch:
-   * it answers the client's version requests with `versionStatus`, and answers every request
-   * of a pipeline with one statement error. Status 200, as a real server answers a statement
-   * it could not run.
+   * it answers every request of a pipeline with one statement error. Status 200, as a real
+   * server answers a statement it could not run.
    */
-  const openServerFailingEveryStatement = async (versionStatus: number, message: string) => {
+  const openServerFailingEveryStatement = async (message: string) => {
     const server: Server = createServer((request, response) => {
-      if (request.method !== 'POST') {
-        response.statusCode = versionStatus
-        response.end()
-        return
-      }
       const chunks: Buffer[] = []
       request.on('data', (chunk: Buffer) => chunks.push(chunk))
       request.on('end', () => {
@@ -230,8 +224,8 @@ describe('what the real libSQL client throws when a server answers a status', ()
   }
 
   /** What the version read throws against a server that fails every statement with a text. */
-  const versionReadAgainst = async (versionStatus: number, message: string) => {
-    const server = await openServerFailingEveryStatement(versionStatus, message)
+  const versionReadAgainst = async (message: string) => {
+    const server = await openServerFailingEveryStatement(message)
     const executor = LibsqlExecutor.open(server.url, 'a-token-the-server-takes')
     try {
       const thrown: unknown = await executor
@@ -250,19 +244,80 @@ describe('what the real libSQL client throws when a server answers a status', ()
   // The control of the case above: the wording of a missing version table is still read
   // where a server answered the statement, with status 200.
   it('still reads a database that was never initialized from a statement error a server answers with status 200', async () => {
-    expect(await versionReadAgainst(404, 'SQLite error: no such table: meta')).toBe(
+    expect(await versionReadAgainst('SQLite error: no such table: meta')).toBe(
       'SchemaNotInitializedError',
     )
   })
 
-  // The client asks a server which protocol versions it speaks before its first batch, and
-  // takes an answer that is no success to mean "not this version". A server that answers
-  // those requests 401 and then takes the batch is therefore answered by the batch.
-  it('leaves the client to take a 401 on its version requests as a version the server does not speak, and types the batch by its own answer', async () => {
+  // The executor's `fetch` hands a refused answer on and makes no error of its own: the
+  // client makes the error from the answer. The client's library can also ask a server which
+  // protocol versions it speaks through the same `fetch`, taking an answer that is no
+  // success to mean "not this version", and a `fetch` that threw would end such a client.
+  // The client pinned here sends no such request, so the `fetch` is called by itself.
+  it('hands a 401 and a 403 on as an answer with the same status and body, as plain text, and throws nothing', async () => {
+    const body = '{"message":"Unauthorized"}'
+    const observed: Record<number, unknown> = {}
+    for (const status of [401, 403]) {
+      const server = await openServerAnswering(status, body, 'application/json')
+      try {
+        const answer: unknown = await fetchKeepingARefusedStatus(
+          `http://127.0.0.1:${new URL(server.webSocketUrl).port}/v3`,
+        ).catch((error: unknown) => error)
+        observed[status] =
+          answer instanceof Response
+            ? {
+                status: answer.status,
+                ok: answer.ok,
+                contentType: answer.headers.get('content-type'),
+                body: await answer.text(),
+              }
+            : `threw ${String(answer)}`
+      } finally {
+        await server.close()
+      }
+    }
     expect(
-      await versionReadAgainst(401, 'SQLite error: no such table: meta'),
-      'mutation-verdict:behavior:libsql-refused-version-request-falls-through',
-    ).toBe('SchemaNotInitializedError')
+      observed,
+      'mutation-verdict:behavior:libsql-refused-answer-is-handed-on-and-not-thrown',
+    ).toEqual({
+      401: { status: 401, ok: false, contentType: 'text/plain', body },
+      403: { status: 403, ok: false, contentType: 'text/plain', body },
+    })
+  })
+
+  // The executor's `fetch` hands on as plain text only the two statuses it types. Under any
+  // other status the client still reads a JSON body itself, and so still carries the code a
+  // server sends there, which says for one what became of a stream.
+  it('hands an answer of any other status to the client as it came, so the client still reads the code a server sends in a JSON body', async () => {
+    const observed: Record<number, unknown> = {}
+    for (const status of [400, 500]) {
+      const server = await openServerAnswering(
+        status,
+        '{"message":"the stream has expired","code":"STREAM_EXPIRED"}',
+        'application/json',
+      )
+      const executor = LibsqlExecutor.open(server.url, 'a-token-the-server-takes')
+      try {
+        const thrown: unknown = await executor
+          .batch('typed', [{ sql: 'SELECT 1 AS answered', args: [] }], 'read')
+          .then(
+            () => 'answered',
+            (error: unknown) => error,
+          )
+        const driver = (thrown as Error).cause as { code?: unknown } | undefined
+        observed[status] = { name: (thrown as Error).name, code: driver?.code }
+      } finally {
+        executor.close()
+        await server.close()
+      }
+    }
+    expect(
+      observed,
+      'mutation-verdict:behavior:libsql-other-status-is-handed-on-as-it-came',
+    ).toEqual({
+      400: { name: 'StoreUnavailableError', code: 'STREAM_EXPIRED' },
+      500: { name: 'StoreUnavailableError', code: 'STREAM_EXPIRED' },
+    })
   })
 
   // The client reports a WebSocket upgrade the server refused under one code whatever the

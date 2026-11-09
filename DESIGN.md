@@ -612,9 +612,13 @@ One invocation executes one claimed run to its next suspension point:
   of the executor's, which hands a 401 or a 403 on as plain text with the same
   status and the same body, a shape whose status the client always keeps, and
   hands every other answer on as it came. The status is still read in one
-  place, on the error's cause. The `fetch` throws nothing of its own, because
-  the client asks a server which protocol versions it speaks through the same
-  `fetch` and takes an answer that is no success to mean "not this version".
+  place, on the error's cause. The `fetch` throws nothing of its own: it hands
+  an answer on, and the client makes the error. The client's library can also
+  ask a server which protocol versions it speaks through the same `fetch`, and
+  it takes an answer that is no success to mean "not this version". The client
+  at the version this repository pins opens HTTP at one fixed version and
+  sends no such request, measured against a loopback server. A refused status
+  handed on with its status is still no success to a later client that does.
   A client made elsewhere and handed to the executor sends with the `fetch`
   its maker gave it. A hosted libSQL server, measured on 2026-11-08,
   answers 401 to a token whose signature it does not accept and to no token at
@@ -4055,11 +4059,12 @@ not depend on careful reading:
   the wording of a missing version table or of a schema fault or the code of a
   broken constraint as its message, null, cut short, and empty. Each is the
   access refusal with its status, for the version read and for another read.
-  Two controls hold what the executor's `fetch` leaves alone: a statement
+  Three more cases hold what the executor's `fetch` leaves alone. A statement
   error a server answers with status 200 in the wording of a missing version
-  table is still a database that was never initialized, and a 401 on the
-  client's version requests is still taken as a version the server does not
-  speak, so the batch is typed by its own answer.
+  table is still a database that was never initialized. An answer of any
+  other status reaches the client as it came, so the client still reads the
+  code a server sends in a JSON body. And the `fetch`, called by itself,
+  hands a 401 and a 403 on with the status and the body and throws nothing.
   One case holds that a failed batch is reported once and its executor serves
   the next call (§3.2). Twelve write batches in a row fail INSIDE, the first
   statement a write and the second a broken primary key, which is more than

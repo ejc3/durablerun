@@ -63,11 +63,14 @@ const ACCESS_REFUSED_HTTP_STATUSES = new Set([
  * text is a shape whose status the client always keeps, so the status is still read in one
  * place, below.
  *
- * It throws nothing of its own. The client asks a server which protocol versions it speaks
- * with requests of this same `fetch`, and takes an answer that is no success to mean "not
- * this version", which a refused status handed on with its status still is.
+ * It throws nothing of its own: it hands an answer on, and the client makes the error. The
+ * client's library can also ask a server which protocol versions it speaks, with requests
+ * of this same `fetch`, and it takes an answer that is no success to mean "not this
+ * version". The client at the version pinned here opens HTTP at one fixed version and sends
+ * no such request. A refused status handed on with its status is still no success to a
+ * later client that does. Exported for the test that calls it by itself.
  */
-const fetchKeepingARefusedStatus: typeof fetch = async (...request) => {
+export const fetchKeepingARefusedStatus: typeof fetch = async (...request) => {
   const answer = await fetch(...request)
   if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer
   return new Response(await answer.text(), {
