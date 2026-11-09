@@ -308,7 +308,8 @@ describe('the workflow of the operable week', () => {
         STUB_HEAD: head ?? '',
       })
     // A full id is fetched alone, by its id, and checked out, and the commit that was checked
-    // out is read back.
+    // out is read back. Then main is fetched whole, the commit is asked for in its history,
+    // and the names the commit tracks are read. The case below runs those under a real git.
     expect(checkout(PINNED_COMMIT)).toEqual({
       status: 0,
       git: [
@@ -317,6 +318,9 @@ describe('the workflow of the operable week', () => {
         ['fetch', '--no-tags', '--depth=1', 'origin', PINNED_COMMIT],
         ['checkout', '--detach', 'FETCH_HEAD'],
         ['rev-parse', 'HEAD'],
+        ['fetch', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
+        ['merge-base', '--is-ancestor', PINNED_COMMIT, 'origin/main'],
+        ['ls-files', 'week-*'],
       ],
     })
     // A checkout that left another commit fails the step.
@@ -404,7 +408,10 @@ describe('the workflow of the operable week', () => {
       }
       // A commit main holds is taken, the newest but one and the first alike.
       const taken = { status: 0, checkedOut: true, refusal: [] }
-      expect({ second: checkout(second), first: checkout(first) }).toEqual({
+      expect(
+        { second: checkout(second), first: checkout(first) },
+        'mutation-verdict:behavior:operable-week-workflow-fetches-the-whole-of-main',
+      ).toEqual({
         second: taken,
         first: taken,
       })

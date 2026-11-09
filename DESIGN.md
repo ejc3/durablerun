@@ -7134,13 +7134,20 @@ third variable names by its full id. GitHub reads the workflow file from the def
 branch, so the steps are main's, and the job fetches and checks out the pinned commit and
 no other, so the CLI is that commit's and a pull request merged during the week changes no
 member of a report. A value that is not 40 lowercase hexadecimal digits stops the job
-before any command opens the store, and so does a checkout that leaves another commit. The enqueue and the purge, which write,
+before any command opens the store, and so does a checkout that leaves another commit.
+The pinned commit must be one main holds. GitHub hands over a commit of a branch that
+was never merged, and of a fork, by its id as well, so the job fetches the whole history
+of main after the checkout and stops when the commit is not in it. It stops too when the
+commit tracks a file named `week-*`, because the job keeps every file of that name as a
+report. The enqueue and the purge, which write,
 name their `--target` from the pinned URL, so the CLI refuses a credential of another
 database for them too. The samples, `stats` and `sizes`, are reads, which take no
 `--target`, so that check alone holds them to the pinned database. Cases read the file and run its steps
 against a stand-in for the CLI, under the shell GitHub runs a step with, which stops at
 the first command that fails: the checkout fetches the pinned commit alone and refuses a
-value that is no full id, the enqueue is under the hour's key, the purge runs again
+value that is no full id, and one case runs the checkout under a real git against a
+repository it builds on disk, where a commit main holds is taken and a commit of a
+branch main never took is refused, the enqueue is under the hour's key, the purge runs again
 until the verb says no more remain, and a purge whose report cannot be read stops the job
 with nothing of the report in the log.
 

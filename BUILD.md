@@ -7918,7 +7918,8 @@ these three things; nothing else in the system does I/O, time, or randomness.
     and PR5.6b below is the change that types them.
   - The week's workflow fetches the one commit `DURABLERUN_WEEK_COMMIT` names by its full
     id, checks it out and reads the id back, and a value that is not a full id stops the job
-    before any step that opens the store. Its steps stay main's. The README's section on a
+    before any step that opens the store. It then fetches main and stops when the commit is
+    not in main's history, or tracks a file named `week-*`. Its steps stay main's. The README's section on a
     week says which commit prints the documents of a week, that the workflow is turned off
     at the end sample, and what a purge that exits 4 means.
   - The week receipt's checker gained the one kind and did not move. One case hands it the

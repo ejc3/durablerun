@@ -82,6 +82,19 @@ jobs:
             echo 'The commit checked out is not the pinned one.' >&2
             exit 1
           fi
+          # A commit of a branch that was never merged, or of a fork, is fetched by its id as
+          # well. So the whole history of main is fetched, and the pinned commit must be in it.
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$DURABLERUN_WEEK_COMMIT" origin/main; then
+            echo 'The pinned commit is not on main: set DURABLERUN_WEEK_COMMIT to a commit main holds.' >&2
+            exit 1
+          fi
+          # The job keeps every file named week-* as a report, so the commit may track none.
+          tracked="$(git ls-files 'week-*')"
+          if [ -n "$tracked" ]; then
+            echo 'The pinned commit tracks a file named week-*, which the job would keep as a report.' >&2
+            exit 1
+          fi
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

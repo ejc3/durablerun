@@ -246,7 +246,10 @@ checker allows eight of the 168 to be missing.
 the repository variable `DURABLERUN_WEEK_COMMIT` names it by its full id, 40
 hexadecimal digits. The job fetches and checks out that commit and no other.
 A value that is no full id, a branch or a short id among them, stops the job
-before any command opens the store. GitHub reads the workflow file itself
+before any command opens the store. So does a commit that is not in main's
+history, a commit of a branch that was never merged among them, and a commit
+that tracks a file named `week-*`, the name the job keeps a report under.
+GitHub reads the workflow file itself
 from the default branch, so the steps are main's and the CLI they run is the
 pinned commit's: a pull request that merges during the week changes no member
 of a report. The receipt's other reports come from the same build. Run the
