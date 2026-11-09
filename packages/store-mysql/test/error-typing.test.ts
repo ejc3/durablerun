@@ -122,7 +122,7 @@ describe('what a real MySQL server answers an account it refuses', () => {
   it('types a write an access refusal for an account that may connect and may only read, by its number, and answers its read', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'reader-account' })
     try {
-      const reader = await db.openAsAnAccountThatMayOnlyRead()
+      const reader = await db.openAsAReader()
       try {
         expect({
           read: await answered(reader.raw, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),

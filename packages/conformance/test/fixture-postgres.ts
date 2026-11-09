@@ -131,7 +131,7 @@ export async function makePostgresFixture(
         close: () => refused.close(),
       }
     },
-    credentialThatMayOnlyRead: () => opened.openAsARoleThatMayOnlyRead(),
+    credentialThatMayOnlyRead: () => opened.openAsAReader(),
     close: opened.close,
   }
 }

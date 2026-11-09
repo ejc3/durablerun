@@ -159,7 +159,7 @@ export async function makeMysqlFixture(
         close: () => refused.close(),
       }
     },
-    credentialThatMayOnlyRead: () => opened.openAsAnAccountThatMayOnlyRead(),
+    credentialThatMayOnlyRead: () => opened.openAsAReader(),
     close: opened.close,
   }
 }

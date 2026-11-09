@@ -144,6 +144,17 @@ export interface ReaderCredential {
   close(): Promise<void>
 }
 
+/** The environment that names the store at `base` by a reader's name and password. */
+function readerOf(
+  base: URL,
+  reader: { username: string; password: string; close(): Promise<void> },
+): ReaderCredential {
+  const url = new URL(base.href)
+  url.username = reader.username
+  url.password = reader.password
+  return { env: { DURABLERUN_STORE_URL: url.href }, close: reader.close }
+}
+
 class StoppedBeforeVersion extends Error {}
 
 /** An executor that stops a real migration before the batch of `version`. */
@@ -245,13 +256,7 @@ export async function openCliDb(
         retentionWith: (other) => postgresRetention(db.raw, other),
         dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
-        openAsAReader: async () => {
-          const reader = await db.openAsARoleThatMayOnlyRead()
-          const url = new URL(base.href)
-          url.username = reader.role
-          url.password = reader.password
-          return { env: { DURABLERUN_STORE_URL: url.href }, close: reader.close }
-        },
+        openAsAReader: async () => readerOf(base, await db.openAsAReader()),
         close: db.close,
       }
     } catch (error) {
@@ -276,13 +281,7 @@ export async function openCliDb(
       retentionWith: (other) => mysqlRetention(db.raw, other),
       dump: () => dumpOf(dialect, db.raw),
       recordNewer: () => recordNewer('mysql', db.raw),
-      openAsAReader: async () => {
-        const reader = await db.openAsAnAccountThatMayOnlyRead()
-        const url = new URL(base.href)
-        url.username = reader.account
-        url.password = reader.password
-        return { env: { DURABLERUN_STORE_URL: url.href }, close: reader.close }
-      },
+      openAsAReader: async () => readerOf(base, await db.openAsAReader()),
       close: db.close,
     }
   } catch (error) {
@@ -318,7 +317,7 @@ export async function openRefusingStore(dialect: EnrolledDialect): Promise<Refus
       close: server.close,
     }
   }
-  const db = await openCliDb(dialect, 'refused-credential')
+  const db = await openCliDb(dialect, 'refused-credential', 'empty')
   const url = new URL(db.url)
   url.password = credential
   return {

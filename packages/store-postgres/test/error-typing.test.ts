@@ -97,7 +97,7 @@ describe('what a real PostgreSQL server answers a role it refuses', () => {
   it('types a write an access refusal for a role that may connect and may only read, by SQLSTATE 42501, and answers its read', async () => {
     const db = await openPostgresTestDb({ idNamespace: 'reader-role' })
     try {
-      const reader = await db.openAsARoleThatMayOnlyRead()
+      const reader = await db.openAsAReader()
       try {
         expect({
           read: await answered(reader.raw, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),

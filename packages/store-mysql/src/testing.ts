@@ -56,9 +56,9 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
    * read every table of the database, and may write none. Its close drops the account, and
    * comes before the fixture's.
    */
-  openAsAnAccountThatMayOnlyRead(): Promise<{
+  openAsAReader(): Promise<{
     raw: MysqlExecutor
-    account: string
+    username: string
     password: string
     close(): Promise<void>
   }>
@@ -120,32 +120,34 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     }
   }
 
-  const openUnderAWrongPassword = (): MysqlExecutor => {
-    const wrong = new URL(connectionString)
-    wrong.password = 'not-the-password-of-the-account'
-    return MysqlExecutor.open({ uri: wrong.href, database: databaseName })
+  /** An executor on this database under a password, as the URL's account or as `username`. */
+  const openAs = (password: string, username?: string): MysqlExecutor => {
+    const as = new URL(connectionString)
+    if (username !== undefined) as.username = username
+    as.password = password
+    return MysqlExecutor.open({ uri: as.href, database: databaseName })
   }
 
-  const openAsAnAccountThatMayOnlyRead = async () => {
+  const openUnderAWrongPassword = (): MysqlExecutor => openAs('not-the-password-of-the-account')
+
+  const openAsAReader = async () => {
     // The database's name holds only the lowercase identifier alphabet, and so does the
     // account's. An account name holds at most 32 characters.
     const account = `dr_cred_${databaseName.slice(-16)}`
+    const password = 'may-only-read'
     const dropAccount = () => control.query(`DROP USER IF EXISTS '${account}'@'%'`)
     try {
-      await control.query(`CREATE USER '${account}'@'%' IDENTIFIED BY 'may-only-read'`)
+      await control.query(`CREATE USER '${account}'@'%' IDENTIFIED BY '${password}'`)
       await control.query(`GRANT SELECT ON ${databaseName}.* TO '${account}'@'%'`)
     } catch (error) {
       await dropAccount().catch(() => undefined)
       throw error
     }
-    const as = new URL(connectionString)
-    as.username = account
-    as.password = 'may-only-read'
-    const reader = MysqlExecutor.open({ uri: as.href, database: databaseName })
+    const reader = openAs(password, account)
     return {
       raw: reader,
-      account,
-      password: as.password,
+      username: account,
+      password,
       close: async () => {
         await reader.close()
         await dropAccount()
@@ -169,7 +171,7 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
       databaseName,
       holdTaskRowLock,
       openUnderAWrongPassword,
-      openAsAnAccountThatMayOnlyRead,
+      openAsAReader,
       close: cleanup,
     }
   } catch (error) {
