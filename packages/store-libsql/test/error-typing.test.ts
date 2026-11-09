@@ -544,10 +544,7 @@ describe('what the real libSQL client throws when a server answers a status', ()
       observed[named] = typed(seen ?? 'no read')
       expected[named] = { name: 'StoreAccessRefusedError', status: 401 }
     }
-    expect(
-      observed,
-      'mutation-verdict:behavior:libsql-only-a-refused-json-answer-is-rewritten',
-    ).toEqual(expected)
+    expect(observed).toEqual(expected)
   })
 
   it('types a 403 an access refusal without waiting for a body the server never ends, under a content type whose body the client does not read', async () => {

@@ -17252,25 +17252,67 @@ MUTATION_SPECS.extend(
             "a 401 a gateway answers with a JSON body that has a message member reaches the executor with no status, so a refused token is an outage again, or a fresh database when the body has the wording of a missing version table",
         ),
         (
-            "libsql-refused-answer-is-plain-text",
+            "libsql-refused-answer-does-not-keep-its-content-type",
             "packages/store-libsql/src/executor.ts",
-            "    headers: { 'content-type': 'text/plain' },\n",
+            "    headers: { 'content-type': UNREAD_CONTENT_TYPE },\n",
             "    headers: answer.headers, // MUTATION: the refused answer keeps its own content type\n",
-            "a refused answer is handed to the client under the content type the server sent, so the client reads a JSON body and drops the status of one that has a message member",
+            "a refused answer under application/json is handed to the client under that content type, so the client reads the JSON body and drops the status of one that has a message member",
         ),
         (
             "libsql-refused-answer-is-handed-on-and-not-thrown",
             "packages/store-libsql/src/executor.ts",
-            "  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer\n",
-            "  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer\n  if (answer.status > 0) throw new Error(`the server answered ${answer.status}`) // MUTATION: a refused answer is thrown and not handed on\n",
-            "the executor's fetch throws for a 401, and the client reports a thrown fetch with no status, so a refused token is an outage again",
+            "  return new Response(answer.body, {\n",
+            "  if (answer.status > 0) throw new Error(`the server answered ${answer.status}`) // MUTATION: a refused answer is thrown and not handed on\n  return new Response(answer.body, {\n",
+            "the executor's fetch throws for a 401 under application/json, and the client reports a thrown fetch with no status, so a refused token is an outage again",
         ),
         (
             "libsql-other-status-is-handed-on-as-it-came",
             "packages/store-libsql/src/executor.ts",
-            "  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer\n",
-            "  if (answer.ok) return answer // MUTATION: every answer that is no success is handed on as plain text\n",
-            "a 400 whose JSON body carries a code is handed to the client as plain text, so the client no longer reads the code and a refused write is an outage that is retried",
+            "    !ACCESS_REFUSED_HTTP_STATUSES.has(answer.status) ||\n",
+            "    answer.ok || // MUTATION: every answer under application/json that is no success is rewritten\n",
+            "a 400 whose JSON body carries a code is handed to the client under a content type whose body it drops, so the client no longer reads the code and cannot say what became of a stream",
+        ),
+        (
+            "libsql-refused-answer-copies-no-reason-phrase",
+            "packages/store-libsql/src/executor.ts",
+            "    status: answer.status,\n",
+            "    status: answer.status,\n    statusText: answer.statusText, // MUTATION: the reason phrase is copied to the answer handed on\n",
+            "a 401 under application/json whose reason phrase holds a control character or a byte past ASCII makes the executor's fetch throw, so a refused token is an outage on every retry",
+        ),
+        (
+            "libsql-refused-answer-is-handed-on-unread",
+            "packages/store-libsql/src/executor.ts",
+            "  return new Response(answer.body, {\n",
+            "  return new Response(await answer.text(), { // MUTATION: the body is read before the answer is handed on\n",
+            "a 401 under application/json whose body is cut short makes the executor's fetch throw, and one whose body never ends makes it wait, so a refused token is an outage or no answer at all",
+        ),
+        (
+            "libsql-fetch-is-taken-when-the-module-loads",
+            "packages/store-libsql/src/executor.ts",
+            "  const answer = await runtimeFetch(...request)\n",
+            "  const answer = await fetch(...request) // MUTATION: the global fetch is looked up at every request\n",
+            "a process that replaces the global fetch after the store loaded sends its libSQL requests through the replacement, which the client by itself never did",
+        ),
+        (
+            "libsql-executor-client-types-as-a-bare-client",
+            "packages/store-libsql/src/executor.ts",
+            "    answer.headers.get('content-type') !== STATUS_LOSING_CONTENT_TYPE\n",
+            "    false // MUTATION: every refused answer is rewritten, whatever its content type\n",
+            "a 401 as plain text, whose status the client kept by itself, loses the server's text from its message, and one whose plain text is cut short is an access refusal where the client by itself answers an outage, so the executor changes answers it is not there for",
+        ),
+        (
+            "libsql-content-type-is-compared-whole",
+            "packages/store-libsql/src/executor.ts",
+            "    answer.headers.get('content-type') !== STATUS_LOSING_CONTENT_TYPE\n",
+            "    !String(answer.headers.get('content-type')).startsWith(STATUS_LOSING_CONTENT_TYPE) // MUTATION: the content type is compared by its start\n",
+            "a 401 under application/json with a charset, whose status the client keeps by itself, is rewritten too, so the executor hands on another answer than the one the server sent where nothing was lost",
+        ),
+        (
+            "libsql-refused-answer-is-handed-on-for-the-client-to-drop",
+            "packages/store-libsql/src/executor.ts",
+            "const UNREAD_CONTENT_TYPE = 'application/octet-stream'\n",
+            "const UNREAD_CONTENT_TYPE = 'text/plain' // MUTATION: the answer is handed on under a content type whose body the client reads\n",
+            "a 403 under application/json with 300 kB of JSON becomes an error whose message quotes all of it, and one whose body is cut short or never ends is an outage or no answer again",
         ),
     )
 )
@@ -17326,7 +17368,7 @@ VERDICTS.update(
         "libsql-refused-answer-is-handed-on-and-not-thrown": ExpectedVerdict(
             "behavior",
             "packages/store-libsql/test/error-typing.test.ts",
-            "what the real libSQL client throws when a server answers a status hands a 401 and a 403 on as an answer with the same status and body, as plain text, and throws nothing",
+            "what the real libSQL client throws when a server answers a status hands a 401 and a 403 under application/json on with the same status and the bytes of the body, under a content type whose body the client does not read, and hands one under another content type on as it came",
             "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-and-not-thrown",
         ),
         "libsql-other-status-is-handed-on-as-it-came": ExpectedVerdict(
@@ -17334,6 +17376,36 @@ VERDICTS.update(
             "packages/store-libsql/test/error-typing.test.ts",
             "what the real libSQL client throws when a server answers a status hands an answer of any other status to the client as it came, so the client still reads the code a server sends in a JSON body",
             "mutation-verdict:behavior:libsql-other-status-is-handed-on-as-it-came",
+        ),
+        "libsql-refused-answer-copies-no-reason-phrase": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status types a 401 an access refusal whatever reason phrase the server sends with the status, a control character and a byte past ASCII among them",
+            "mutation-verdict:behavior:libsql-refused-answer-copies-no-reason-phrase",
+        ),
+        "libsql-refused-answer-is-handed-on-unread": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status hands a 401 under application/json on with its body unread, so a body that is cut short or never ends does not make the fetch throw or wait",
+            "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-unread",
+        ),
+        "libsql-fetch-is-taken-when-the-module-loads": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status sends with the fetch the runtime had when the module loaded, and not with one a process put in its place later",
+            "mutation-verdict:behavior:libsql-fetch-is-taken-when-the-module-loads",
+        ),
+        "libsql-executor-client-types-as-a-bare-client": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status types every answer as a client with no fetch of the executor does, except a 401 and a 403 under the content type application/json, which are an access refusal however the body ends",
+            "mutation-verdict:behavior:libsql-executor-client-types-as-a-bare-client",
+        ),
+        "libsql-refused-answer-is-handed-on-for-the-client-to-drop": ExpectedVerdict(
+            "behavior",
+            "packages/store-libsql/test/error-typing.test.ts",
+            "what the real libSQL client throws when a server answers a status keeps the message of a refused 403 under 1,000 characters when the server sends 300 kB with it, as a page and as JSON under application/json",
+            "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-for-the-client-to-drop",
         ),
         "postgres-refused-credential-class-is-an-access-refusal": ExpectedVerdict(
             "behavior",
@@ -17401,8 +17473,14 @@ for _errno in MYSQL_ACCESS_REFUSED_ERRNOS:
         "MysqlExecutor error typing, by the state and the number the server sends types every number that says the account was refused an access refusal, whatever state MySQL files it under",
         "mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal",
     )
-VERDICTS["libsql-refused-answer-is-plain-text"] = VERDICTS[
+VERDICTS["libsql-refused-answer-does-not-keep-its-content-type"] = VERDICTS[
     "libsql-refused-status-is-kept-under-every-body"
+]
+# Caught by the case that calls the fetch by itself, which reads the content type each answer
+# comes back under. The case that compares with a bare client cannot see it: the client gives
+# the same error for the type with a charset and for the type the fetch hands on under.
+VERDICTS["libsql-content-type-is-compared-whole"] = VERDICTS[
+    "libsql-refused-answer-is-handed-on-and-not-thrown"
 ]
 
 # The list is held from both sides to the server's own list of names, which the case on a
@@ -27339,7 +27417,7 @@ def self_test(fault: str | None = None, *, check_live_inventory: bool) -> int:
             failures.append(
                 "the registry's MySQL access numbers differ from the executor's list"
             )
-        if len(MUTATIONS) != 1578:
+        if len(MUTATIONS) != 1584:
             failures.append("the live mutation inventory cardinality changed")
         if (
             len(STORE_LIBSQL_TYPECHECK_MUTATION_NAMES) != 18
