@@ -68,6 +68,17 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     password: string
     close(): Promise<void>
   }>
+  /**
+   * The reader above without USAGE on the fixture's schema: a role that may connect and
+   * holds SELECT on every table, as an operator leaves it who grants the tables and forgets
+   * the schema. It is closed and dropped as the reader is.
+   */
+  openAsAReaderWithNoUsageOfTheSchema(): Promise<{
+    raw: PgExecutor
+    username: string
+    password: string
+    close(): Promise<void>
+  }>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_POSTGRES_URL
@@ -148,9 +159,11 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
 
   const openUnderAWrongPassword = (): PgExecutor => openAs('not-the-password-of-the-account')
 
-  const openAsAReader = async () => {
-    // The schema's name holds only the lowercase identifier alphabet, and so does the role's.
-    const role = `dr_cred_${schemaName.slice(-20)}`
+  // The schema's name holds only the lowercase identifier alphabet, and so do the roles'.
+  const readerRole = `dr_cred_${schemaName.slice(-20)}`
+
+  /** An executor on this database as a new role that may log in and holds `privileges`. */
+  const openAsARole = async (role: string, privileges: readonly string[]) => {
     const password = 'may-only-read'
     const dropRole = async (): Promise<void> => {
       // The role's privileges go first: a role that still holds one cannot be dropped.
@@ -159,8 +172,7 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     }
     try {
       await control.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`)
-      await control.query(`GRANT USAGE ON SCHEMA ${schemaName} TO ${role}`)
-      await control.query(`GRANT SELECT ON ALL TABLES IN SCHEMA ${schemaName} TO ${role}`)
+      for (const privilege of privileges) await control.query(`GRANT ${privilege} TO ${role}`)
     } catch (error) {
       await dropRole().catch(() => undefined)
       throw error
@@ -182,6 +194,12 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     return { raw: reader, username: role, password, close }
   }
 
+  const selectOnEveryTable = `SELECT ON ALL TABLES IN SCHEMA ${schemaName}`
+  const openAsAReader = () =>
+    openAsARole(readerRole, [`USAGE ON SCHEMA ${schemaName}`, selectOnEveryTable])
+  const openAsAReaderWithNoUsageOfTheSchema = () =>
+    openAsARole(`${readerRole}_nousage`, [selectOnEveryTable])
+
   try {
     await control.query(`CREATE SCHEMA ${schemaName}`)
     raw = PgExecutor.open({
@@ -200,6 +218,7 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
       holdTaskRowLock,
       openUnderAWrongPassword,
       openAsAReader,
+      openAsAReaderWithNoUsageOfTheSchema,
       close: cleanup,
     }
   } catch (error) {

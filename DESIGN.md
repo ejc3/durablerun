@@ -595,7 +595,29 @@ One invocation executes one claimed run to its next suspension point:
   invalid authorization specification, which is a password that is not the
   role's (28P01) and a role that may not log in (28000), and 42501,
   insufficient privilege, which PostgreSQL files in class 42 beside a syntax
-  error. MySQL: 23 numbers whose names say the account was refused, kept by
+  error. Those are all that is typed on PostgreSQL: a refusal is typed when
+  the server answers it with class 28 or with 42501. Two refusals are answered
+  with neither, and each keeps the type it had before the access type existed.
+  The first is a login the client declines to send. A URL with no password,
+  against a server that asks for one, gets no answer of the server about the
+  login: the driver ends the login itself, with a plain error that has no
+  code, as "Connection terminated unexpectedly" is. A type is read from a
+  value and never from message text, and the driver gives no value that
+  separates the two, so it is an outage. The second is a role that may log in
+  and has no USAGE on the store's schema. PostgreSQL skips a schema of the
+  search path that the role may not use, so a statement that names no schema
+  finds no table, and the server answers 42P01, undefined table, and not
+  42501. The version read is then typed `SchemaNotInitializedError` and any
+  other read `SchemaMismatchError`. So the version read does not stop a
+  migrate under such a role: it reads a database that was never initialized,
+  and the migrate sends its first write. Where the search path names no
+  schema the role may create in, the server refuses that write with 3F000,
+  the migrate ends in `SchemaMismatchError`, and nothing is written. Where it
+  also names a schema the role may create in, the migrate builds the tables a
+  second time there and answers, and the store's own schema stays as it was.
+  Cases on a real server hold each of these answers as a recorded boundary
+  (§3.4), and typing them is a later change that BUILD.md names. MySQL: 23
+  numbers whose names say the account was refused, kept by
   number because MySQL files them under three states: 28000 for a refused
   login (1045, a wrong password or an account that does not exist), 42000 for
   a missing privilege (1142 on a table, 1044 on a database, 1227 for a
@@ -4049,7 +4071,17 @@ not depend on careful reading:
   role. Each store's own file pins the codes. On a real PostgreSQL and MySQL
   server: a wrong password, a role that may not log in and a locked account,
   and the role that may only read, refused with 42501 on PostgreSQL and 1142
-  on MySQL. For libSQL, what the real client throws for each status a loopback
+  on MySQL. PostgreSQL's file also holds three answers as recorded boundaries
+  and not as promises (§3.2): a URL with no password is an outage whose cause
+  is a plain error with no code. A role with no USAGE on the schema is
+  answered 42P01, typed a database never initialized on the version read and
+  a schema mismatch on another read, and refused with 42501 only where the
+  statement names the schema. And a migrate under that role is refused its
+  first write with 3F000, or, where its search path also names a schema it
+  may create in, builds the tables a second time there. A change that types
+  one of them changes its case. Each server fixture drops, at its close,
+  every role or account it made, and a case holds that for a reader its case
+  never closed. For libSQL, what the real client throws for each status a loopback
   server answers: 401 and 403 are the access refusal, 400, 404, 429, 500 and
   503 an outage, a refused WebSocket upgrade an outage, and a 401 is the
   access refusal whatever text the server sends beside it (§3.2). One more
@@ -7258,9 +7290,21 @@ changes. Every command that opens a store gives it when the store refuses the cr
 it was given, or what that credential may do (`StoreAccessRefusedError`, section 3.2),
 under the kind `store-access-refused`. `tick` gives it for a token its deployment refuses,
 under the kind `unauthorized`. The store's own message prints only with `--reveal`, as for
-every failure of a store. On PostgreSQL and MySQL the refusals are a wrong password, a role
-that may not log in, a locked account, and a statement the role has no privilege for. On
-libSQL the refusal is a token the server answers 401 or 403.
+every failure of a store. On PostgreSQL the refusals are those the server answers with
+SQLSTATE class 28 or with 42501: a wrong password, a role that may not log in, and a
+statement the role has no privilege for. On MySQL they are the 23 numbers of section 3.2,
+among them a wrong password, a locked account and a statement the account has no privilege
+for. On libSQL the refusal is a token the server answers 401 or 403.
+
+Two refusals of PostgreSQL do not exit 4, because the server answers neither with those
+codes (section 3.2). A store URL with no password, against a server that asks for one,
+exits 6: the driver declines to log in, and its error carries no code. The driver's
+message, which says the client password must be a string, prints with `--reveal`. A role
+with no USAGE on the store's schema exits 5, under the kind `schema`: the server answers
+its statements 42P01, undefined table. The version read does not stop a `migrate` under
+such a role, since it reads a database that was never initialized. Section 3.2 says what
+the migrate does next. Both fail the same way on every repeat, until the URL or the grant
+changes.
 
 A refused libSQL token exits 4 over a `libsql:` or `https:` URL and exits 6 over a `ws:` or
 `wss:` URL. The client sends the first two over HTTP and keeps the status of the answer as

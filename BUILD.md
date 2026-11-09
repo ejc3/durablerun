@@ -7912,7 +7912,10 @@ these three things; nothing else in the system does I/O, time, or randomness.
   - What is not typed. A `ws:` or `wss:` URL, whose client carries the status only in a
     message. A libSQL server's 400, which a server answers for any request it cannot read. A
     hosted libSQL server's answer to a write under a token that may only read, which is not
-    known. A case holds each of the first two an outage.
+    known. A case holds each of the first two an outage. On PostgreSQL, a login the client
+    declines to send and a role with no USAGE on the store's schema, which the server
+    answers with no access code. Cases on a real server hold what each is answered today,
+    and PR5.6b below is the change that types them.
   - The week's workflow fetches the one commit `DURABLERUN_WEEK_COMMIT` names by its full
     id, checks it out and reads the id back, and a value that is not a full id stops the job
     before any step that opens the store. Its steps stay main's. The README's section on a
@@ -7925,6 +7928,12 @@ these three things; nothing else in the system does I/O, time, or randomness.
     libSQL statuses and their order before any reading of text, two are the PostgreSQL
     codes, two are core's definition, five are the consumers, two are the SDK's ends of a
     pass, one is the checker's kind, and three are the workflow's pin.
+- **PR5.6b the PostgreSQL refusals with no access code**: TODO. Deferred from PR5.6, and
+  outside the exit test of the live week milestone. PostgreSQL refusals that carry no access
+  SQLSTATE: a login the client declines to send (no password against a SCRAM server) and a
+  role with no USAGE on a schema on its search path. Both are answered as before this
+  change. Named change: PR5.6b, after the week. PR5.6 holds what each is answered today by
+  cases on a real server, and DESIGN.md section 3.2 says what the answers are.
 - **PR5.7 the model's wake fields**: TODO. Outside the exit test of the live week
   milestone. `specs/Scheduler.tla` says a suspension, a chain and a completion leave a
   run's wake fields as they were, and the code clears them. The model is brought to the

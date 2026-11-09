@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { PostgresStoreAdmin } from '../src/admin.js'
 import { PgExecutor, createOwnedPostgresPool } from '../src/executor.js'
+import { SCHEMA_VERSION_READ_SQL } from '../src/schema.js'
 import { openPostgresTestDb } from '../src/testing.js'
 
 /**
@@ -50,8 +52,13 @@ describe('what a real PostgreSQL server answers a role it refuses', () => {
     return url
   }
   /** The type a batch's failure has, with the SQLSTATE the server sent. */
-  const answered = (executor: PgExecutor, sql: string, mode: 'read' | 'write') =>
-    executor.batch('fixture:refused-access', [{ sql, args: [] }], mode).then(
+  const answered = (
+    executor: PgExecutor,
+    sql: string,
+    mode: 'read' | 'write',
+    label = 'fixture:refused-access',
+  ) =>
+    executor.batch(label, [{ sql, args: [] }], mode).then(
       () => 'answered',
       (error: unknown) => ({
         name: (error as Error).name,
@@ -112,6 +119,153 @@ describe('what a real PostgreSQL server answers a role it refuses', () => {
         await reader.close()
       }
     } finally {
+      await db.close()
+    }
+  })
+
+  // The two cases below record a boundary. They hold what the executor answers today for two
+  // refusals the server does not answer with class 28 or 42501, so that the list of typed
+  // refusals in DESIGN.md says no more than a server was measured to answer. Neither answer
+  // is a promise: a change that types one of these a refusal changes its case with it.
+  it('records a boundary: a URL with no password, which the client declines to send to a server that asks for one, is typed an outage', async () => {
+    const db = await openPostgresTestDb({ idNamespace: 'no-password', migrate: false })
+    // node-postgres takes a password from this variable when the URL has none.
+    const kept = process.env.PGPASSWORD
+    Reflect.deleteProperty(process.env, 'PGPASSWORD')
+    const url = new URL(serverUrl())
+    url.password = ''
+    const executor = PgExecutor.open({ connectionString: url.href })
+    try {
+      const failure: unknown = await executor
+        .batch('fixture:refused-access', [{ sql: 'SELECT 1 AS answered', args: [] }], 'read')
+        .then(
+          () => 'answered',
+          (error: unknown) => error,
+        )
+      const cause = (failure as Error).cause as Error & { code?: unknown }
+      expect({
+        name: (failure as Error).name,
+        // The driver made this error itself, before any answer of the server about the login.
+        // It is a plain Error with no code, as "Connection terminated unexpectedly" is.
+        cause: cause?.constructor?.name,
+        code: cause?.code,
+        // The control that this is the refusal measured and no other failure to connect. It
+        // is read here from the driver's message, which the executor never reads.
+        clientDeclined: /client password must be a string/.test(cause?.message ?? ''),
+        // What a caller who asks for the store's message is shown.
+        messageQuotesTheDriver: (failure as Error).message.includes(cause?.message ?? 'absent'),
+      }).toEqual({
+        name: 'StoreUnavailableError',
+        cause: 'Error',
+        code: undefined,
+        clientDeclined: true,
+        messageQuotesTheDriver: true,
+      })
+    } finally {
+      if (kept !== undefined) process.env.PGPASSWORD = kept
+      await executor.close()
+      await db.close()
+    }
+  })
+
+  it('records a boundary: a role with no USAGE on the schema is answered 42P01, so its reads are typed a schema error, and its version read does not stop a migrate', async () => {
+    const db = await openPostgresTestDb({ idNamespace: 'no-usage-of-the-schema' })
+    try {
+      const role = await db.openAsAReaderWithNoUsageOfTheSchema()
+      try {
+        const admin = new PostgresStoreAdmin(role.raw)
+        const versionBefore = await db.admin.schemaVersion()
+        const migrate = await admin.migrate().then(
+          () => 'answered',
+          (error: unknown) => ({
+            name: (error as Error).name,
+            state: ((error as Error).cause as { code?: unknown } | undefined)?.code,
+          }),
+        )
+        expect({
+          versionRead: await answered(role.raw, SCHEMA_VERSION_READ_SQL, 'read', 'migrate:version'),
+          anotherRead: await answered(role.raw, 'SELECT count(*) AS n FROM tasks', 'read'),
+          // The control: the role is refused, and the server says so with 42501, where the
+          // statement names the schema. PostgreSQL skips a schema of the search path that
+          // the role may not use, so a statement that names none finds no table.
+          readThatNamesTheSchema: await answered(
+            role.raw,
+            `SELECT count(*) AS n FROM ${db.schemaName}.tasks`,
+            'read',
+          ),
+          versionTheRoleReads: await admin.schemaVersion(),
+          ownerHasAVersion: versionBefore > 0,
+          migrate,
+          versionIsUnchanged: (await db.admin.schemaVersion()) === versionBefore,
+        }).toEqual({
+          versionRead: { name: 'SchemaNotInitializedError', state: '42P01' },
+          anotherRead: { name: 'SchemaMismatchError', state: '42P01' },
+          readThatNamesTheSchema: { name: 'StoreAccessRefusedError', state: '42501' },
+          versionTheRoleReads: 0,
+          ownerHasAVersion: true,
+          // The version read answered "never initialized", so the migrate sent its first
+          // write. What stopped it is the server: this role's search path names no schema it
+          // may create in.
+          migrate: { name: 'SchemaMismatchError', state: '3F000' },
+          versionIsUnchanged: true,
+        })
+      } finally {
+        await role.close()
+      }
+    } finally {
+      await db.close()
+    }
+  })
+
+  it('records a boundary: where the search path of such a role also names a schema it may create in, a migrate builds the tables a second time there', async () => {
+    const db = await openPostgresTestDb({ idNamespace: 'no-usage-and-a-second-schema' })
+    const control = createOwnedPostgresPool({ connectionString: serverUrl() })
+    // Generated from the lowercase identifier alphabet, as the fixture's own names are.
+    const second = `dr_cred_${db.schemaName.slice(-20)}_second`
+    let executor: PgExecutor | undefined
+    try {
+      const role = await db.openAsAReaderWithNoUsageOfTheSchema()
+      await control.query(`CREATE SCHEMA ${second}`)
+      await control.query(`GRANT USAGE, CREATE ON SCHEMA ${second} TO ${role.username}`)
+      const url = new URL(serverUrl())
+      url.username = role.username
+      url.password = role.password
+      executor = PgExecutor.open({
+        connectionString: url.href,
+        options: `-c search_path=${db.schemaName},${second}`,
+      })
+      const admin = new PostgresStoreAdmin(executor)
+      const tablesIn = async (schema: string): Promise<number> =>
+        (await control.query('SELECT 1 FROM pg_tables WHERE schemaname = $1', [schema])).rows.length
+      const version = await db.admin.schemaVersion()
+      const tables = await tablesIn(db.schemaName)
+      const migrate = await admin.migrate().then(
+        () => 'answered',
+        (error: unknown) => ({
+          name: (error as Error).name,
+          state: ((error as Error).cause as { code?: unknown } | undefined)?.code,
+        }),
+      )
+      expect({
+        storeHasTables: tables > 0,
+        migrate,
+        secondSchemaHoldsAsManyTables: (await tablesIn(second)) === tables,
+        versionTheRoleReadsIsTheBuilds: (await admin.schemaVersion()) === version,
+        storeIsUnchanged:
+          (await db.admin.schemaVersion()) === version &&
+          (await tablesIn(db.schemaName)) === tables,
+      }).toEqual({
+        storeHasTables: true,
+        migrate: 'answered',
+        secondSchemaHoldsAsManyTables: true,
+        versionTheRoleReadsIsTheBuilds: true,
+        storeIsUnchanged: true,
+      })
+    } finally {
+      await executor?.close().catch(() => undefined)
+      // The tables the role made go with the schema, and then the fixture can drop the role.
+      await control.query(`DROP SCHEMA IF EXISTS ${second} CASCADE`)
+      await control.end()
       await db.close()
     }
   })
