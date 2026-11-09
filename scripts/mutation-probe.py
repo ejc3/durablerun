@@ -23053,17 +23053,24 @@ MUTATION_SPECS.extend(
         ),
     )
 )
-for _name in (
-    "operable-week-workflow-runs-the-pinned-commit",
-    "operable-week-workflow-requires-a-full-commit-id",
-    "operable-week-workflow-reads-back-the-commit-it-checked-out",
-):
-    VERDICTS[_name] = ExpectedVerdict(
-        "behavior",
-        "packages/cli/test/operable-week-workflow.test.ts",
-        "the workflow of the operable week runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store",
-        f"mutation-verdict:behavior:{_name}",
-    )
+VERDICTS["operable-week-workflow-runs-the-pinned-commit"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store",
+    "mutation-verdict:behavior:operable-week-workflow-runs-the-pinned-commit",
+)
+VERDICTS["operable-week-workflow-requires-a-full-commit-id"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store",
+    "mutation-verdict:behavior:operable-week-workflow-requires-a-full-commit-id",
+)
+VERDICTS["operable-week-workflow-reads-back-the-commit-it-checked-out"] = ExpectedVerdict(
+    "behavior",
+    "packages/cli/test/operable-week-workflow.test.ts",
+    "the workflow of the operable week runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store",
+    "mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out",
+)
 MUTATION_SPECS.extend(
     (
         (
