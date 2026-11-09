@@ -604,7 +604,19 @@ One invocation executes one claimed run to its next suspension point:
   (§3.4). libSQL: its client reports every HTTP answer that is no success
   under one code, `SERVER_ERROR`, and keeps the status as a number on the
   error's cause. 401 and 403 are an access refusal, read from that number and
-  never from the message. A hosted libSQL server, measured on 2026-11-08,
+  never from the message. The client keeps that number for every answer but
+  one shape: under the content type `application/json` it reads the body, and
+  a body with a `message` member, or one it cannot read, becomes an error with
+  no status. A gateway in front of a server answers a token it refuses in that
+  shape. So a client the executor opens sends its requests through a `fetch`
+  of the executor's, which hands a 401 or a 403 on as plain text with the same
+  status and the same body, a shape whose status the client always keeps, and
+  hands every other answer on as it came. The status is still read in one
+  place, on the error's cause. The `fetch` throws nothing of its own, because
+  the client asks a server which protocol versions it speaks through the same
+  `fetch` and takes an answer that is no success to mean "not this version".
+  A client made elsewhere and handed to the executor sends with the `fetch`
+  its maker gave it. A hosted libSQL server, measured on 2026-11-08,
   answers 401 to a token whose signature it does not accept and to no token at
   all, and 400 to a token that is no token at all, a plain word. Three answers
   of libSQL keep the type they had, an outage. A 400: beside the measured
@@ -4036,7 +4048,18 @@ not depend on careful reading:
   on MySQL. For libSQL, what the real client throws for each status a loopback
   server answers: 401 and 403 are the access refusal, 400, 404, 429, 500 and
   503 an outage, a refused WebSocket upgrade an outage, and a 401 is the
-  access refusal whatever text the server sends beside it (§3.2).
+  access refusal whatever text the server sends beside it (§3.2). One more
+  case sends a 401 and a 403 under a table of bodies and content types, one
+  for every way the client reads an answer that is no success: no body, plain
+  text, a page, and JSON with an `error` member, with a `message` member, with
+  the wording of a missing version table or of a schema fault or the code of a
+  broken constraint as its message, null, cut short, and empty. Each is the
+  access refusal with its status, for the version read and for another read.
+  Two controls hold what the executor's `fetch` leaves alone: a statement
+  error a server answers with status 200 in the wording of a missing version
+  table is still a database that was never initialized, and a 401 on the
+  client's version requests is still taken as a version the server does not
+  speak, so the batch is typed by its own answer.
   One case holds that a failed batch is reported once and its executor serves
   the next call (§3.2). Twelve write batches in a row fail INSIDE, the first
   statement a write and the second a broken primary key, which is more than

@@ -52,11 +52,40 @@ const ACCESS_REFUSED_HTTP_STATUSES = new Set([
 ])
 
 /**
+ * The `fetch` a client this executor opens sends its requests with. It hands on an answer of
+ * one of the statuses above as plain text, with the same status and the same body, and every
+ * other answer as it came.
+ *
+ * The client keeps the status of an answer that is no success, except under one content
+ * type: for `application/json` it reads the body, and a body with a `message` member becomes
+ * an error with that message and no status, as a body it cannot read becomes an error of the
+ * reading. A gateway in front of a server answers a token it refuses in that shape. Plain
+ * text is a shape whose status the client always keeps, so the status is still read in one
+ * place, below.
+ *
+ * It throws nothing of its own. The client asks a server which protocol versions it speaks
+ * with requests of this same `fetch`, and takes an answer that is no success to mean "not
+ * this version", which a refused status handed on with its status still is.
+ */
+const fetchKeepingARefusedStatus: typeof fetch = async (...request) => {
+  const answer = await fetch(...request)
+  if (!ACCESS_REFUSED_HTTP_STATUSES.has(answer.status)) return answer
+  return new Response(await answer.text(), {
+    status: answer.status,
+    statusText: answer.statusText,
+    headers: { 'content-type': 'text/plain' },
+  })
+}
+
+/**
  * The HTTP status a driver error carries when it is one of the statuses above. The client
  * reports every HTTP answer that is no success under one code, `SERVER_ERROR`, and keeps the
  * status as a number on the error's cause, which is what is read here, and never the
- * message. A WebSocket upgrade the server refused carries its status only in its message, so
- * it has none here and keeps the type it had.
+ * message. The status is there for every body a server sends beside it because the `fetch`
+ * above hands the answer on as plain text, for a client this executor opened. A client made
+ * elsewhere and handed to the constructor sends with the `fetch` its maker gave it. A
+ * WebSocket upgrade the server refused carries its status only in its message, so it has
+ * none here and keeps the type it had.
  */
 function accessRefusedStatus(error: LibsqlError): number | undefined {
   const status = (error.cause as { status?: number } | undefined)?.status
@@ -249,7 +278,13 @@ export class LibsqlExecutor implements SqlExecutor {
     const opened = file?.url ?? url
     const before = file === undefined ? undefined : fileAt(file.path)
     const executor = new LibsqlExecutor(
-      createClient(authToken ? { url: opened, authToken } : { url: opened }),
+      createClient({
+        url: opened,
+        ...(authToken ? { authToken } : {}),
+        // Used where the client opens the URL over HTTP. A database file, a private database
+        // in memory and a WebSocket send no request with it.
+        fetch: fetchKeepingARefusedStatus,
+      }),
       file !== undefined,
     )
     executor.ownsClient = true
