@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -192,6 +200,27 @@ function runCheckout(
   return { status: run.status, git: sent }
 }
 
+/**
+ * What the real `git` is run under in the case that runs it: no configuration of the
+ * machine or of a user, and an author the case names.
+ */
+const GIT_ALONE = {
+  PATH: process.env.PATH ?? '',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'example-name',
+  GIT_AUTHOR_EMAIL: 'example-name@example.invalid',
+  GIT_COMMITTER_NAME: 'example-name',
+  GIT_COMMITTER_EMAIL: 'example-name@example.invalid',
+}
+
+/** Run the real `git` in a directory: what it printed, and a throw when it failed. */
+function git(cwd: string, ...argv: string[]): string {
+  const run = spawnSync('git', argv, { cwd, env: GIT_ALONE, encoding: 'utf8' })
+  if (run.status !== 0) throw new Error(`git ${argv.join(' ')} failed: ${run.stderr}`)
+  return run.stdout.trim()
+}
+
 /** A full commit id: 40 lowercase hexadecimal digits. */
 const PINNED_COMMIT = '0123456789abcdef0123456789abcdef01234567'
 
@@ -322,6 +351,88 @@ describe('the workflow of the operable week', () => {
     // after a failure, so a refused value stops the job before any command opens the store.
     expect(job.steps.findIndex(holdsASecret)).toBeGreaterThan(0)
     expect(job.steps.filter((one) => one['continue-on-error'] !== undefined)).toEqual([])
+  }, 120_000)
+
+  it('holds the pinned commit to the history of main, under a real git and a repository on this disk: a commit main holds is checked out, a commit of a branch that was never merged stops the step though the fetch by its id hands it over, and so does a commit that tracks a file the job would keep as a report', () => {
+    const step = stepNamed(CHECKOUT)
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-operable-week-origin-'))
+    try {
+      const repository = 'example-owner/example-repository'
+      const origin = join(dir, `${repository}.git`)
+      mkdirSync(origin, { recursive: true })
+      git(origin, 'init', '--quiet', '--initial-branch=main', '.')
+      // GitHub hands over, by its id, any commit of the repository and of its forks. This
+      // setting makes the repository of the case do the same.
+      git(origin, 'config', 'uploadpack.allowAnySHA1InWant', 'true')
+      const commit = (message: string): string => {
+        git(origin, 'commit', '--quiet', '--allow-empty', '-m', message)
+        return git(origin, 'rev-parse', 'HEAD')
+      }
+      const first = commit('the first commit of main')
+      git(origin, 'checkout', '--quiet', '-b', 'never-merged')
+      const neverMerged = commit('a commit main never took')
+      git(origin, 'checkout', '--quiet', 'main')
+      const second = commit('the second commit of main')
+      writeFileSync(join(origin, 'week-notes.json'), '{}\n')
+      git(origin, 'add', 'week-notes.json')
+      const tracksAReportName = commit(
+        'the newest commit of main, which tracks a file named week-*',
+      )
+      // The step's script names the repository by its URL at GitHub. Git is told to read
+      // that URL as the directory of the case, so the script runs as it stands and reaches
+      // no network.
+      const checkout = (pinned: string) => {
+        const work = mkdtempSync(join(dir, 'work-'))
+        const run = runScript(step.run, {
+          cwd: work,
+          env: {
+            ...GIT_ALONE,
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: `url.file://${dir}/.insteadOf`,
+            GIT_CONFIG_VALUE_0: 'https://github.com/',
+            DURABLERUN_SOURCE_REPOSITORY: repository,
+            DURABLERUN_WEEK_COMMIT: pinned,
+          },
+        })
+        return {
+          status: run.status,
+          // Every commit of the case reaches the checkout, so a refusal below is the
+          // step's own check and no failure of the fetch.
+          checkedOut: git(work, 'rev-parse', 'HEAD') === pinned,
+          refusal: run.stderr.split('\n').filter((line) => /^The (pinned )?commit /.test(line)),
+        }
+      }
+      // A commit main holds is taken, the newest but one and the first alike.
+      const taken = { status: 0, checkedOut: true, refusal: [] }
+      expect({ second: checkout(second), first: checkout(first) }).toEqual({
+        second: taken,
+        first: taken,
+      })
+      expect(
+        checkout(neverMerged),
+        'mutation-verdict:behavior:operable-week-workflow-holds-the-pinned-commit-to-main',
+      ).toEqual({
+        status: 1,
+        checkedOut: true,
+        refusal: [
+          'The pinned commit is not on main: set DURABLERUN_WEEK_COMMIT to a commit main holds.',
+        ],
+      })
+      // The newest commit of main is refused for the file alone, so main's newest commit
+      // passed the check before it.
+      expect(
+        checkout(tracksAReportName),
+        'mutation-verdict:behavior:operable-week-workflow-refuses-a-commit-that-tracks-a-report-name',
+      ).toEqual({
+        status: 1,
+        checkedOut: true,
+        refusal: [
+          'The pinned commit tracks a file named week-*, which the job would keep as a report.',
+        ],
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }, 120_000)
 
   it('requires the pinned database before any step holds the credential, and no action and no job environment holds it', () => {
