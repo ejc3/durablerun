@@ -7932,6 +7932,14 @@ these three things; nothing else in the system does I/O, time, or randomness.
     the consumers, two are the SDK's ends of a pass, one is the checker's kind, and six are
     the workflow's pin. The registry's own copy of the MySQL numbers is held to the
     executor's list by the registry's self-test.
+  - The fold of the one review (`postmortems/pr5.6-store-credential-error-review.md`). It
+    found nine things, none HIGH, three MEDIUM and six LOW, and all count. A libSQL 401 or
+    403 under a JSON body with a `message` member is an access refusal, through a `fetch` of
+    the executor's. The two PostgreSQL refusals above are the same on main and are held by
+    cases, and DESIGN.md says which codes are typed. The workflow holds the pinned commit to
+    main's history. The server fixtures drop every reader at their close. DESIGN.md names
+    the MySQL login refusals outside the list, and the README says which refused tokens
+    were measured.
 - **PR5.6b the PostgreSQL refusals with no access code**: TODO. Deferred from PR5.6, and
   outside the exit test of the live week milestone. PostgreSQL refusals that carry no access
   SQLSTATE: a login the client declines to send (no password against a SCRAM server) and a
