@@ -22,7 +22,7 @@ export const EXITS = Object.freeze([
     code: 4,
     name: 'unauthorized',
     meaning:
-      'the deployment tick called refused the token it was sent; a wrong store credential exits 6',
+      'the store refused the credential it was given, or what that credential may do, or the deployment tick called refused the token it was sent; a repeat fails the same way until the credential changes',
   },
   {
     code: 5,
@@ -34,7 +34,7 @@ export const EXITS = Object.freeze([
     code: 6,
     name: 'unavailable',
     meaning:
-      'the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a wrong store credential exits 6 too',
+      'the store is unavailable, or the deployment tick called could not be reached, did not answer in time, or answered that it cannot now (408, 425, 429, or a 5xx that is not a 500 of a hosted route itself); safe to repeat, with retries capped, because a repeat is not sure to succeed',
   },
   {
     code: 7,

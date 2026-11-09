@@ -76,8 +76,9 @@ function trustedStoreOutcome(error: unknown): WorkerOutcome {
 }
 
 /**
- * The infrastructure-failure classification, in ONE place: a lost lease and
- * a store outage each abort the pass without spending the user's budget,
+ * The infrastructure-failure classification, in ONE place: a lost lease, a
+ * store outage and a store's refusal of its credential each abort the pass
+ * without spending the user's budget,
  * and every transition write (complete, suspend, fail, the rolling-deploy
  * defer) and the handler boundary must treat them identically. Two of the
  * five call sites once open-coded this and silently dropped the outage arm; a
@@ -99,6 +100,8 @@ function infrastructureOutcome(
       return { kind: 'lease-lost' }
     case 'run-cancelled':
       return { kind: 'cancelled' }
+    // An outage, and a refused credential, which is this control too: the lease recovers the
+    // run once the store answers, and none of the task's attempts is spent on it.
     case 'store-unavailable':
     // A permanent answer of the store ends the pass exactly as an outage does. It is not
     // the task's failure, so it may not spend the task's attempts, and no transition exists

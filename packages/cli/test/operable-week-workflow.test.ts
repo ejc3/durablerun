@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -12,7 +20,8 @@ import { ROOT } from './support.js'
 /**
  * The workflow of the maintainer's week (BUILD.md exit test line 44 and receipt M1) holds a
  * database credential, writes each hour and deletes each day. These cases read the workflow
- * file: its one job is off until one repository variable is set, the job requires the
+ * file: its one job is off until one repository variable is set, the job runs the CLI of
+ * the one commit another variable pins, it requires the
  * pinned database before any step holds the credential, and its two command steps, run here
  * against a stand-in for `pnpm` under the shell GitHub runs a step with, send the commands
  * as the verbs take them, each one that writes naming the pinned database as its target,
@@ -57,6 +66,7 @@ const [job] = Object.values(workflow.jobs)
 if (job === undefined) throw new Error('the workflow has no job')
 
 const GATE = "vars.DURABLERUN_WEEK_ENABLED == 'true'"
+const CHECKOUT = 'Check out the pinned commit of this public repository without a token'
 const GUARD = 'Require the pinned dedicated database'
 const ENQUEUE = 'Enqueue the digest of this hour under its key'
 const DAILY = 'Sample the queue, then purge until nothing more stands'
@@ -89,10 +99,13 @@ process.stderr.write('a-line-on-stderr\\n')
 process.exit(verb === process.env.STUB_FAIL ? 6 : 0)
 `
 
-interface StepRun {
+interface ScriptRun {
   readonly status: number | null
   readonly stdout: string
   readonly stderr: string
+}
+
+interface StepRun extends ScriptRun {
   /** The command lines the step sent, each as the arguments after \`pnpm --silent cli\`. */
   readonly sent: string[][]
   /** The files the step left, by name. */
@@ -110,7 +123,7 @@ const SHELL = ['--noprofile', '--norc', '-eo', 'pipefail']
 function runScript(
   script: string | undefined,
   options: { cwd: string; env: Readonly<Record<string, string>> },
-): { status: number | null; stdout: string; stderr: string } {
+): ScriptRun {
   const file = join(mkdtempSync(join(tmpdir(), 'durablerun-operable-week-step-')), 'step.sh')
   try {
     writeFileSync(file, script ?? '')
@@ -121,36 +134,36 @@ function runScript(
   }
 }
 
-/** Run a step's script as GitHub does, with the stand-in first on the PATH, in a directory of its own. */
-function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
+/**
+ * Run a step's script as GitHub does, in a directory of its own, with a stand-in for one
+ * command first on the PATH: the run, every argument list the stand-in was sent, and the
+ * files the script left.
+ */
+function runWithStandIn(
+  step: Step,
+  command: string,
+  standIn: string,
+  env: Readonly<Record<string, string>>,
+): { run: ScriptRun; sent: string[][]; files: Record<string, string> } {
   const dir = mkdtempSync(join(tmpdir(), 'durablerun-operable-week-'))
   try {
     const bin = join(dir, 'bin')
     const work = join(dir, 'work')
     spawnSync('mkdir', ['-p', bin, work])
-    writeFileSync(join(bin, 'pnpm'), STUB)
-    chmodSync(join(bin, 'pnpm'), 0o755)
+    writeFileSync(join(bin, command), standIn)
+    chmodSync(join(bin, command), 0o755)
     const log = join(dir, 'sent.log')
+    writeFileSync(log, '')
     const run = runScript(step.run, {
       cwd: work,
       env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, ...env },
     })
-    const sent = (() => {
-      try {
-        return readFileSync(log, 'utf8')
-          .split('\n')
-          .filter((line) => line !== '')
-          .map((line) => JSON.parse(line) as string[])
-      } catch {
-        return []
-      }
-    })()
-    for (const argv of sent) expect(argv.slice(0, 2)).toEqual(['--silent', 'cli'])
     return {
-      status: run.status,
-      stdout: run.stdout,
-      stderr: run.stderr,
-      sent: sent.map((argv) => argv.slice(2)),
+      run,
+      sent: readFileSync(log, 'utf8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => JSON.parse(line) as string[]),
       files: Object.fromEntries(
         readdirSync(work).map((name) => [name, readFileSync(join(work, name), 'utf8')]),
       ),
@@ -159,6 +172,57 @@ function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+/** Run a step's script with the stand-in for `pnpm`, which every step calls as the CLI. */
+function runStep(step: Step, env: Readonly<Record<string, string>>): StepRun {
+  const { run, sent, files } = runWithStandIn(step, 'pnpm', STUB, env)
+  for (const argv of sent) expect(argv.slice(0, 2)).toEqual(['--silent', 'cli'])
+  return { ...run, sent: sent.map((argv) => argv.slice(2)), files }
+}
+
+/**
+ * A stand-in for `git` on the PATH of the checkout step: it records its arguments, and
+ * answers `rev-parse HEAD` with the commit the test says was checked out.
+ */
+const GIT_STUB = `#!/usr/bin/env node
+const fs = require('node:fs')
+const argv = process.argv.slice(2)
+fs.appendFileSync(process.env.STUB_LOG, JSON.stringify(argv) + '\\n')
+if (argv[0] === 'rev-parse') process.stdout.write(process.env.STUB_HEAD + '\\n')
+`
+
+/** Run the checkout step's script with the stand-in for `git`: its exit, and what it sent `git`. */
+function runCheckout(
+  step: Step,
+  env: Readonly<Record<string, string>>,
+): { status: number | null; git: string[][] } {
+  const { run, sent } = runWithStandIn(step, 'git', GIT_STUB, env)
+  return { status: run.status, git: sent }
+}
+
+/**
+ * What the real `git` is run under in the case that runs it: no configuration of the
+ * machine or of a user, and an author the case names.
+ */
+const GIT_ALONE = {
+  PATH: process.env.PATH ?? '',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'example-name',
+  GIT_AUTHOR_EMAIL: 'example-name@example.invalid',
+  GIT_COMMITTER_NAME: 'example-name',
+  GIT_COMMITTER_EMAIL: 'example-name@example.invalid',
+}
+
+/** Run the real `git` in a directory: what it printed, and a throw when it failed. */
+function git(cwd: string, ...argv: string[]): string {
+  const run = spawnSync('git', argv, { cwd, env: GIT_ALONE, encoding: 'utf8' })
+  if (run.status !== 0) throw new Error(`git ${argv.join(' ')} failed: ${run.stderr}`)
+  return run.stdout.trim()
+}
+
+/** A full commit id: 40 lowercase hexadecimal digits. */
+const PINNED_COMMIT = '0123456789abcdef0123456789abcdef01234567'
 
 /** The pinned URL of the cases, which carries a path and a query. */
 const PINNED_URL = 'libsql://week-database.example/path?mode=x'
@@ -199,6 +263,184 @@ describe('the workflow of the operable week', () => {
     expect(workflow.permissions).toEqual({})
     expect(job.permissions).toBeUndefined()
   })
+
+  it('runs the CLI of the commit a repository variable pins and of no other, and an unset or short value stops the job before any step that opens the store', () => {
+    // The checkout is the job's first step, so no step runs a command of another commit
+    // before it, and it runs whichever operation follows.
+    const step = stepNamed(CHECKOUT)
+    expect({ first: job.steps[0]?.name, when: step.if }).toEqual({
+      first: CHECKOUT,
+      when: undefined,
+    })
+    // It is handed the repository's name and the variable, and nothing that names the commit
+    // of the run: for a schedule that is the newest commit of the default branch.
+    expect(
+      step.env,
+      'mutation-verdict:behavior:operable-week-workflow-runs-the-pinned-commit',
+    ).toEqual({
+      DURABLERUN_SOURCE_REPOSITORY: '${{ github.repository }}',
+      DURABLERUN_WEEK_COMMIT: '${{ vars.DURABLERUN_WEEK_COMMIT }}',
+    })
+    // No other part of the workflow names a commit, a ref or a checkout. These are every
+    // value of the run the workflow reads, and none is the run's commit or its ref. The host
+    // name in the repository's URL follows a slash and is none of them. No step uses an
+    // action that checks out, and no other step's script runs git.
+    const whole = JSON.stringify(workflow)
+    expect([...new Set(whole.match(/(?<![\w/.])github\.[a-z_.]+/g))].sort()).toEqual([
+      'github.event.schedule',
+      'github.repository',
+      'github.run_attempt',
+      'github.run_id',
+    ])
+    expect(job.steps.map((one) => one.uses).filter((uses) => uses !== undefined)).toEqual([
+      'pnpm/action-setup@v4',
+      'actions/setup-node@v4',
+      'actions/upload-artifact@v4',
+    ])
+    expect(job.steps.filter((one) => /\bgit\b/.test(one.run ?? '')).map((one) => one.name)).toEqual(
+      [CHECKOUT],
+    )
+    const repository = 'example-owner/example-repository'
+    const checkout = (commit: string | undefined, head = commit) =>
+      runCheckout(step, {
+        DURABLERUN_SOURCE_REPOSITORY: repository,
+        ...(commit === undefined ? {} : { DURABLERUN_WEEK_COMMIT: commit }),
+        STUB_HEAD: head ?? '',
+      })
+    // A full id is fetched alone, by its id, and checked out, and the commit that was checked
+    // out is read back. Then main is fetched whole, the commit is asked for in its history,
+    // and the names the commit tracks are read. The case below runs those under a real git.
+    expect(checkout(PINNED_COMMIT)).toEqual({
+      status: 0,
+      git: [
+        ['init', '.'],
+        ['remote', 'add', 'origin', `https://github.com/${repository}.git`],
+        ['fetch', '--no-tags', '--depth=1', 'origin', PINNED_COMMIT],
+        ['checkout', '--detach', 'FETCH_HEAD'],
+        ['rev-parse', 'HEAD'],
+        ['fetch', '--no-tags', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
+        ['merge-base', '--is-ancestor', PINNED_COMMIT, 'origin/main'],
+        ['ls-files', 'week-*'],
+      ],
+    })
+    // A checkout that left another commit fails the step.
+    expect(
+      checkout(PINNED_COMMIT, PINNED_COMMIT.replace('0', 'f')).status,
+      'mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out',
+    ).toBe(1)
+    // A value that is no full id stops the step before git is run at all: unset, empty, a
+    // short id, an id one digit short and one digit long, upper case, a branch, a tag, and a
+    // full id beside another word.
+    const refused = {
+      unset: undefined,
+      empty: '',
+      short: PINNED_COMMIT.slice(0, 7),
+      oneShort: PINNED_COMMIT.slice(0, 39),
+      oneLong: `${PINNED_COMMIT}0`,
+      upperCase: PINNED_COMMIT.toUpperCase(),
+      branch: 'main',
+      tag: 'v0.1.0-alpha.1',
+      twoWords: `${PINNED_COMMIT} main`,
+      twoLines: `${PINNED_COMMIT}\nmain`,
+    }
+    expect(
+      Object.fromEntries(
+        Object.entries(refused).map(([name, commit]) => [name, checkout(commit, PINNED_COMMIT)]),
+      ),
+      'mutation-verdict:behavior:operable-week-workflow-requires-a-full-commit-id',
+    ).toEqual(
+      Object.fromEntries(Object.keys(refused).map((name) => [name, { status: 1, git: [] }])),
+    )
+    // The step comes before the first step that holds the credential, and no step carries on
+    // after a failure, so a refused value stops the job before any command opens the store.
+    expect(job.steps.findIndex(holdsASecret)).toBeGreaterThan(0)
+    expect(job.steps.filter((one) => one['continue-on-error'] !== undefined)).toEqual([])
+  }, 120_000)
+
+  it('holds the pinned commit to the history of main, under a real git and a repository on this disk: a commit main holds is checked out, a commit of a branch that was never merged stops the step though the fetch by its id hands it over, and so does a commit that tracks a file the job would keep as a report', () => {
+    const step = stepNamed(CHECKOUT)
+    const dir = mkdtempSync(join(tmpdir(), 'durablerun-operable-week-origin-'))
+    try {
+      const repository = 'example-owner/example-repository'
+      const origin = join(dir, `${repository}.git`)
+      mkdirSync(origin, { recursive: true })
+      git(origin, 'init', '--quiet', '--initial-branch=main', '.')
+      // GitHub hands over, by its id, any commit of the repository and of its forks. This
+      // setting makes the repository of the case do the same.
+      git(origin, 'config', 'uploadpack.allowAnySHA1InWant', 'true')
+      const commit = (message: string): string => {
+        git(origin, 'commit', '--quiet', '--allow-empty', '-m', message)
+        return git(origin, 'rev-parse', 'HEAD')
+      }
+      const first = commit('the first commit of main')
+      git(origin, 'checkout', '--quiet', '-b', 'never-merged')
+      const neverMerged = commit('a commit main never took')
+      git(origin, 'checkout', '--quiet', 'main')
+      const second = commit('the second commit of main')
+      writeFileSync(join(origin, 'week-notes.json'), '{}\n')
+      git(origin, 'add', 'week-notes.json')
+      const tracksAReportName = commit(
+        'the newest commit of main, which tracks a file named week-*',
+      )
+      // The step's script names the repository by its URL at GitHub. Git is told to read
+      // that URL as the directory of the case, so the script runs as it stands and reaches
+      // no network.
+      const checkout = (pinned: string) => {
+        const work = mkdtempSync(join(dir, 'work-'))
+        const run = runScript(step.run, {
+          cwd: work,
+          env: {
+            ...GIT_ALONE,
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: `url.file://${dir}/.insteadOf`,
+            GIT_CONFIG_VALUE_0: 'https://github.com/',
+            DURABLERUN_SOURCE_REPOSITORY: repository,
+            DURABLERUN_WEEK_COMMIT: pinned,
+          },
+        })
+        return {
+          status: run.status,
+          // Every commit of the case reaches the checkout, so a refusal below is the
+          // step's own check and no failure of the fetch.
+          checkedOut: git(work, 'rev-parse', 'HEAD') === pinned,
+          refusal: run.stderr.split('\n').filter((line) => /^The (pinned )?commit /.test(line)),
+        }
+      }
+      // A commit main holds is taken, the newest but one and the first alike.
+      const taken = { status: 0, checkedOut: true, refusal: [] }
+      expect(
+        { second: checkout(second), first: checkout(first) },
+        'mutation-verdict:behavior:operable-week-workflow-fetches-the-whole-of-main',
+      ).toEqual({
+        second: taken,
+        first: taken,
+      })
+      expect(
+        checkout(neverMerged),
+        'mutation-verdict:behavior:operable-week-workflow-holds-the-pinned-commit-to-main',
+      ).toEqual({
+        status: 1,
+        checkedOut: true,
+        refusal: [
+          'The pinned commit is not on main: set DURABLERUN_WEEK_COMMIT to a commit main holds.',
+        ],
+      })
+      // The newest commit of main is refused for the file alone, so main's newest commit
+      // passed the check before it.
+      expect(
+        checkout(tracksAReportName),
+        'mutation-verdict:behavior:operable-week-workflow-refuses-a-commit-that-tracks-a-report-name',
+      ).toEqual({
+        status: 1,
+        checkedOut: true,
+        refusal: [
+          'The pinned commit tracks a file named week-*, which the job would keep as a report.',
+        ],
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 120_000)
 
   it('requires the pinned database before any step holds the credential, and no action and no job environment holds it', () => {
     expect(holdsASecret(workflow.env)).toBe(false)

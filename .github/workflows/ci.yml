@@ -341,11 +341,37 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import re
           from pathlib import Path
           base = Path('/tmp/base/scripts/mutation-probe.py')
           previous = base.read_text()
           candidate = Path('scripts/mutation-probe.py').read_text()
           digest = hashlib.sha256(previous.encode()).hexdigest()
+          def reaim_entry(repaired, candidate, name):
+              # Replace one entry of the base registry with this tree's entry of the same name, for a
+              # mutation whose target line this tree rewrote. Its name must stand, and so must
+              # whatever comment the entry opens with, so only the file, the find, the replacement and
+              # the description move. The file moves when the text a mutant rewrites moved to another
+              # file, as a consumer's line does when core takes it over. An entry stands at the top of
+              # the list or inside an extension of it, and its name may also stand in the verdict
+              # group that lists it, so the entry is the one whose next line is its file.
+              def span(text):
+                  found = list(re.finditer(
+                      r'^(?P<indent> +)\(\n(?:(?P=indent)    #[^\n]*\n)*(?P=indent)    "' + re.escape(name) + r'",\n(?P=indent)    "packages/',
+                      text,
+                      re.M,
+                  ))
+                  if len(found) != 1:
+                      raise SystemExit(f'{name}: the bridge requires exactly one entry.')
+                  entry = found[0]
+                  named = entry.end() - len(entry.group('indent') + '    "packages/')
+                  close = '\n' + entry.group('indent') + '),\n'
+                  return entry.start(), named, text.index(close, named) + len(close)
+              start, named, end = span(repaired)
+              new_start, new_named, new_end = span(candidate)
+              if repaired[start:named] != candidate[new_start:new_named]:
+                  raise SystemExit(f'{name}: the bridge may change only file, find, replacement, and description.')
+              return repaired[:start] + candidate[new_start:new_end] + repaired[end:]
           def exempt(repaired, candidate, markers):
               # Exempt verdict markers this tree registers and the base registry predates.
               table = 'VERDICT_MARKER_EXEMPTIONS = {\n'
@@ -359,51 +385,62 @@ jobs:
                   for marker in markers
               )
               return repaired.replace(table, table + entries)
-          if digest == 'd92ef6f06c840199a9b596620f0d89a4cec25739e956601708b777e621f5f975':
-              # The self-test command, the week receipt's checker and the workflow of the week
-              # register forty-six mutations: seventeen caught by cases of `selftest` and of the
-              # opener, twenty-two by cases of the week receipt's checker, and seven by cases that
-              # read the week's workflow. Their cases carry thirty-seven verdict markers, because
-              # nine of the mutations are caught under the marker of another. Each marker is newer
-              # than the base registry, so each is exempted there. No base entry is re-aimed.
-              repaired = exempt(previous, candidate, (
-                  "mutation-verdict:behavior:cli-keeps-what-is-sent-for-selftest-alone",
-                  "mutation-verdict:behavior:cli-opener-keeps-a-record-only-when-asked",
-                  "mutation-verdict:behavior:cli-selftest-checks-what-each-call-answered",
-                  "mutation-verdict:behavior:cli-selftest-declares-or-names-every-label",
-                  "mutation-verdict:behavior:cli-selftest-marks-every-label-a-step-was-answered-under",
-                  "mutation-verdict:behavior:cli-selftest-names-the-labels-a-step-that-failed-was-answered-under",
-                  "mutation-verdict:behavior:cli-selftest-prints-a-label-by-what-was-sent",
-                  "mutation-verdict:behavior:cli-selftest-prints-a-stored-state-as-any-command-does",
-                  "mutation-verdict:behavior:cli-selftest-prints-no-text-a-database-answered",
-                  "mutation-verdict:behavior:cli-selftest-reads-a-refused-row-as-an-answer",
-                  "mutation-verdict:behavior:cli-selftest-refuses-a-queue-that-holds-rows",
-                  "mutation-verdict:behavior:cli-selftest-refuses-a-schema-that-is-not-the-builds",
-                  "mutation-verdict:behavior:operable-week-workflow-enqueues-under-the-periods-key",
-                  "mutation-verdict:behavior:operable-week-workflow-is-off-until-enabled",
-                  "mutation-verdict:behavior:operable-week-workflow-names-the-pinned-target",
-                  "mutation-verdict:behavior:operable-week-workflow-purges-until-no-more-remain",
-                  "mutation-verdict:behavior:operable-week-workflow-requires-the-pinned-database",
-                  "mutation-verdict:behavior:operable-week-workflow-stops-at-a-report-it-cannot-read",
-                  "mutation-verdict:behavior:week-receipt-allows-the-injected-task-its-rows",
-                  "mutation-verdict:behavior:week-receipt-allows-the-runs-it-shows",
-                  "mutation-verdict:behavior:week-receipt-counts-a-unit-whose-answer-was-lost",
-                  "mutation-verdict:behavior:week-receipt-fails-closed",
-                  "mutation-verdict:behavior:week-receipt-reads-a-purge-that-reached-no-unit",
-                  "mutation-verdict:behavior:week-receipt-reads-no-refusal-of-a-purge-as-a-run",
-                  "mutation-verdict:behavior:week-receipt-reads-what-the-cli-prints",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-count-over-the-bound",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-day-without-a-purge",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-failed-window-too-long",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-missing-daily-snapshot",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-seal-that-does-not-match",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-span-under-seven-days",
-                  "mutation-verdict:behavior:week-receipt-refuses-a-test-clock",
-                  "mutation-verdict:behavior:week-receipt-refuses-an-explanation-of-another-cause",
-                  "mutation-verdict:behavior:week-receipt-refuses-an-unknown-kind",
-                  "mutation-verdict:behavior:week-receipt-refuses-fewer-than-160-periods",
-                  "mutation-verdict:behavior:week-receipt-refuses-no-selftest-record",
-                  "mutation-verdict:behavior:week-receipt-unit-rows-are-the-measured-rows",
+          if digest == '3b33b17acde617303a2e5bdd881fcb821243d9ad3cbad8411f252fb8dbdc2c3f':
+              # A store's refusal of a credential became a type of its own, and core holds the one
+              # table of the kinds of store failure. The worker's control, the contest of the
+              # self-concurrency surface and the CLI each tested the store's failure types in a
+              # chain of their own, and each now reads that table, so seven base entries follow
+              # their lines: an outage and a permanent answer as controls of a pass, the type check
+              # captured at load, which core's one function now makes, how a contest books a
+              # permanent answer, the exit of an outage, and a read that follows an answered write.
+              # Each is the mutant it was. This tree also registers fifty-six mutations the base
+              # predates: fifteen for the type, its table and what each consumer does with it, ten
+              # for the answer the libSQL executor keeps a refused status under, one for each of
+              # the twenty-three MySQL error numbers typed an access refusal, two for the list
+              # those numbers are held to, and six for the commit the week's workflow runs. Their
+              # cases carry twenty-eight verdict markers, because the twenty-three numbers share
+              # one marker and six others are caught under the marker of another. Each marker is
+              # exempted there.
+              repaired = previous
+              for name in (
+                  'task-control-store-outage-auth',
+                  'task-control-store-typed-only',
+                  'task-control-ordinary-store-has-instance',
+                  'sdk-permanent-store-error-aborts-the-pass',
+                  'contest-books-a-permanent-store-error-as-an-outage',
+                  'cli-unavailable-store-exits-6',
+                  'cli-enqueue-answers-a-repeat-it-cannot-read-back',
+              ):
+                  repaired = reaim_entry(repaired, candidate, name)
+              repaired = exempt(repaired, candidate, (
+                  "mutation-verdict:behavior:cli-refused-credential-exits-4",
+                  "mutation-verdict:behavior:contest-books-a-refused-credential-as-an-outage",
+                  "mutation-verdict:behavior:hosted-answers-503-for-a-refused-credential",
+                  "mutation-verdict:behavior:libsql-401-is-an-access-refusal",
+                  "mutation-verdict:behavior:libsql-executor-client-types-as-a-bare-client",
+                  "mutation-verdict:behavior:libsql-fetch-is-taken-when-the-module-loads",
+                  "mutation-verdict:behavior:libsql-other-status-is-handed-on-as-it-came",
+                  "mutation-verdict:behavior:libsql-refused-answer-copies-no-reason-phrase",
+                  "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-and-not-thrown",
+                  "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-for-the-client-to-drop",
+                  "mutation-verdict:behavior:libsql-refused-answer-is-handed-on-unread",
+                  "mutation-verdict:behavior:libsql-refused-status-is-kept-under-every-body",
+                  "mutation-verdict:behavior:libsql-refused-status-is-read-before-message-text",
+                  "mutation-verdict:behavior:mysql-error-1045-is-an-access-refusal",
+                  "mutation-verdict:behavior:mysql-error-list-holds-the-account-refusals",
+                  "mutation-verdict:behavior:operable-week-workflow-fetches-the-whole-of-main",
+                  "mutation-verdict:behavior:operable-week-workflow-holds-the-pinned-commit-to-main",
+                  "mutation-verdict:behavior:operable-week-workflow-reads-back-the-commit-it-checked-out",
+                  "mutation-verdict:behavior:operable-week-workflow-refuses-a-commit-that-tracks-a-report-name",
+                  "mutation-verdict:behavior:operable-week-workflow-requires-a-full-commit-id",
+                  "mutation-verdict:behavior:operable-week-workflow-runs-the-pinned-commit",
+                  "mutation-verdict:behavior:postgres-missing-privilege-is-an-access-refusal",
+                  "mutation-verdict:behavior:postgres-refused-credential-class-is-an-access-refusal",
+                  "mutation-verdict:behavior:sdk-store-access-refusal-aborts-the-pass",
+                  "mutation-verdict:behavior:sdk-store-access-refusal-ends-the-pass-for-every-flow",
+                  "mutation-verdict:behavior:store-failure-kind-reads-every-type-of-the-table",
+                  "mutation-verdict:behavior:store-failure-kind-total-fallback",
+                  "mutation-verdict:behavior:week-receipt-reads-a-purge-a-refused-credential-stopped",
               ))
           else:
               print('Base registry does not need the re-aim bridge.')

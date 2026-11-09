@@ -10,6 +10,7 @@ import {
   type SqlRow,
   type SqlStatement,
   type SqlTransactionLock,
+  StoreAccessRefusedError,
   StoreUnavailableError,
   isTreeBuiltRead,
   refuseUnknownLockKind,
@@ -44,11 +45,31 @@ const SCHEMA_MISMATCH_SQLSTATES = new Set([
 ])
 
 /**
+ * The SQLSTATE class whose every code says the server refused the credential: 28, invalid
+ * authorization specification. A password that is not the role's is 28P01, and a role that
+ * may not log in, or that no rule of the server lets in, is 28000.
+ */
+const ACCESS_REFUSED_SQLSTATE_CLASS = '28'
+
+/**
+ * SQLSTATE insufficient_privilege: the role may not send this statement. PostgreSQL files it
+ * in class 42 beside a syntax error, so it is read before the permanent classes. The
+ * statement is fine, and a grant to the role changes the answer.
+ */
+const INSUFFICIENT_PRIVILEGE = '42501'
+
+/** Whether a SQLSTATE says the server refused the credential, or what it may do. */
+function isAccessRefusal(code: string): boolean {
+  return code.slice(0, 2) === ACCESS_REFUSED_SQLSTATE_CLASS || code === INSUFFICIENT_PRIVILEGE
+}
+
+/**
  * SQLSTATE classes whose every code says the statement was refused for good, with these
  * values: 22 data exception, 23 integrity constraint violation, and 42 syntax error or
  * access rule violation. The same batch fails the same way on every retry. The schema
  * mismatch states above are read first, because a migration repairs those and they keep
- * their own type.
+ * their own type, and so is a missing privilege, which is in class 42 and is an access
+ * refusal.
  *
  * Every other class is an outage: 08 connection exception, 40 transaction rollback (a
  * serialization failure, and a deadlock victim, which the executor runs again before it
@@ -398,6 +419,12 @@ function classifyError(error: unknown, label: string, schemaVersionRead: boolean
     if (error.code !== undefined && SCHEMA_MISMATCH_SQLSTATES.has(error.code)) {
       return new SchemaMismatchError(
         `batch(${label}) hit a schema this build does not expect (SQLSTATE ${error.code}): ${error.message}`,
+        { cause: error },
+      )
+    }
+    if (error.code !== undefined && isAccessRefusal(error.code)) {
+      return new StoreAccessRefusedError(
+        `batch(${label}) was refused access (SQLSTATE ${error.code}): ${error.message}`,
         { cause: error },
       )
     }

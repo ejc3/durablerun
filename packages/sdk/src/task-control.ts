@@ -3,11 +3,11 @@ import {
   type ClaimedRun,
   type LeaseEnd,
   LeaseLostError,
-  PermanentStoreError,
   RunCancelledError,
-  StoreUnavailableError,
+  type StoreFailureKind,
   SuspendSignal,
   type WakeSpec,
+  storeFailureKind,
 } from '@durablerun/core'
 import { taskHasOwn } from './intrinsics.js'
 
@@ -77,6 +77,24 @@ const RUN_CANCELLED = freeze({ kind: 'run-cancelled' } as const)
 const STORE_UNAVAILABLE = freeze({ kind: 'store-unavailable' } as const)
 const STORE_PERMANENT = freeze({ kind: 'store-permanent' } as const)
 
+/**
+ * The control each kind of store failure is, keyed by core's one definition of the kinds, so
+ * a kind added there fails the typecheck here until it has an entry. An outage, a refused
+ * credential and a permanent answer are infrastructure: left to fall through, each would
+ * reach task code as an ordinary error and be billed to the task's own attempts. A schema
+ * error is no control of the pass in this build: it reaches the task as it did (DESIGN.md
+ * §3.2).
+ */
+const STORE_FAILURE_CONTROLS: Readonly<
+  Record<StoreFailureKind, InfrastructureControlSnapshot | undefined>
+> = freeze({
+  unavailable: STORE_UNAVAILABLE,
+  'access-refused': STORE_UNAVAILABLE,
+  permanent: STORE_PERMANENT,
+  'schema-mismatch': undefined,
+  'schema-not-initialized': undefined,
+})
+
 function isRelativeWake(wake: WakeSpec): wake is { inSeconds: number } {
   return taskHasOwn(wake, 'inSeconds')
 }
@@ -85,10 +103,8 @@ export function trustedStoreControl(error: unknown): InfrastructureControlSnapsh
   try {
     if (hasInstance(RunCancelledError, error)) return RUN_CANCELLED
     if (hasInstance(LeaseLostError, error)) return LEASE_LOST
-    if (hasInstance(StoreUnavailableError, error)) return STORE_UNAVAILABLE
-    // A permanent answer of the store is infrastructure too. Left to fall through, it would
-    // reach task code as an ordinary error and be billed to the task's own attempts.
-    if (hasInstance(PermanentStoreError, error)) return STORE_PERMANENT
+    const failure = storeFailureKind(error)
+    if (failure !== undefined) return STORE_FAILURE_CONTROLS[failure]
   } catch {
     // A hostile proxy is not one of the store's typed infrastructure errors.
   }

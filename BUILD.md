@@ -49,19 +49,20 @@ word to do the right thing: the naming of this milestone, the decisions the
 milestone below still held, a read of the last folds that no review had
 followed, and the difference between `specs/Scheduler.tla` and the code. The
 Decisions paragraph below records what was decided under that delegation, and
-the maintainer may reverse any of it. Lines 45 and 46 are not met. Line 47 is
-not met and has not started: it waits on what the Held paragraph below names,
-and on PR5.6.
+the maintainer may reverse any of it. Line 45 is met. Line 46 is not met. Line
+47 is not met and has not started: it waits on what the Held paragraph below
+names.
 
 **Exit test:**
 
-45. PR5.6: a store that refuses a credential says so. Today, on every dialect,
-    a rejected password or token reaches a caller as a StoreUnavailableError
-    and the CLI exits 6. DESIGN.md's table calls exit 6 safe to repeat, with
-    retries capped because a wrong store credential exits 6 too, so a caller
-    that follows the table repeats a command that fails the same way until its
-    cap. A statement the credential may not send is a PermanentStoreError on
-    PostgreSQL and MySQL, exit 7, and an outage on libSQL. The week's workflow
+45. PR5.6: a store that refuses a credential says so. Before PR5.6, on every
+    dialect, a rejected password or token reached a caller as a
+    StoreUnavailableError and the CLI exited 6. DESIGN.md's table called exit 6
+    safe to repeat, with retries capped because a wrong store credential exited
+    6 too, so a caller that followed the table repeated a command that failed
+    the same way until its cap. A statement the credential may not send was a
+    PermanentStoreError on PostgreSQL and MySQL, exit 7, and an outage on
+    libSQL. The week's workflow
     runs unattended and its token can expire. After PR5.6 both refusals reach
     a caller as one error type of core, which is neither an outage nor a
     permanent answer to a statement, on the three dialects. An executor decides
@@ -76,7 +77,7 @@ and on PR5.6.
     declares 0 there, and the command reports the refusal as not read, as it
     reports an outage. The week receipt's checker reads every kind of store
     failure the CLI prints for a purge, and a case over core's definition holds
-    that, where today the checker holds two kinds written by hand. DESIGN.md's
+    that, where the checker held two kinds written by hand before. DESIGN.md's
     table, its paragraph on exit 6, its paragraph on the week receipt and the
     README's section on operating a deployment say all of it, with what is not
     typed: a `ws:` or `wss:` URL, whose driver carries the status only in a
@@ -91,9 +92,38 @@ and on PR5.6.
     libSQL, where a file takes no credential, the member is the driver against
     a loopback server that answers 401 and 403. A case of the SDK hands a pass
     the type and sees no attempt spent. A generated case over every command
-    that opens a store sees exit 4. Red: on main the cases of a wrong password
-    see an outage and exit 6, and the cases of a role that may not write see a
-    permanent answer and exit 7.
+    that opens a store sees exit 4. Red: before PR5.6 the cases of a wrong
+    password saw an outage and exit 6, and the cases of a role that may not
+    write saw a permanent answer and exit 7. This is met. The type is
+    `StoreAccessRefusedError` in packages/core/src/errors.ts, where
+    `STORE_FAILURE_TYPES` and `storeFailureKind` are the one definition of the
+    kinds. In packages/conformance/src/executor-errors.ts, "types a credential
+    the store refuses apart from an outage and from a permanent answer, for a
+    read, for a write and for a call of the port" runs on the three dialects,
+    and "types a write under a credential that may only read as an access
+    refusal, answers its read, and changes nothing" runs on PostgreSQL and
+    MySQL. In packages/sdk/test/run-worker.test.ts, "a pass that meets a refusal
+    of the store's credential spends none of the task's attempts: its row holds
+    no attempt and no failure, and its run is the one that was claimed" is the
+    SDK's case. In packages/cli/test/fault-surface.test.ts, "<verb> exits 4 at
+    every batch, but for a read that follows a write the store answered, where
+    it exits as the table declares and says what was not read" is generated once
+    for each command that opens a store, and "met both endings: a command that
+    exits 4, and a read after an answered write that does not" fails unless both
+    were seen. In packages/cli/test/cli-dialects.test.ts, "every store command
+    exits 4 for a store that refuses its credential, with the kind
+    store-access-refused in text and with --json, and prints the credential in
+    no stream" runs on each dialect. In packages/driver/test/hosted.test.ts,
+    "answers every kind of store failure core names: 503 for an outage and for a
+    refused credential, 500 for the rest" holds the handler. In
+    packages/cli/test/week-receipt-documents.test.ts, "reads what the CLI prints
+    when a purge meets each kind of store failure: a run that took nothing for
+    an outage, a refused credential and a permanent answer, and no run for a
+    schema error" walks core's definition. The cases of a wrong password were
+    committed failing first and were seen failing by name on the three dialects:
+    an outage, and exit 6. The cases of a role that may not write were seen
+    failing by name on PostgreSQL and MySQL over the sources main held: a
+    permanent answer, and exit 7.
 46. PR5.9: a timeout handed to a pass is not lost. PR5.7's read of the code
     against the model found the defect on 2026-11-08. A pass that is handed a
     timeout wake can end by another flow's sleep before the await's answer is
@@ -130,15 +160,15 @@ and on PR5.6.
     names the database it was taken from, since a report prints the scheme of
     the store URL alone, and the receipt's `attestation` holds who attests and
     the instant of the seal. That the week ran on the deployed alpha is the
-    maintainer's word in the pull request that adds the receipt. Today the
-    week's workflow runs the CLI of main's newest commit, so a change to a
-    member of a report, merged while the week runs, would refuse the days
-    before it. PR5.6 gives the workflow a repository variable that pins the
+    maintainer's word in the pull request that adds the receipt. Before PR5.6
+    the week's workflow ran the CLI of main's newest commit, so a change to a
+    member of a report, merged while the week ran, would have refused the days
+    before it. PR5.6 gave the workflow a repository variable that pins the
     commit it runs, and the selftest before the week, the lookups and the dry
     run after it are printed by that commit too, so main may change while the
     week runs. The workflow is turned off at the end sample, before the
     lookups are taken, because a purge after that sample deletes units whose
-    lookups the receipt needs, and PR5.6 puts that step in the README's
+    lookups the receipt needs, and PR5.6 put that step in the README's
     section on a week. Red: the doctored receipts of line 44, each refused for
     its own cause, and in PR5.8 the case of the windows, seen failing on a
     copy of the receipt whose purge ran under another window.
@@ -207,7 +237,7 @@ the example's README asks for, under the maintainer's account, with the five
 runtime variables that README lists. The word to make each change to what is
 running: the migration of the deployed database, the second deployment, and
 the settings the first comment of .github/workflows/operable-week.yml lists,
-two secrets and four variables today, which turn on the week's hourly write
+two secrets and five variables today, which turn on the week's hourly write
 and daily delete and two of which are line 47's windows. No command of this
 milestone that changes the deployed database, its host or the repository's
 settings runs before that word. A second person for the sealed injection, who
@@ -1485,12 +1515,14 @@ bypasses the host's authorization, so the CLI redacts by default, requires
 `--target` on every write that opens a store and loads no `.env`, and the
 alternative, hosted operator routes with their own credential, is a non-goal
 here. Whether to type a store authentication or authorization failure apart from
-an outage: today a rejected password or token reaches the caller as a
-StoreUnavailableError, so under the plan it exits 6, which the table calls safe
-to repeat, and a forbidden write reaches the caller as a PermanentStoreError on
+an outage: then a rejected password or token reached the caller as a
+StoreUnavailableError, so under the plan it exited 6, which the table calls safe
+to repeat, and a forbidden write reached the caller as a PermanentStoreError on
 PostgreSQL and MySQL (SQLSTATE class 42) and, by the libSQL executor's map, as a
-StoreUnavailableError on libSQL, while the table reserves exit 4 for
-unauthenticated or forbidden. Decisions the plan made that the maintainer may
+StoreUnavailableError on libSQL, while the table reserved exit 4 for
+unauthenticated or forbidden. PR5.6 of the milestone above typed both as one
+error type of core, and a command that opens a store exits 4 for it. Decisions
+the plan made that the maintainer may
 reverse: `purge` is a dry run unless `--execute`, with required windows and no
 defaults; `enqueue` requires `--key`; every write that opens a store requires
 `--target`, and `--queue` comes from argv only, with no TURSO_* or
@@ -7846,15 +7878,86 @@ these three things; nothing else in the system does I/O, time, or randomness.
   that no review followed. One review reads each of those folds but PR5.0's, the last
   three on 2026-11-08. This pull request fixes what the reads find, adds the postmortem
   that records them, and corrects the sentences that say nobody read those folds.
-- **PR5.6 a store's refusal of a credential, typed**: TODO. Exit test line 45 of the live
-  week milestone. Core gains one error type for a store that refuses the credential it was
-  given or what that credential may do, and one definition of the kinds of failure an
-  executor raises. The three executors decide the type from a value the driver's error
-  carries, a worker pass treats it as an outage, the hosted handler answers it 503, the
-  CLI exits 4 for it, and the week receipt's checker reads the kind. It also gives the
-  week's workflow a repository variable that pins the commit it runs, and puts in the
-  README that the workflow is turned off at the end sample. DESIGN.md's exit table, its
-  paragraph on exit 6 and its paragraph on the week receipt change with it.
+- **PR5.6 a store's refusal of a credential, typed**: DONE. Exit test line 45 of the live
+  week milestone, which says what was built and which cases hold it. Core gains
+  `StoreAccessRefusedError` for a store that refuses the credential it was given or what
+  that credential may do, and one definition of the kinds of failure an executor raises,
+  `STORE_FAILURE_TYPES` with `storeFailureKind`. The three executors decide the type from a
+  value the driver's error carries, a worker pass treats it as an outage, the hosted handler
+  answers it 503, the CLI exits 4 for it with the kind `store-access-refused`, and the week
+  receipt's checker reads the kind. It also gives the week's workflow a repository variable,
+  `DURABLERUN_WEEK_COMMIT`, that pins the commit it runs, and puts in the README that the
+  workflow is turned off at the end sample. DESIGN.md sections 3.2, 3.4, 3.5 and 3.11 change
+  with it: the kinds and their codes, the conformance surface, the hosted answer, and the
+  exit table with its paragraph on exit 6 and its paragraph on the week receipt.
+  - The codes. PostgreSQL: SQLSTATE class 28 and 42501. MySQL: 23 error numbers, and a case
+    on a real server reads the server's own list of error names and requires each name that
+    says an account was refused to be in the set or to have a stated reason not to be.
+    libSQL: the HTTP status 401 or 403, read from the number the client keeps on its error.
+    A code an executor does not know keeps the type it had. Each code was dropped in turn,
+    and a case failed by name for each.
+  - The consumers. The SDK's control of a pass, the hosted handler, the CLI and the
+    conformance contest's booking of a failed call each hold a record keyed by core's kinds,
+    so a kind with no entry fails typecheck. Who pays does not change: the SDK gives the
+    type the control of an outage, so the pass ends as it ends on an outage and spends no
+    attempt.
+  - What changes for a caller. A wrong password or token exits 4 where it exited 6. A
+    statement the credential may not send exits 4 where it exited 7 on PostgreSQL and MySQL
+    and 6 on libSQL. The hosted handler answers that statement 503 where it answered 500 on
+    PostgreSQL and MySQL, so `tick` exits 6 for such a deployment where it exited 7. `tick`
+    keeps its own exit 4 for the tick token.
+  - The one exception to exit 4. A read that follows a write the store answered exits as the
+    command table declares, 0, and the command reports the refusal as not read, as it
+    reports an outage.
+  - What is not typed. A `ws:` or `wss:` URL, whose client carries the status only in a
+    message. A libSQL server's 400, which a server answers for any request it cannot read. A
+    hosted libSQL server's answer to a write under a token that may only read, which is not
+    known. A case holds each of the first two an outage. On PostgreSQL, a login the client
+    declines to send and a role with no USAGE on the store's schema, which the server
+    answers with no access code. Cases on a real server hold what each is answered today,
+    and PR5.6b below is the change that types them.
+  - The week's workflow fetches the one commit `DURABLERUN_WEEK_COMMIT` names by its full
+    id, checks it out and reads the id back, and a value that is not a full id stops the job
+    before any step that opens the store. It then fetches main and stops when the commit is
+    not in main's history, or tracks a file named `week-*`. Its steps stay main's. The
+    README's section on a week says which commit prints the documents of a week, that the
+    workflow is turned off at the end sample, and what a purge that exits 4 means.
+  - The week receipt's checker gained the one kind and did not move. One case hands it the
+    document the CLI prints for a purge under every kind of core's definition.
+  - The registry holds 1584 mutations where main held 1528: 56 new and seven aimed again at
+    the lines that replaced theirs. Of the new ones, 23 are the MySQL numbers, two are the
+    list those numbers are held to from both sides, three are the libSQL statuses and their
+    order before any reading of text, ten are the answer the libSQL executor keeps a
+    refused status under, two are the PostgreSQL codes, two are core's definition, five are
+    the consumers, two are the SDK's ends of a pass, one is the checker's kind, and six are
+    the workflow's pin. The registry's own copy of the MySQL numbers is held to the
+    executor's list by the registry's self-test.
+  - The fold of the first review (`postmortems/pr5.6-store-credential-error-review.md`). It
+    found nine things, none HIGH, three MEDIUM and six LOW, and all count. A libSQL 401 or
+    403 under a JSON body with a `message` member is an access refusal, through a `fetch` of
+    the executor's. The two PostgreSQL refusals above are the same on main and are held by
+    cases, and DESIGN.md says which codes are typed. The workflow holds the pinned commit to
+    main's history. The server fixtures drop every reader at their close. DESIGN.md names
+    the MySQL login refusals outside the list, and the README says which refused tokens
+    were measured.
+  - The fold of the second review, which read the fix for the libSQL finding and nothing
+    else. It found nine more things, none HIGH, one MEDIUM and eight LOW, and all count,
+    which makes 18 for the pull request. The executor's `fetch` had rewritten every 401 and
+    403, read its body and copied its reason phrase. So an odd reason phrase or a body cut
+    short was an outage, a body that never ends was no answer, and a page of 300 kB was the
+    error's message. The `fetch` now rewrites one answer, a 401 or a 403 whose content type
+    is exactly `application/json`, hands it on with the body unread under
+    `application/octet-stream`, and hands every other answer on as it came. The message of
+    such a refusal is the status line and no longer the server's `message` text. The
+    executor takes the runtime's `fetch` once, when its module loads. One case compares a
+    client the executor opens with a client made without the `fetch` over 294 generated
+    answers.
+- **PR5.6b the PostgreSQL refusals with no access code**: TODO. Deferred from PR5.6, and
+  outside the exit test of the live week milestone. PostgreSQL refusals that carry no access
+  SQLSTATE: a login the client declines to send (no password against a SCRAM server) and a
+  role with no USAGE on a schema on its search path. Both are answered as before this
+  change. Named change: PR5.6b, after the week. PR5.6 holds what each is answered today by
+  cases on a real server, and DESIGN.md section 3.2 says what the answers are.
 - **PR5.7 the model's wake fields**: TODO. Outside the exit test of the live week
   milestone. `specs/Scheduler.tla` says a suspension, a chain and a completion leave a
   run's wake fields as they were, and the code clears them. The model is brought to the

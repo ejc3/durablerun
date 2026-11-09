@@ -6,8 +6,17 @@ name: operable-week
 # one task to the pinned database, and the daily one samples its queue and then deletes ended
 # tasks from it.
 #
+# The steps are main's, and the CLI is the pinned commit's. GitHub reads this file from the
+# default branch for a schedule, so a change to a step that merges takes effect at the next
+# run. The CLI the steps run is another matter: the job checks out the one commit the
+# repository variable DURABLERUN_WEEK_COMMIT names by its full id, and no other, so a pull
+# request that merges during the week changes no member of a report the week's receipt
+# holds. A step may therefore use only what the pinned commit's CLI takes. A value that is
+# not a full commit id stops the job before any command opens the store.
+#
 # Turning it on needs the secrets DURABLERUN_WEEK_STORE_URL and DURABLERUN_WEEK_STORE_TOKEN,
-# and the variables DURABLERUN_WEEK_STORE_URL (the same URL, which pins the database),
+# and the variables DURABLERUN_WEEK_COMMIT (the commit whose CLI the week runs),
+# DURABLERUN_WEEK_STORE_URL (the same URL, which pins the database),
 # DURABLERUN_WEEK_COMPLETED_AFTER and DURABLERUN_WEEK_CANCELLED_AFTER (the purge's two
 # windows, as `purge` takes them). The job holds a database credential, which is full admin,
 # so it first requires the secret URL to be the one the variable pins. The two commands that
@@ -54,15 +63,38 @@ jobs:
       # The most runs of the daily purge in one job.
       DURABLERUN_WEEK_PURGE_RUNS: '50'
     steps:
-      - name: Check out this public repository without a token
+      - name: Check out the pinned commit of this public repository without a token
         env:
           DURABLERUN_SOURCE_REPOSITORY: ${{ github.repository }}
-          DURABLERUN_SOURCE_SHA: ${{ github.sha }}
+          DURABLERUN_WEEK_COMMIT: ${{ vars.DURABLERUN_WEEK_COMMIT }}
         run: |
+          # A branch or a short id would name another commit after a push, so only a full id
+          # is taken: 40 lowercase hexadecimal digits and nothing beside them.
+          if [[ ! "${DURABLERUN_WEEK_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Configure repository variable DURABLERUN_WEEK_COMMIT as the full id of the commit whose CLI the week runs.' >&2
+            exit 1
+          fi
           git init .
           git remote add origin "https://github.com/${DURABLERUN_SOURCE_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$DURABLERUN_SOURCE_SHA"
+          git fetch --no-tags --depth=1 origin "$DURABLERUN_WEEK_COMMIT"
           git checkout --detach FETCH_HEAD
+          if [ "$(git rev-parse HEAD)" != "$DURABLERUN_WEEK_COMMIT" ]; then
+            echo 'The commit checked out is not the pinned one.' >&2
+            exit 1
+          fi
+          # A commit of a branch that was never merged, or of a fork, is fetched by its id as
+          # well. So the whole history of main is fetched, and the pinned commit must be in it.
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$DURABLERUN_WEEK_COMMIT" origin/main; then
+            echo 'The pinned commit is not on main: set DURABLERUN_WEEK_COMMIT to a commit main holds.' >&2
+            exit 1
+          fi
+          # The job keeps every file named week-* as a report, so the commit may track none.
+          tracked="$(git ls-files 'week-*')"
+          if [ -n "$tracked" ]; then
+            echo 'The pinned commit tracks a file named week-*, which the job would keep as a report.' >&2
+            exit 1
+          fi
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

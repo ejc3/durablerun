@@ -68,6 +68,110 @@ describe('MysqlExecutor error typing against a real server', () => {
   })
 })
 
+describe('what a real MySQL server answers an account it refuses', () => {
+  /** The type a batch's failure has, with the number and the state the server sent. */
+  const answered = (executor: MysqlExecutor, sql: string, mode: 'read' | 'write') =>
+    executor.batch('fixture:refused-access', [{ sql, args: [] }], mode).then(
+      () => 'answered',
+      (error: unknown) => ({
+        name: (error as Error).name,
+        errno: ((error as Error).cause as { errno?: unknown } | undefined)?.errno,
+        state: ((error as Error).cause as { sqlState?: unknown } | undefined)?.sqlState,
+      }),
+    )
+
+  it('types a wrong password, an account that does not exist and a locked account an access refusal, by their numbers', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'refused-logins', migrate: false })
+    const control = createOwnedMysqlPool({ uri: serverUrl(), connectionLimit: 1 })
+    const account = `dr_cred_${db.databaseName.slice(-16)}`
+    const as = (username: string, password: string): MysqlExecutor => {
+      const url = new URL(serverUrl())
+      url.username = username
+      url.password = password
+      url.pathname = `/${db.databaseName}`
+      return MysqlExecutor.open(url.href)
+    }
+    const opened: MysqlExecutor[] = []
+    const login = (username: string, password: string) => {
+      const executor = as(username, password)
+      opened.push(executor)
+      return answered(executor, 'SELECT 1 AS answered', 'read')
+    }
+    try {
+      await control.query(`CREATE USER '${account}'@'%' IDENTIFIED BY 'may-log-in'`)
+      await control.query(`GRANT SELECT ON ${db.databaseName}.* TO '${account}'@'%'`)
+      const mayLogIn = await login(account, 'may-log-in')
+      const wrongPassword = await login(account, 'not-its-password')
+      const noSuchAccount = await login(`${account}_gone`, 'may-log-in')
+      await control.query(`ALTER USER '${account}'@'%' ACCOUNT LOCK`)
+      const locked = await login(account, 'may-log-in')
+      expect({ mayLogIn, wrongPassword, noSuchAccount, locked }).toEqual({
+        mayLogIn: 'answered',
+        wrongPassword: { name: 'StoreAccessRefusedError', errno: 1045, state: '28000' },
+        noSuchAccount: { name: 'StoreAccessRefusedError', errno: 1045, state: '28000' },
+        locked: { name: 'StoreAccessRefusedError', errno: 3118, state: 'HY000' },
+      })
+    } finally {
+      for (const executor of opened) await executor.close()
+      await control.query(`DROP USER IF EXISTS '${account}'@'%'`)
+      await control.end()
+      await db.close()
+    }
+  })
+
+  it('types a write an access refusal for an account that may connect and may only read, by its number, and answers its read', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'reader-account' })
+    try {
+      const reader = await db.openAsAReader()
+      try {
+        expect({
+          read: await answered(reader.raw, 'SELECT COUNT(*) AS tasks FROM tasks', 'read'),
+          write: await answered(reader.raw, 'UPDATE tasks SET attempts = attempts + 1', 'write'),
+          anotherDatabase: await answered(reader.raw, 'SELECT COUNT(*) FROM mysql.user', 'read'),
+        }).toEqual({
+          read: 'answered',
+          write: { name: 'StoreAccessRefusedError', errno: 1142, state: '42000' },
+          anotherDatabase: { name: 'StoreAccessRefusedError', errno: 1142, state: '42000' },
+        })
+      } finally {
+        await reader.close()
+      }
+    } finally {
+      await db.close()
+    }
+  })
+
+  // The servers these cases run on are shared, and a reader is an account that may log in.
+  // A case that fails before it closes its reader must not leave the account on the server.
+  it('drops, at the close of the fixture, a reader that its case never closed', async () => {
+    const db = await openMysqlTestDb({ idNamespace: 'reader-left-open' })
+    const control = createOwnedMysqlPool({ uri: serverUrl(), connectionLimit: 1 })
+    const accountsNamed = async (account: string): Promise<number> => {
+      const [rows] = await control.query('SELECT 1 FROM mysql.user WHERE user = ?', [account])
+      return (rows as unknown[]).length
+    }
+    let reader: Awaited<ReturnType<typeof db.openAsAReader>> | undefined
+    try {
+      reader = await db.openAsAReader()
+      const before = await accountsNamed(reader.username)
+      await db.close()
+      expect({ before, after: await accountsNamed(reader.username) }).toEqual({
+        before: 1,
+        after: 0,
+      })
+    } finally {
+      await db.close()
+      if (reader !== undefined) {
+        // What the fixture's close is held to above. These lines leave nothing behind where
+        // it did not, and change nothing where it did.
+        await reader.raw.close().catch(() => undefined)
+        await control.query(`DROP USER IF EXISTS '${reader.username}'@'%'`)
+      }
+      await control.end()
+    }
+  })
+})
+
 describe('what a real MySQL server answers a refused statement', () => {
   it('is typed permanent by its class, or by its number where MySQL files it outside the classes', async () => {
     const db = await openMysqlTestDb({ idNamespace: 'refused-statements', migrate: false })
@@ -295,6 +399,80 @@ describe('the numbers MySQL files apart from what their names say', () => {
       ],
       leftAnOutageWithNoOneReason: [],
       reasonsThatExplainNothing: [],
+    })
+  })
+
+  /** A name that says the server refused the account, or what the account may do. */
+  const SAYS_THE_ACCOUNT_WAS_REFUSED =
+    /DENIED|NOT_PRIVILEGED|PRIVILEGE|NEED_SUPER|NO_PERMISSION|ACCOUNT_HAS_BEEN_LOCKED|MUST_CHANGE_PASSWORD/
+  /** Why a number whose name says so is still not typed an access refusal, by what its name says. */
+  const NOT_A_REFUSAL_OF_THE_STORES_ACCOUNT: readonly (readonly [names: RegExp, reason: string])[] =
+    [
+      [/^ER_KILL_DENIED_ERROR$/, "a KILL of another account's thread, and the store sends no KILL"],
+      [
+        /^ER_(ILLEGAL_PRIVILEGE_LEVEL|UKNOWN_AUTH_ID_OR_ACCESS_DENIED_FOR_GRANT_AS)$|^ER_WARN_DA_PRIVILEGE_NOT_REGISTERED$/,
+        'refuses a GRANT for what the GRANT names, a level, a grantor or a privilege the server does not know, and the store sends no GRANT',
+      ],
+      [
+        /^ER_CLIENT_(PRIVILEGE_CHECKS_USER|FILE_PRIVILEGE_FOR_REPLICATION_CHECKS)/,
+        "a replication channel's own account, which no statement of the store sets",
+      ],
+    ]
+
+  it('types every number whose name says the account was refused an access refusal, or says why not', async () => {
+    const saysRefused = (await filedByTheServer()).filter((filed) =>
+      SAYS_THE_ACCOUNT_WAS_REFUSED.test(filed.name),
+    )
+    const reasonsFor = (filed: Filed) =>
+      NOT_A_REFUSAL_OF_THE_STORES_ACCOUNT.filter(([names]) => names.test(filed.name))
+    const typedOtherwise = saysRefused.filter((filed) => typed(filed) !== 'StoreAccessRefusedError')
+    expect(
+      {
+        typedAnAccessRefusal: saysRefused
+          .filter((filed) => typed(filed) === 'StoreAccessRefusedError')
+          .map(line),
+        typedOtherwiseWithNoOneReason: typedOtherwise
+          .filter((filed) => reasonsFor(filed).length !== 1)
+          .map(line),
+        reasonsThatExplainNothing: NOT_A_REFUSAL_OF_THE_STORES_ACCOUNT.filter(
+          ([names]) => !typedOtherwise.some((filed) => names.test(filed.name)),
+        ).map(([names]) => String(names)),
+        // No number is typed an access refusal but one whose name says so.
+        typedAnAccessRefusalUnderAnotherName: (await filedByTheServer())
+          .filter((filed) => !SAYS_THE_ACCOUNT_WAS_REFUSED.test(filed.name))
+          .filter((filed) => typed(filed) === 'StoreAccessRefusedError')
+          .map(line),
+      },
+      'mutation-verdict:behavior:mysql-error-list-holds-the-account-refusals',
+    ).toEqual({
+      typedAnAccessRefusal: [
+        '1044 ER_DBACCESS_DENIED_ERROR (42000)',
+        '1045 ER_ACCESS_DENIED_ERROR (28000)',
+        '1130 ER_HOST_NOT_PRIVILEGED (HY000)',
+        '1142 ER_TABLEACCESS_DENIED_ERROR (42000)',
+        '1143 ER_COLUMNACCESS_DENIED_ERROR (42000)',
+        '1211 ER_NO_PERMISSION_TO_CREATE_USER (42000)',
+        '1227 ER_SPECIFIC_ACCESS_DENIED_ERROR (42000)',
+        '1370 ER_PROCACCESS_DENIED_ERROR (42000)',
+        '1419 ER_BINLOG_CREATE_ROUTINE_NEED_SUPER (HY000)',
+        '1698 ER_ACCESS_DENIED_NO_PASSWORD_ERROR (28000)',
+        '1820 ER_MUST_CHANGE_PASSWORD (HY000)',
+        '1862 ER_MUST_CHANGE_PASSWORD_LOGIN (HY000)',
+        '1873 ER_ACCESS_DENIED_CHANGE_USER_ERROR (28000)',
+        '3118 ER_ACCOUNT_HAS_BEEN_LOCKED (HY000)',
+        '3202 ER_KEYRING_ACCESS_DENIED_ERROR (42000)',
+        '3630 ER_PERSIST_ONLY_ACCESS_DENIED_ERROR (42000)',
+        '3631 ER_CMD_NEED_SUPER (HY000)',
+        '3879 ER_DB_ACCESS_DENIED (HY000)',
+        '3914 ER_AUDIT_LOG_INSUFFICIENT_PRIVILEGE (HY000)',
+        '3955 ER_USER_ACCESS_DENIED_FOR_USER_ACCOUNT_BLOCKED_BY_PASSWORD_LOCK (HY000)',
+        '6038 ER_SPECIFIC_ACCESS_DENIED (HY000)',
+        '6126 ER_ACCESS_DENIED_NO_PROXY_GRANT (HY000)',
+        '6127 ER_ACCESS_DENIED_NO_PROXY (HY000)',
+      ],
+      typedOtherwiseWithNoOneReason: [],
+      reasonsThatExplainNothing: [],
+      typedAnAccessRefusalUnderAnotherName: [],
     })
   })
 

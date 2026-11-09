@@ -1,3 +1,4 @@
+import { type Server, createServer } from 'node:http'
 import type { IdSource } from '@durablerun/core'
 import { testIdSource } from '@durablerun/core/testing'
 import { createClient } from '@libsql/client'
@@ -64,5 +65,58 @@ export async function holdLibsqlWriteLock(url: string, during: () => Promise<voi
     }
   } finally {
     holder.close()
+  }
+}
+
+/**
+ * A loopback HTTP server that answers every request, and every WebSocket upgrade, with one
+ * status, for a case that needs what the real client throws when a server refuses it. No
+ * libSQL server runs in a test here, and what the client makes of a status is the client's
+ * own, so a server that only answers a status is enough to learn it. `url` is one the
+ * client opens over HTTP with no TLS, and `webSocketUrl` one it opens as a WebSocket.
+ * `requests` counts what reached the server, so a case can tell an answer of this server
+ * from a connection nothing took. `body` is the text sent with the status to an HTTP
+ * request, and `contentType` the content type it is sent under, or none. What the client
+ * keeps of an answer depends on both.
+ */
+export async function openServerAnswering(
+  status: number,
+  body = '',
+  contentType?: string,
+): Promise<{
+  url: string
+  webSocketUrl: string
+  requests: () => number
+  close: () => Promise<void>
+}> {
+  let requests = 0
+  const server: Server = createServer((_request, response) => {
+    requests += 1
+    response.statusCode = status
+    if (contentType !== undefined) response.setHeader('content-type', contentType)
+    response.end(body)
+  })
+  server.on('upgrade', (_request, socket) => {
+    requests += 1
+    socket.end(`HTTP/1.1 ${status} Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`)
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    server.close()
+    throw new Error('the loopback server has no port')
+  }
+  return {
+    url: `libsql://127.0.0.1:${address.port}?tls=0`,
+    webSocketUrl: `ws://127.0.0.1:${address.port}`,
+    requests: () => requests,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error === undefined ? resolve() : reject(error)))
+        server.closeAllConnections()
+      }),
   }
 }

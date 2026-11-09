@@ -423,8 +423,9 @@ export class ReplayContext implements TaskContext {
     try {
       return await this.#controls.storeCall(operation)
     } catch (error) {
-      // Only what a retry can fix ends the pass: an outage, a lost lease, a cancelled run. A
-      // permanent answer of the store repeats on every retry, so it reaches the task as it did.
+      // Only what a retry can fix ends the pass: an outage, a refused credential, which a
+      // retry under another credential fixes, a lost lease, a cancelled run. A permanent
+      // answer of the store repeats on every retry, so it reaches the task as it did.
       const control = trustedStoreControl(error)
       if (control !== undefined && control.kind !== 'store-permanent') {
         this.#order.end(error as object)

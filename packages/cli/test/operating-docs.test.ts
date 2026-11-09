@@ -108,6 +108,43 @@ describe('the documents of operating a deployment', () => {
     for (const name of new Set(named)) expect(paragraph).toContain(`\`${name}\``)
   })
 
+  it('says which commit prints the documents of a week, and that the workflow is turned off at the end sample, before the lookups', () => {
+    const readme = read('README.md')
+    /** One paragraph of the README, from its label to the next blank line, as one line. */
+    const paragraph = (label: string): string => {
+      const at = readme.indexOf(label)
+      if (at === -1) return ''
+      const from = readme.slice(at)
+      return from.slice(0, from.indexOf('\n\n')).replaceAll(/\s+/g, ' ')
+    }
+    const workflow = read('.github/workflows/operable-week.yml')
+    // The variable the workflow fetches its commit by: the one its step that runs git reads.
+    const [, pin] = workflow.match(/git fetch [^\n]*"\$(DURABLERUN_[A-Z_]+)"/) ?? []
+    expect(workflow).toContain(`${pin}: \${{ vars.${pin} }}`)
+    // The commit: the README names the variable, and says the reports the workflow does not
+    // print are run from a checkout of that commit, each by name.
+    const commit = paragraph('**The commit the week runs.**')
+    expect({
+      variable: commit.includes(`\`${pin}\``),
+      sameCommit: commit.includes('from a checkout of the commit the variable names'),
+      selftest: commit.includes('selftest'),
+      lookups: commit.includes('lookups'),
+      dryRun: commit.includes('dry run'),
+    }).toEqual({ variable: true, sameCommit: true, selftest: true, lookups: true, dryRun: true })
+    // The end: the end sample, then the workflow off, by the variable its job runs under,
+    // and only then the lookups.
+    const end = paragraph('**The end of the week.**')
+    const [, gate] = workflow.match(/\n {4}if: vars\.(DURABLERUN_[A-Z_]+) == 'true'\n/) ?? []
+    const order = ['end sample', 'turn the workflow off', 'lookups'].map((words) =>
+      end.indexOf(words),
+    )
+    expect({
+      variable: end.includes(`\`${gate}\``),
+      eachIsSaid: order.every((at) => at >= 0),
+      inOrder: order.every((at, index) => index === 0 || at > (order[index - 1] ?? -1)),
+    }).toEqual({ variable: true, eachIsSaid: true, inOrder: true })
+  })
+
   it("names in DESIGN.md every cause the week receipt's checker refuses for", () => {
     const design = read('DESIGN.md')
     const table = design.slice(design.indexOf('| Cause | Refused when |'))

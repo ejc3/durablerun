@@ -223,11 +223,17 @@ export interface PurgeRead {
 const PURGE_WALK_MEMBERS = ['finished', 'more', 'purged', 'wouldPurge', 'outcomeNotKnown']
 
 /**
- * The kinds of error a store's own failure prints under: it could not be reached, or it
- * answered with a failure of its own. A purge that ends on one was a run of a purge. Every
- * other kind is a refusal of the command or a defect of the program, and no run.
+ * The kinds of error a store's own failure prints under: it could not be reached, it
+ * refused the credential it was given, or it answered with a failure of its own. A purge
+ * that ends on one was a run of a purge. Every other kind is a refusal of the command or a
+ * defect of the program, and no run. A case hands the reader the document the CLI prints
+ * for each kind of store failure, so a kind the CLI renames or adds fails there.
  */
-const STORE_FAILURE_KINDS: readonly string[] = ['store-unavailable', 'permanent-store-error']
+const STORE_FAILURE_KINDS: readonly string[] = [
+  'store-unavailable',
+  'store-access-refused',
+  'permanent-store-error',
+]
 /** The kind a purge is refused under because the database's test clock was set. */
 const TEST_CLOCK_KIND = 'fake-clock'
 

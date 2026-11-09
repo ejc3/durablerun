@@ -290,6 +290,30 @@ export interface LockWaitSurface {
 }
 
 /**
+ * What the executor error surface's refused-credential case needs from a dialect (§3.2):
+ * the dialect's real executor, opened once for each way the fixture can have its store
+ * refuse a credential. `what` names the way in a failure's message. A server opens the
+ * fixture's own database under a password that is not the account's. A libSQL fixture is a
+ * database file, which takes no credential, and no libSQL server runs in a test. So it
+ * opens the real client against a loopback HTTP server it starts and stops, once for each
+ * status a libSQL server refuses a token with, 401 and 403.
+ */
+export interface RefusedCredentialSurface {
+  readonly refusals: readonly { readonly what: string; readonly raw: SqlExecutor }[]
+  close(): Promise<void>
+}
+
+/**
+ * What the case of a credential that may only read needs from a dialect that has roles
+ * (§3.2): the dialect's real executor on the fixture's own migrated database, opened under
+ * a credential the store accepts, which may read the fixture's tables and may write none.
+ */
+export interface ReadOnlyCredentialSurface {
+  readonly raw: SqlExecutor
+  close(): Promise<void>
+}
+
+/**
  * The pluggability contract (repo CLAUDE.md law): a dialect is DONE when its
  * factory passes the identical suite — scheduler plane today, run-bookkeeping
  * (RunStateStore) when it lands. store-libsql implements this now;
@@ -377,6 +401,14 @@ export interface StoreFixture {
   turn(): Promise<void>
   /** The surface of the lock-wait case, which the case closes. */
   lockWait(): Promise<LockWaitSurface>
+  /** The surface of the refused-credential case, which the case closes. */
+  refusedCredential(): Promise<RefusedCredentialSurface>
+  /**
+   * The surface of the case of a credential that may only read, which the case closes, or
+   * null for a dialect that has no roles. A libSQL fixture is a database file, and a file
+   * has no role.
+   */
+  credentialThatMayOnlyRead(): Promise<ReadOnlyCredentialSurface | null>
   /** Fully release every fixture-owned resource before resolving. */
   close(): Promise<void>
 }

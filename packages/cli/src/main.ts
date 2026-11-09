@@ -4,23 +4,22 @@ import {
   type IdSource,
   MAX_RUN_ORDINAL,
   OPERATOR_LIST_CAP,
-  PermanentStoreError,
-  SchemaMismatchError,
-  SchemaNotInitializedError,
   type SpawnResult,
-  StoreUnavailableError,
+  type StoreFailureKind,
   type TableRows,
   type TaskFacts,
   isLiveState,
   isPortRefusal,
   isTerminalState,
   purgeWalk,
+  storeFailureKind,
 } from '@durablerun/core'
 import {
   COMMANDS,
   type CommandSpec,
   type Invocation,
   NOT_SENT_BY_SELFTEST,
+  type STORE_EXITS,
   STUCK_DEFAULT_LIMIT,
   SWEEP_DEFAULT_LIMIT,
   TICK_DEFAULT_TIMEOUT_SECONDS,
@@ -268,6 +267,40 @@ function emit(
 }
 
 /**
+ * What the CLI prints and exits with for each kind of store failure, keyed by core's one
+ * definition of the kinds, so a kind added there fails the typecheck here until it has an
+ * answer. `kind` is what the answer's error names, and `exit` the exit code's name, which
+ * is one every command that opens a store declares.
+ * `notReadAfterAWrite` says what a read that follows an answered write does with the
+ * failure: the write stands, so an outage, a refused credential and a permanent answer are
+ * each reported as a read that did not happen, under `kind`, and a schema error is thrown.
+ */
+export const STORE_FAILURE_ANSWERS = {
+  unavailable: { kind: 'store-unavailable', exit: 'unavailable', notReadAfterAWrite: true },
+  'access-refused': {
+    kind: 'store-access-refused',
+    exit: 'unauthorized',
+    notReadAfterAWrite: true,
+  },
+  permanent: { kind: 'permanent-store-error', exit: 'permanent', notReadAfterAWrite: true },
+  'schema-mismatch': { kind: 'schema', exit: 'schema', notReadAfterAWrite: false },
+  'schema-not-initialized': { kind: 'schema', exit: 'schema', notReadAfterAWrite: false },
+} as const satisfies Record<
+  StoreFailureKind,
+  {
+    readonly kind: string
+    readonly exit: (typeof STORE_EXITS)[number]
+    readonly notReadAfterAWrite: boolean
+  }
+>
+
+/** The kinds a store failure prints under when a read that follows an answered write meets it. */
+type StoreFailureNotRead = Extract<
+  (typeof STORE_FAILURE_ANSWERS)[StoreFailureKind],
+  { readonly notReadAfterAWrite: true }
+>['kind']
+
+/**
  * What a failure the handler did not answer itself exits with. A store's own message can
  * quote a stored value, so it prints only with `--reveal`, and so does the message of an
  * error the CLI does not expect. A port's refusal names only what the caller passed.
@@ -282,10 +315,10 @@ function failure(error: unknown, reveal: boolean): Answer {
           : { kind, name: error instanceof Error ? error.name : typeof error },
     },
   })
-  if (error instanceof StoreUnavailableError) return hidden('store-unavailable', 'unavailable')
-  if (error instanceof PermanentStoreError) return hidden('permanent-store-error', 'permanent')
-  if (error instanceof SchemaMismatchError || error instanceof SchemaNotInitializedError) {
-    return hidden('schema', 'schema')
+  const storeFailure = storeFailureKind(error)
+  if (storeFailure !== undefined) {
+    const { kind, exit } = STORE_FAILURE_ANSWERS[storeFailure]
+    return hidden(kind, exit)
   }
   if (isPortRefusal(error)) {
     return { exit: 'refused', view: { error: { kind: 'refused', message: error.message } } }
@@ -515,24 +548,27 @@ async function decoded<T>(
 
 /**
  * A read that follows a write the store has answered: what it read, or why it read nothing.
- * The write stands whatever the read meets. So an outage, a permanent error of the store, a
- * row the decoders refuse and a row that is gone are each an answer here, and none fails
- * the command: its caller is told what the write did, and that the read did not happen.
+ * The write stands whatever the read meets. So an outage, a refused credential, a permanent
+ * error of the store, a row the decoders refuse and a row that is gone are each an answer
+ * here, and none fails the command: its caller is told what the write did, and that the
+ * read did not happen.
  * Nothing of the error is kept, because a store's message can quote a stored value. Every
  * other error is thrown.
  */
-async function readBack<T>(read: () => Promise<T | null>): Promise<
-  | { readonly value: T }
-  | {
-      readonly notRead: 'not-found' | 'store-unavailable' | 'permanent-store-error' | 'unreadable'
-    }
+async function readBack<T>(
+  read: () => Promise<T | null>,
+): Promise<
+  { readonly value: T } | { readonly notRead: 'not-found' | StoreFailureNotRead | 'unreadable' }
 > {
   try {
     const value = await read()
     return value === null ? { notRead: 'not-found' } : { value }
   } catch (error) {
-    if (error instanceof StoreUnavailableError) return { notRead: 'store-unavailable' }
-    if (error instanceof PermanentStoreError) return { notRead: 'permanent-store-error' }
+    const storeFailure = storeFailureKind(error)
+    if (storeFailure !== undefined) {
+      const answer = STORE_FAILURE_ANSWERS[storeFailure]
+      if (answer.notReadAfterAWrite) return { notRead: answer.kind }
+    }
     if (isUnreadableRow(error)) return { notRead: 'unreadable' }
     throw error
   }
@@ -858,8 +894,8 @@ const notConfirmed = (view: Record<string, unknown>, message: string): Answer =>
  * read selects a task's parameters. The spawn has answered by then, so that read fails
  * nothing. When the task cannot be read back, the answer is still `created: false` with
  * the task's id, `taskNameMatches` is `unknown`, which is no mismatch, and
- * `storedTaskNotRead` says why: the store was unavailable, the row is one a read refuses,
- * or the task is gone.
+ * `storedTaskNotRead` says why: the store was unavailable, refused its credential or
+ * answered with a permanent error, the row is one a read refuses, or the task is gone.
  */
 const enqueue: Handler = async (context) => {
   const { invocation, store, reveal } = context

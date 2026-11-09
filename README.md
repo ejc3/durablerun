@@ -135,7 +135,10 @@ prints the token or a credential of the URL. Of the URL it prints the host or
 the file path, which `--target` names, and the scheme, in every answer of a
 command that opened a store. Every command that writes names its store a second
 time with `--target`: the host of the URL, or the path of a `file:` URL. A
-`--target` that names another store changes nothing and exits 2. In the lines
+`--target` that names another store changes nothing and exits 2. A command
+exits 4 when the store refuses the credential, or what the credential may do,
+and it fails the same way until the credential changes. Exit 6 is an outage,
+which is safe to repeat. In the lines
 below, `<host>` stands for that host and `example-queue` for the queue.
 
 **The schema window.** A build reads the schema versions its store package
@@ -239,6 +242,33 @@ page with the operation `daily`, or run `gh workflow run operable-week.yml -f
 operation=daily`. A late or dropped hourly run costs one period, and the
 checker allows eight of the 168 to be missing.
 
+**The commit the week runs.** The workflow runs the CLI of one commit, and
+the repository variable `DURABLERUN_WEEK_COMMIT` names it by its full id, 40
+hexadecimal digits. The job fetches and checks out that commit and no other.
+A value that is no full id, a branch or a short id among them, stops the job
+before any command opens the store. So does a commit that is not in main's
+history, a commit of a branch that was never merged among them, and a commit
+that tracks a file named `week-*`, the name the job keeps a report under.
+GitHub reads the workflow file itself
+from the default branch, so the steps are main's and the CLI they run is the
+pinned commit's: a pull request that merges during the week changes no member
+of a report. The receipt's other reports come from the same build. Run the
+selftest before the week, and the lookups and the dry run after it, from a
+checkout of the commit the variable names.
+
+**A refused token.** A command the store refuses the token for exits 4, with
+the kind `store-access-refused`: the token is missing, or is one the server
+does not accept. Those are the two refusals measured against a hosted server,
+which answered 401 to each. What a server answers a token that has expired or
+was revoked was not measured, and a status other than 401 or 403 does not
+exit 4. The job stops at that command and does not run it again, and
+a later run fails the same way until the secret `DURABLERUN_WEEK_STORE_TOKEN`
+holds a token the store accepts. Replace the secret, then start the day's run
+by hand, as above, before the 25 hours are up. An hourly enqueue that was
+refused costs its period, as a dropped run does. A purge that exited 4 was a
+run the store failed. Its report goes into that day's purge reports as
+printed, beside the reports of the run that finished.
+
 A week receipt is one JSON document that holds what the CLI printed with
 `--json` during a week of at least 168 hours:
 
@@ -247,7 +277,7 @@ A week receipt is one JSON document that holds what the CLI printed with
 - `start` and `end`: a `stats` report and a `sizes` report of the queue;
 - `days`: for each day, a `stats` report, a `sizes` report, and the day's
   `purge --execute` reports, every run's as printed, a run the store failed
-  (exit 6 or 7) beside the one that finished. A purge the command refused was
+  (exit 4, 6 or 7) beside the one that finished. A purge the command refused was
   no run and its report is left out, but for one: a purge refused because the
   database's test clock was set goes in, and the checker refuses the week for
   the clock, as `test-clock-set`;
@@ -259,7 +289,14 @@ A week receipt is one JSON document that holds what the CLI printed with
 - `seal`, `injection`, `explanation` and `attestation`: the sealed injection,
   below.
 
-`pnpm week-receipt <receipt.json>` checks it. It exits 0 when it accepts the
+**The end of the week.** Take the end sample, then turn the workflow off, and
+only then take the lookups and the dry run. The workflow is off once
+`DURABLERUN_WEEK_ENABLED` is no longer `true`. A daily purge that runs after
+the end sample deletes units whose lookups the receipt needs: a lookup is the
+`inspect --key` report of a period that no purge report in the receipt names,
+and a purge the receipt does not hold would leave that period with neither.
+
+`pnpm week-receipt <receipt.json>` checks a receipt. It exits 0 when it accepts the
 receipt, and 1 when it refuses it, with a line for each cause. DESIGN.md
 section 3.11, "The week receipt", holds the members it reads, the causes it
 refuses for, and the bound it holds each table's row count to.

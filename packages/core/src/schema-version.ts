@@ -29,9 +29,13 @@ export async function readSchemaVersion(read: () => Promise<SqlResult[]>): Promi
   try {
     results = await read()
   } catch (error) {
-    // Only a genuinely fresh database reads as absent; a transient network or auth
-    // error must not masquerade as one (it would re-apply every migration over a
-    // live schema).
+    // Only the type the dialect's executor gives a missing version table reads as
+    // absent. An outage and a refused credential are other types, and are thrown: read as
+    // absent, either would send every migration to a live schema. This function sees the
+    // type alone. Whether a missing table means a fresh database is the executor's
+    // reading of the server's answer, and DESIGN.md section 3.2 records one answer it
+    // reads so that is no fresh database: PostgreSQL answers a role with no USAGE on the
+    // schema with the code of a missing table.
     if (error instanceof SchemaNotInitializedError) return null
     throw error
   }

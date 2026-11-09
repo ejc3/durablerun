@@ -2,6 +2,8 @@ import {
   LeaseLostError,
   PermanentStoreError,
   RunCancelledError,
+  STORE_FAILURE_TYPES,
+  type StoreFailureKind,
   StoreUnavailableError,
 } from '@durablerun/core'
 import { attributeExpectedFailure } from '@durablerun/core/testing'
@@ -343,6 +345,23 @@ describe('task control scope', () => {
     } finally {
       Reflect.deleteProperty(PermanentStoreError, Symbol.hasInstance)
     }
+  })
+
+  it('gives every kind of store failure core names its control: an outage, a refused credential and a permanent answer are infrastructure, and a schema error is none', () => {
+    // A kind core adds has no entry here, which fails the typecheck until one is written.
+    const controls: Record<StoreFailureKind, string | undefined> = {
+      unavailable: 'store-unavailable',
+      'access-refused': 'store-unavailable',
+      permanent: 'store-permanent',
+      'schema-mismatch': undefined,
+      'schema-not-initialized': undefined,
+    }
+    const observed: Record<string, string | undefined> = {}
+    for (const kind of Object.keys(controls) as StoreFailureKind[]) {
+      const Failure = STORE_FAILURE_TYPES[kind]
+      observed[kind] = trustedStoreControl(new Failure(kind))?.kind
+    }
+    expect(observed).toEqual(controls)
   })
 
   it('contains hostile values at the trusted store classifier', async () => {

@@ -12,6 +12,7 @@ import {
   type SqlExecutor,
   type SqlRow,
   type StoreAdmin,
+  StoreAccessRefusedError,
   StoreUnavailableError,
 } from '@durablerun/core'
 import { type RecordedBatch, RecordingExecutor, testIdSource } from '@durablerun/core/testing'
@@ -31,6 +32,7 @@ import {
   MysqlSchedulerStore,
   retention as mysqlRetention,
 } from '@durablerun/store-mysql'
+import { openServerAnswering } from '@durablerun/store-libsql/testing'
 import { openMysqlTestDb } from '@durablerun/store-mysql/testing'
 import {
   PostgresSchedulerStore,
@@ -44,7 +46,7 @@ import {
 } from '../../conformance/test/dialect-selection.js'
 import { COMMANDS, type CliFault, type CommandSpec, VERBS } from '../src/commands.js'
 import { type Io, main } from '../src/main.js'
-import { type StoreOpener, keepingWhatIsSent, openStore } from '../src/open-store.js'
+import { type StoreOpener, keepingWhatIsSent, openStore, storeTarget } from '../src/open-store.js'
 
 /** The dialects this run exercises, read from the one selection parser. */
 export const SELECTED: readonly EnrolledDialect[] = parseDialectSelection(
@@ -127,7 +129,30 @@ export interface CliDb {
   dump(): Promise<string>
   /** Record a schema version as a newer build that migrated would, after seeding. */
   recordNewer(): Promise<void>
+  /**
+   * The environment of a credential the store accepts, which may read this database's
+   * tables and may write none, with the close that drops it, which comes before the
+   * database's. Null on libSQL, whose database file takes no credential.
+   */
+  readonly openAsAReader: (() => Promise<ReaderCredential>) | null
   close(): Promise<void>
+}
+
+/** A credential that may only read, as the CLI is handed it. */
+export interface ReaderCredential {
+  readonly env: Readonly<Record<string, string>>
+  close(): Promise<void>
+}
+
+/** The environment that names the store at `base` by a reader's name and password. */
+function readerOf(
+  base: URL,
+  reader: { username: string; password: string; close(): Promise<void> },
+): ReaderCredential {
+  const url = new URL(base.href)
+  url.username = reader.username
+  url.password = reader.password
+  return { env: { DURABLERUN_STORE_URL: url.href }, close: reader.close }
 }
 
 class StoppedBeforeVersion extends Error {}
@@ -205,6 +230,7 @@ export async function openCliDb(
       retentionWith: (other) => retention(raw, other),
       dump: () => dumpOf(dialect, raw),
       recordNewer: () => recordNewer(dialect, raw),
+      openAsAReader: null,
       close: async () => {
         raw.close()
         rmSync(dir, { recursive: true, force: true })
@@ -230,6 +256,7 @@ export async function openCliDb(
         retentionWith: (other) => postgresRetention(db.raw, other),
         dump: async () => (await dumpOf(dialect, db.raw)).replaceAll(`${db.schemaName}.`, ''),
         recordNewer: () => recordNewer(dialect, db.raw),
+        openAsAReader: async () => readerOf(base, await db.openAsAReader()),
         close: db.close,
       }
     } catch (error) {
@@ -254,11 +281,50 @@ export async function openCliDb(
       retentionWith: (other) => mysqlRetention(db.raw, other),
       dump: () => dumpOf(dialect, db.raw),
       recordNewer: () => recordNewer('mysql', db.raw),
+      openAsAReader: async () => readerOf(base, await db.openAsAReader()),
       close: db.close,
     }
   } catch (error) {
     await db.close()
     throw error
+  }
+}
+
+/** A store that refuses the credential the CLI is handed for it. */
+export interface RefusingStore {
+  readonly env: Readonly<Record<string, string>>
+  /** What `--target` must name for it. */
+  readonly target: string
+  /** The credential the store refuses, which no stream may print. */
+  readonly credential: string
+  close(): Promise<void>
+}
+
+/**
+ * A store of a dialect, named with a credential it refuses. A server is asked for a test
+ * database of its own under a password that is not the account's. libSQL has no server in a
+ * test, so its real client is pointed at a loopback HTTP server that answers 401, which is
+ * what a hosted libSQL server answers a token it does not accept.
+ */
+export async function openRefusingStore(dialect: EnrolledDialect): Promise<RefusingStore> {
+  const credential = 'wrong-credential-9c1e'
+  if (dialect === 'libsql') {
+    const server = await openServerAnswering(401)
+    return {
+      env: { DURABLERUN_STORE_URL: server.url, DURABLERUN_STORE_TOKEN: credential },
+      target: await storeTarget(server.url),
+      credential,
+      close: server.close,
+    }
+  }
+  const db = await openCliDb(dialect, 'refused-credential', 'empty')
+  const url = new URL(db.url)
+  url.password = credential
+  return {
+    env: { DURABLERUN_STORE_URL: url.href },
+    target: db.target,
+    credential,
+    close: db.close,
   }
 }
 
@@ -500,6 +566,22 @@ export function faulting(real: SqlExecutor, site: FaultSite, fault: CliFault): S
       }
       return real.batch(label, statements, control)
     },
+  }
+}
+
+/**
+ * An executor that refuses one sending of one label as a store refuses a credential: the
+ * batch is not sent, and the call rejects with StoreAccessRefusedError. A credential can be
+ * revoked while a command runs, and a role can hold the privilege for one statement of a
+ * command and lack it for the next, so a refusal can meet any batch.
+ */
+export function refusing(real: SqlExecutor, site: FaultSite): SqlExecutor {
+  let seen = 0
+  return {
+    batch: (label, statements, control) =>
+      label === site.label && ++seen === site.occurrence
+        ? Promise.reject(new StoreAccessRefusedError(`batch(${label}) was refused access`))
+        : real.batch(label, statements, control),
   }
 }
 

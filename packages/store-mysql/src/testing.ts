@@ -49,6 +49,20 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   databaseName: string
   /** Holds the write lock on one task's row, from a connection of its own, until `during` settles. */
   holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
+  /** An executor on this database under a password that is not the account's. Its caller closes it. */
+  openUnderAWrongPassword(): MysqlExecutor
+  /**
+   * An executor on this database as an account of the fixture's own that may connect, may
+   * read every table of the database, and may write none. Its close drops the account. The
+   * fixture's close drops every such account whose own close was never called, so a case
+   * that fails before it closes its reader leaves no account that may log in on the server.
+   */
+  openAsAReader(): Promise<{
+    raw: MysqlExecutor
+    username: string
+    password: string
+    close(): Promise<void>
+  }>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_MYSQL_URL
@@ -61,6 +75,8 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   const control = createOwnedMysqlPool({ uri: connectionString, connectionLimit: 1 })
   let raw: MysqlExecutor | undefined
   let closed = false
+  /** One entry for every account this fixture created and has not dropped yet. */
+  const accountsToDrop = new Set<() => Promise<void>>()
 
   const cleanup = async (): Promise<void> => {
     if (closed) return
@@ -71,6 +87,13 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
         await raw.close()
       } catch (error) {
         firstError = error
+      }
+    }
+    for (const dropIt of [...accountsToDrop]) {
+      try {
+        await dropIt()
+      } catch (error) {
+        firstError ??= error
       }
     }
     try {
@@ -107,6 +130,46 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     }
   }
 
+  /** An executor on this database under a password, as the URL's account or as `username`. */
+  const openAs = (password: string, username?: string): MysqlExecutor => {
+    const as = new URL(connectionString)
+    if (username !== undefined) as.username = username
+    as.password = password
+    return MysqlExecutor.open({ uri: as.href, database: databaseName })
+  }
+
+  const openUnderAWrongPassword = (): MysqlExecutor => openAs('not-the-password-of-the-account')
+
+  const openAsAReader = async () => {
+    // The database's name holds only the lowercase identifier alphabet, and so does the
+    // account's. An account name holds at most 32 characters.
+    const account = `dr_cred_${databaseName.slice(-16)}`
+    const password = 'may-only-read'
+    const dropAccount = () => control.query(`DROP USER IF EXISTS '${account}'@'%'`)
+    try {
+      await control.query(`CREATE USER '${account}'@'%' IDENTIFIED BY '${password}'`)
+      await control.query(`GRANT SELECT ON ${databaseName}.* TO '${account}'@'%'`)
+    } catch (error) {
+      await dropAccount().catch(() => undefined)
+      throw error
+    }
+    const reader = openAs(password, account)
+    let dropped = false
+    const close = async (): Promise<void> => {
+      if (dropped) return
+      dropped = true
+      accountsToDrop.delete(close)
+      try {
+        await reader.close()
+      } finally {
+        // The account goes whether or not its executor closed without an error.
+        await dropAccount()
+      }
+    }
+    accountsToDrop.add(close)
+    return { raw: reader, username: account, password, close }
+  }
+
   try {
     await control.query(
       `CREATE DATABASE ${databaseName} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`,
@@ -116,7 +179,16 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
     const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
-    return { raw, admin, ids, databaseName, holdTaskRowLock, close: cleanup }
+    return {
+      raw,
+      admin,
+      ids,
+      databaseName,
+      holdTaskRowLock,
+      openUnderAWrongPassword,
+      openAsAReader,
+      close: cleanup,
+    }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error

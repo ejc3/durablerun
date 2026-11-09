@@ -54,6 +54,31 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   schemaName: string
   /** Holds the write lock on one task's row, from a connection of its own, until `during` settles. */
   holdTaskRowLock(taskId: string, during: () => Promise<void>): Promise<void>
+  /** An executor on this database under a password that is not the account's. Its caller closes it. */
+  openUnderAWrongPassword(): PgExecutor
+  /**
+   * An executor on this database as a role of the fixture's own that may connect, may read
+   * every table the schema holds now, and may write none. Its close drops the role. The
+   * fixture's close drops every such role whose own close was never called, so a case that
+   * fails before it closes its reader leaves no role that may log in on the server.
+   */
+  openAsAReader(): Promise<{
+    raw: PgExecutor
+    username: string
+    password: string
+    close(): Promise<void>
+  }>
+  /**
+   * The reader above without USAGE on the fixture's schema: a role that may connect and
+   * holds SELECT on every table, as an operator leaves it who grants the tables and forgets
+   * the schema. It is closed and dropped as the reader is.
+   */
+  openAsAReaderWithNoUsageOfTheSchema(): Promise<{
+    raw: PgExecutor
+    username: string
+    password: string
+    close(): Promise<void>
+  }>
   close: () => Promise<void>
 }> {
   const connectionString = options.connectionString ?? process.env.DURABLERUN_POSTGRES_URL
@@ -66,6 +91,8 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   const control = createOwnedPostgresPool({ connectionString })
   let raw: PgExecutor | undefined
   let closed = false
+  /** One entry for every role this fixture created and has not dropped yet. */
+  const rolesToDrop = new Set<() => Promise<void>>()
 
   const cleanup = async (): Promise<void> => {
     if (closed) return
@@ -76,6 +103,14 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
         await raw.close()
       } catch (error) {
         firstError = error
+      }
+    }
+    // Before the schema goes: a role is dropped after the privileges it holds on the schema.
+    for (const dropIt of [...rolesToDrop]) {
+      try {
+        await dropIt()
+      } catch (error) {
+        firstError ??= error
       }
     }
     try {
@@ -111,6 +146,60 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     }
   }
 
+  /** An executor on this database under a password, as the URL's account or as `username`. */
+  const openAs = (password: string, username?: string): PgExecutor => {
+    const as = new URL(connectionString)
+    if (username !== undefined) as.username = username
+    as.password = password
+    return PgExecutor.open({
+      connectionString: as.href,
+      options: `-c search_path=${schemaName}`,
+    })
+  }
+
+  const openUnderAWrongPassword = (): PgExecutor => openAs('not-the-password-of-the-account')
+
+  // The schema's name holds only the lowercase identifier alphabet, and so do the roles'.
+  const readerRole = `dr_cred_${schemaName.slice(-20)}`
+
+  /** An executor on this database as a new role that may log in and holds `privileges`. */
+  const openAsARole = async (role: string, privileges: readonly string[]) => {
+    const password = 'may-only-read'
+    const dropRole = async (): Promise<void> => {
+      // The role's privileges go first: a role that still holds one cannot be dropped.
+      await control.query(`DROP OWNED BY ${role}`).catch(() => undefined)
+      await control.query(`DROP ROLE IF EXISTS ${role}`)
+    }
+    try {
+      await control.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`)
+      for (const privilege of privileges) await control.query(`GRANT ${privilege} TO ${role}`)
+    } catch (error) {
+      await dropRole().catch(() => undefined)
+      throw error
+    }
+    const reader = openAs(password, role)
+    let dropped = false
+    const close = async (): Promise<void> => {
+      if (dropped) return
+      dropped = true
+      rolesToDrop.delete(close)
+      try {
+        await reader.close()
+      } finally {
+        // The role goes whether or not its executor closed without an error.
+        await dropRole()
+      }
+    }
+    rolesToDrop.add(close)
+    return { raw: reader, username: role, password, close }
+  }
+
+  const selectOnEveryTable = `SELECT ON ALL TABLES IN SCHEMA ${schemaName}`
+  const openAsAReader = () =>
+    openAsARole(readerRole, [`USAGE ON SCHEMA ${schemaName}`, selectOnEveryTable])
+  const openAsAReaderWithNoUsageOfTheSchema = () =>
+    openAsARole(`${readerRole}_nousage`, [selectOnEveryTable])
+
   try {
     await control.query(`CREATE SCHEMA ${schemaName}`)
     raw = PgExecutor.open({
@@ -121,7 +210,17 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
     const ids = testIdSource(idNamespace)
     if (options.migrate !== false) await admin.migrate()
     if (options.nowMs !== undefined) await admin.setFakeNowEpochMs(options.nowMs)
-    return { raw, admin, ids, schemaName, holdTaskRowLock, close: cleanup }
+    return {
+      raw,
+      admin,
+      ids,
+      schemaName,
+      holdTaskRowLock,
+      openUnderAWrongPassword,
+      openAsAReader,
+      openAsAReaderWithNoUsageOfTheSchema,
+      close: cleanup,
+    }
   } catch (error) {
     await cleanup().catch(() => undefined)
     throw error

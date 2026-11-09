@@ -9,6 +9,7 @@ import {
   type SqlExecutor,
   type SqlResult,
   type SqlStatement,
+  StoreAccessRefusedError,
   StoreUnavailableError,
   sqlBatchMode,
 } from '@durablerun/core'
@@ -31,9 +32,102 @@ const MISSING_META_TABLE = /no such table:\s*meta$/i
  * SQLITE_ERROR is deliberately absent. SQLite files a syntax error under that generic code,
  * and files a transaction state error there too, which a new connection cures. Of the
  * message text this executor reads only the two wordings above, of a schema fault and of
- * a missing `meta` table. A code that is not listed here is otherwise an outage.
+ * a missing `meta` table. A code that is not listed here is otherwise an outage, but for a
+ * server's refusal of a credential, below.
  */
 const PERMANENT_RESULT_CODES = new Set(['SQLITE_CONSTRAINT', 'SQLITE_MISMATCH'])
+
+/**
+ * HTTP statuses that say the server refused the credential, or what it may do. A hosted
+ * libSQL server answers 401 for a token whose signature it does not accept and for no token
+ * at all. A database file has no credential and never answers a status.
+ *
+ * 400 is deliberately absent. A hosted server answers it for a token that is not a token at
+ * all, and a server answers it for any request it cannot read, so the status does not say
+ * that a credential was refused. It keeps the type it had, an outage.
+ */
+const ACCESS_REFUSED_HTTP_STATUSES = new Set([
+  401, // unauthorized: the server does not accept the token
+  403, // forbidden: the server accepts the token and refuses what it asks
+])
+
+/**
+ * The content type under which the client loses the status of an answer that is no success.
+ * The client compares the whole header with this string, so `application/json; charset=utf-8`
+ * is another type to it.
+ */
+const STATUS_LOSING_CONTENT_TYPE = 'application/json'
+
+/**
+ * A content type whose body the client drops unread. Any type but the one above and
+ * `text/plain` is one, and this one says only that the body is bytes.
+ */
+const UNREAD_CONTENT_TYPE = 'application/octet-stream'
+
+/**
+ * The runtime's `fetch`, taken once when this module loads, as the client's library takes
+ * the one it sends with by default. A process that puts another `fetch` in the global's
+ * place later sends its libSQL requests as it did.
+ */
+const runtimeFetch = fetch
+
+/**
+ * The `fetch` a client this executor opens sends its requests with. It rewrites one answer:
+ * an answer of one of the statuses above whose content type is exactly `application/json`.
+ * It hands that answer on with the same status and the stream of the body unread, under a
+ * content type whose body the client does not read. Every other answer it hands on as it
+ * came, the object the runtime's `fetch` above returned.
+ *
+ * The client reads the body of an answer that is no success under three content types. Under
+ * exactly `application/json` it parses the body, and a body with a `message` member becomes
+ * an error with that message and no status, as a body it cannot parse becomes an error of the
+ * parsing. A gateway in front of a server answers a token it refuses in that shape. Under
+ * `text/plain`, and where no content type is given, it reads the body as text, quotes the
+ * text in its message and keeps the status. Under every other content type it drops the body
+ * unread and keeps the status. So the first is the one shape that loses the status, and the
+ * `fetch` rewrites it into the last. The client's message for a rewritten answer is
+ * `Server returned HTTP status` and the status, and holds nothing of the body, as it does
+ * for a page. The status is still read in one place, below.
+ *
+ * It reads no body and copies no reason phrase, and neither does the client for a rewritten
+ * answer. So a refused answer under `application/json` whose body is cut short or never
+ * ends is an access refusal too, where the client by itself fails or waits in its read. It
+ * awaits the runtime's `fetch` and builds one `Response` from a status it has checked, one
+ * fixed header and the stream, so it fails only where the runtime's `fetch` fails. The
+ * client's library can also ask a server which protocol versions it speaks, with requests
+ * of this same `fetch`, and it takes an answer that is no success to mean "not this
+ * version". The client at the version pinned here opens HTTP at one fixed version and sends
+ * no such request. A refused status handed on with its status is still no success to a
+ * later client that does. Exported for the tests that call it by itself.
+ */
+export const fetchKeepingARefusedStatus: typeof fetch = async (...request) => {
+  const answer = await runtimeFetch(...request)
+  if (
+    !ACCESS_REFUSED_HTTP_STATUSES.has(answer.status) ||
+    answer.headers.get('content-type') !== STATUS_LOSING_CONTENT_TYPE
+  ) {
+    return answer
+  }
+  return new Response(answer.body, {
+    status: answer.status,
+    headers: { 'content-type': UNREAD_CONTENT_TYPE },
+  })
+}
+
+/**
+ * The HTTP status a driver error carries when it is one of the statuses above. The client
+ * reports every HTTP answer that is no success under one code, `SERVER_ERROR`, and keeps the
+ * status as a number on the error's cause, which is what is read here, and never the
+ * message. The status is there for every body a server sends beside it because the `fetch`
+ * above rewrites the one answer whose status the client loses, for a client this executor
+ * opened. A client made elsewhere and handed to the constructor sends with the `fetch` its
+ * maker gave it. A WebSocket upgrade the server refused carries its status only in its
+ * message, so it has none here and keeps the type it had.
+ */
+function accessRefusedStatus(error: LibsqlError): number | undefined {
+  const status = (error.cause as { status?: number } | undefined)?.status
+  return status !== undefined && ACCESS_REFUSED_HTTP_STATUSES.has(status) ? status : undefined
+}
 
 /**
  * The primary result code a driver error names. An extended code spells its primary code
@@ -221,7 +315,13 @@ export class LibsqlExecutor implements SqlExecutor {
     const opened = file?.url ?? url
     const before = file === undefined ? undefined : fileAt(file.path)
     const executor = new LibsqlExecutor(
-      createClient(authToken ? { url: opened, authToken } : { url: opened }),
+      createClient({
+        url: opened,
+        ...(authToken ? { authToken } : {}),
+        // Used where the client opens the URL over HTTP. A database file, a private database
+        // in memory and a WebSocket send no request with it.
+        fetch: fetchKeepingARefusedStatus,
+      }),
       file !== undefined,
     )
     executor.ownsClient = true
@@ -405,6 +505,16 @@ export class LibsqlExecutor implements SqlExecutor {
         sent.length === 1 &&
         sent[0]?.sql === SCHEMA_VERSION_READ_SQL &&
         sent[0].args.length === 0
+      // The server refused the credential before it read a statement. Read first, and by
+      // the status alone, so that no text a server sends beside the status is read as a
+      // schema fault.
+      const refusedStatus = error instanceof LibsqlError ? accessRefusedStatus(error) : undefined
+      if (refusedStatus !== undefined) {
+        throw new StoreAccessRefusedError(
+          `batch(${_label}) was refused access (HTTP status ${refusedStatus}): ${String(error)}`,
+          { cause: error },
+        )
+      }
       if (
         schemaVersionRead &&
         error instanceof LibsqlError &&
