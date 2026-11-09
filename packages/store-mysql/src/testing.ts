@@ -53,8 +53,9 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   openUnderAWrongPassword(): MysqlExecutor
   /**
    * An executor on this database as an account of the fixture's own that may connect, may
-   * read every table of the database, and may write none. Its close drops the account, and
-   * comes before the fixture's.
+   * read every table of the database, and may write none. Its close drops the account. The
+   * fixture's close drops every such account whose own close was never called, so a case
+   * that fails before it closes its reader leaves no account that may log in on the server.
    */
   openAsAReader(): Promise<{
     raw: MysqlExecutor
@@ -74,6 +75,8 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
   const control = createOwnedMysqlPool({ uri: connectionString, connectionLimit: 1 })
   let raw: MysqlExecutor | undefined
   let closed = false
+  /** One entry for every account this fixture created and has not dropped yet. */
+  const accountsToDrop = new Set<() => Promise<void>>()
 
   const cleanup = async (): Promise<void> => {
     if (closed) return
@@ -84,6 +87,13 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
         await raw.close()
       } catch (error) {
         firstError = error
+      }
+    }
+    for (const dropIt of [...accountsToDrop]) {
+      try {
+        await dropIt()
+      } catch (error) {
+        firstError ??= error
       }
     }
     try {
@@ -144,15 +154,20 @@ export async function openMysqlTestDb(options: OpenMysqlTestDbOptions = {}): Pro
       throw error
     }
     const reader = openAs(password, account)
-    return {
-      raw: reader,
-      username: account,
-      password,
-      close: async () => {
+    let dropped = false
+    const close = async (): Promise<void> => {
+      if (dropped) return
+      dropped = true
+      accountsToDrop.delete(close)
+      try {
         await reader.close()
+      } finally {
+        // The account goes whether or not its executor closed without an error.
         await dropAccount()
-      },
+      }
     }
+    accountsToDrop.add(close)
+    return { raw: reader, username: account, password, close }
   }
 
   try {

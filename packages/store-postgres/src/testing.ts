@@ -58,8 +58,9 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   openUnderAWrongPassword(): PgExecutor
   /**
    * An executor on this database as a role of the fixture's own that may connect, may read
-   * every table the schema holds now, and may write none. Its close drops the role, and
-   * comes before the fixture's.
+   * every table the schema holds now, and may write none. Its close drops the role. The
+   * fixture's close drops every such role whose own close was never called, so a case that
+   * fails before it closes its reader leaves no role that may log in on the server.
    */
   openAsAReader(): Promise<{
     raw: PgExecutor
@@ -79,6 +80,8 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
   const control = createOwnedPostgresPool({ connectionString })
   let raw: PgExecutor | undefined
   let closed = false
+  /** One entry for every role this fixture created and has not dropped yet. */
+  const rolesToDrop = new Set<() => Promise<void>>()
 
   const cleanup = async (): Promise<void> => {
     if (closed) return
@@ -89,6 +92,14 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
         await raw.close()
       } catch (error) {
         firstError = error
+      }
+    }
+    // Before the schema goes: a role is dropped after the privileges it holds on the schema.
+    for (const dropIt of [...rolesToDrop]) {
+      try {
+        await dropIt()
+      } catch (error) {
+        firstError ??= error
       }
     }
     try {
@@ -155,15 +166,20 @@ export async function openPostgresTestDb(options: OpenPostgresTestDbOptions = {}
       throw error
     }
     const reader = openAs(password, role)
-    return {
-      raw: reader,
-      username: role,
-      password,
-      close: async () => {
+    let dropped = false
+    const close = async (): Promise<void> => {
+      if (dropped) return
+      dropped = true
+      rolesToDrop.delete(close)
+      try {
         await reader.close()
+      } finally {
+        // The role goes whether or not its executor closed without an error.
         await dropRole()
-      },
+      }
     }
+    rolesToDrop.add(close)
+    return { raw: reader, username: role, password, close }
   }
 
   try {
